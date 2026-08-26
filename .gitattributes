@@ -1,0 +1,22 @@
+# Normalise to LF in the repository and in working copies.
+# Prettier is configured with endOfLine: lf and .editorconfig with end_of_line = lf;
+# without this, Windows autocrlf would rewrite line endings and break format:check.
+* text=auto eol=lf
+
+# Source-of-truth design documents: byte-for-byte preserved.
+# They contain deliberate CRLF and non-breaking-space diagram formatting.
+docs/** -text
+
+# Lockfile stays LF and is not diffed in reviews.
+pnpm-lock.yaml text eol=lf linguist-generated=true
+
+# Binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.mp4 binary
+*.woff binary
+*.woff2 binary

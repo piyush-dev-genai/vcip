@@ -1,0 +1,47 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# tests
+coverage/
+.nyc_output/
+
+# secrets — never commit real values, only .env.example
+.env
+.env.*
+!.env.example
+
+# signing keys / credentials
+*.pem
+*.key
+*.p12
+secrets/
+credentials.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# local runtime artefacts
+*.log
+logs/
+tmp/
+.data/
+recordings/
+
+# editors / os / tooling
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.claude/settings.local.json

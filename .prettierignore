@@ -1,0 +1,14 @@
+node_modules
+dist
+build
+.next
+coverage
+pnpm-lock.yaml
+
+# tool-managed local config, not project source
+.claude/
+
+# Source-of-truth design documents. These use deliberate formatting
+# (escaped markdown, non-breaking-space diagrams) that Prettier would
+# rewrite. See docs/00-decisions.md.
+docs/
