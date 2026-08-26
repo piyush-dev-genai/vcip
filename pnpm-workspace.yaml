@@ -1,3 +1,8 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+allowBuilds:
+  # esbuild powers Vitest and Next.js; SWC emits the decorator metadata
+  # NestJS requires. Both need their native postinstall step.
+  '@swc/core': true
+  esbuild: true

@@ -1,0 +1,31 @@
+{
+  "name": "@vcip/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "V-CIP Control API — NestJS modular monolith",
+  "scripts": {
+    "dev": "nest start --watch",
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@nestjs/testing": "^11.0.0",
+    "@swc/core": "^1.7.0",
+    "@types/node": "^22.0.0",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "unplugin-swc": "^1.5.1",
+    "vitest": "^3.0.0"
+  }
+}

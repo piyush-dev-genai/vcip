@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 .next/
+next-env.d.ts
 out/
 *.tsbuildinfo
 
@@ -29,6 +30,8 @@ credentials.json
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
+.ruff_cache/
 venv/
 
 # local runtime artefacts

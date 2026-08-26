@@ -2,7 +2,12 @@ node_modules
 dist
 build
 .next
+next-env.d.ts
 coverage
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
 pnpm-lock.yaml
 
 # tool-managed local config, not project source
