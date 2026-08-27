@@ -1,0 +1,14 @@
+{
+  "name": "t05-ai-frame-ingestion-spike",
+  "private": true,
+  "type": "module",
+  "description": "THROWAWAY Day-0 spike (T05). Not part of the workspace. Delete after D23 is decided.",
+  "scripts": {
+    "spike": "node run.mjs"
+  },
+  "dependencies": {
+    "livekit-client": "^2",
+    "livekit-server-sdk": "^2",
+    "playwright": "^1"
+  }
+}

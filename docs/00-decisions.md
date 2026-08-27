@@ -336,6 +336,35 @@ AI -> /internal/ai/result -> Redis HUD -> pub/sub -> WebSocket -> Agent HUD
 
 Only the ingest differs. No other module is affected by this choice.
 
+### Resolved by T05 — server-side native subscription
+
+**Selected: server-side LiveKit subscription in Python (`livekit` 1.1.16, which
+provides `livekit.rtc`). The browser-side fallback is not required and is not
+built.**
+
+The spike (`spikes/t05-ai-frame-ingestion/`) decoded 300 consecutive frames from
+a real browser publisher with no errors:
+
+| observation | value |
+|---|---|
+| install on Python 3.14 / Windows | clean; every dependency had a `cp314` wheel, no source builds |
+| frames decoded | 300 / 300 |
+| resolution | ramps `320x180` -> `640x360` -> `1280x720` (simulcast), steady at 720p |
+| source format | I420, converted to RGB24 through the SDK |
+| frame rate | ~20 fps |
+| consumer lag | 12-15 ms across ~14.9 s of media — the consumer keeps up in real time |
+| cost | ~75% of one core, ~100 MB RSS, for one stream converting *every* frame |
+
+Two constraints this places on T30:
+
+1. **Frame size is not constant.** Simulcast starts on a low layer and ramps up,
+   so a frame's dimensions change mid-stream. Anything downstream must read
+   width/height per frame rather than assuming the first frame's geometry.
+2. **Do not convert every frame.** Full-frame I420 -> RGB24 at 720p costs ~23 ms.
+   That fits inside a 20 fps budget on one core with nothing else running, but it
+   is the whole budget. Liveness and face match need a few frames per second, not
+   twenty, so T30 samples frames rather than consuming the stream exhaustively.
+
 ## D24 — LiveKit deployment differs by environment, not by code
 
 ```text

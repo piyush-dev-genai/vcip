@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>T05 spike customer</title>
+<style>
+  body {
+    font: 14px system-ui;
+    background: #111;
+    color: #eee;
+    margin: 0;
+    padding: 8px;
+  }
+  video {
+    width: 320px;
+    background: #000;
+  }
+  #log {
+    white-space: pre-wrap;
+    font-family: monospace;
+    font-size: 12px;
+  }
+</style>
+<h3 id="who">connecting...</h3>
+<video id="self" autoplay muted playsinline></video>
+<div id="log"></div>
+<script src="/vendor/livekit-client.umd.js"></script>
+<script>
+  // Throwaway spike page: the "customer browser" in the T05 diagram. It only
+  // publishes camera + microphone. Nothing subscribes here — the Python
+  // analyzer is the subscriber under test.
+  const q = new URLSearchParams(location.search);
+  const identity = q.get('identity');
+  const token = q.get('token');
+  const url = q.get('url');
+
+  window.__state = { identity, connected: false, published: { audio: false, video: false } };
+
+  const log = (m) => {
+    document.getElementById('log').textContent += m + '\n';
+    console.log('[' + identity + '] ' + m);
+  };
+
+  const room = new LivekitClient.Room({ adaptiveStream: false, dynacast: false });
+  window.__room = room;
+
+  (async () => {
+    try {
+      await room.connect(url, token);
+      window.__state.connected = true;
+      document.getElementById('who').textContent = identity + ' connected';
+      log('connected to room ' + room.name);
+
+      // Chromium runs with --use-fake-device-for-media-stream, so this is a
+      // synthetic but genuine camera capture: a moving pattern, not a still.
+      await room.localParticipant.enableCameraAndMicrophone();
+      for (const pub of room.localParticipant.trackPublications.values()) {
+        window.__state.published[pub.kind] = true;
+        log('published ' + pub.kind);
+        if (pub.kind === 'video' && pub.track) {
+          pub.track.attach(document.getElementById('self'));
+        }
+      }
+    } catch (e) {
+      window.__state.error = String(e);
+      log('ERROR ' + e);
+    }
+  })();
+</script>

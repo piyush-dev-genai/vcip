@@ -1,0 +1,5 @@
+.venv/
+node_modules/
+out/
+public/vendor/
+__pycache__/
