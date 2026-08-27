@@ -251,7 +251,7 @@ gate and report.
 | T01 | 0 | pnpm workspace, TypeScript base config, ESLint/Prettier, env template, root structure | done |
 | T02 | 0 | Five app skeletons, each with `/health` | done |
 | T03 | 0 | `infra/docker-compose.yml` — postgres, redis, livekit, livekit-egress, minio | done |
-| T04 | 0 | (!) Spike: two browsers -> room-composite egress -> mp4 in MinIO -> FFmpeg watermark | todo |
+| T04 | 0 | (!) Spike: two browsers -> room-composite egress -> mp4 in MinIO -> FFmpeg watermark | done |
 | T05 | 0 | (!) Spike: `livekit-rtc` install + frame decode on dev machine -> decides D23 | todo |
 | T06 | 1 | `@vcip/shared`: enums, state-machine, billing, errors — pure, unit-tested | todo |
 | T07 | 1 | Drizzle schema: 15 tables, D3/D11 columns, indexes, partial offer-expiry index | todo |

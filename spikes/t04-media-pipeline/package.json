@@ -1,0 +1,14 @@
+{
+  "name": "t04-media-pipeline-spike",
+  "private": true,
+  "type": "module",
+  "description": "THROWAWAY Day-0 spike (T04). Not part of the workspace. Delete after the pipeline is proven.",
+  "scripts": {
+    "spike": "node run.mjs"
+  },
+  "dependencies": {
+    "livekit-client": "^2",
+    "livekit-server-sdk": "^2",
+    "playwright": "^1"
+  }
+}

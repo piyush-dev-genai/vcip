@@ -15,10 +15,9 @@
 api_key: devkey
 api_secret: __LIVEKIT_API_SECRET__
 
-# The egress container shares the livekit container's network namespace, so
-# LiveKit is reachable on loopback and the 127.0.0.1 ICE candidates that
-# livekit.yaml advertises resolve correctly from here.
-ws_url: ws://127.0.0.1:7880
+# Reached over the compose network. LiveKit advertises a bridge-address ICE
+# candidate alongside its loopback one, so the media path resolves from here.
+ws_url: ws://livekit:7880
 insecure: true
 
 redis:

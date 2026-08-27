@@ -116,9 +116,6 @@ services:
   # ----------------------------------------------------------------- livekit
   # Self-hosted for local development; LiveKit Cloud for the demo (D24).
   # Media never passes through the Control API (I: video path constraint).
-  #
-  # This service also publishes the egress health port, because the egress
-  # container shares this container's network namespace — see below.
   livekit:
     image: livekit/livekit-server:v1.13.6
     container_name: vcip-livekit
@@ -134,7 +131,6 @@ services:
       - '127.0.0.1:${LIVEKIT_PORT:-7880}:7880'
       - '127.0.0.1:${LIVEKIT_RTC_TCP_PORT:-7881}:7881'
       - '127.0.0.1:${LIVEKIT_RTC_UDP_PORT:-7882}:7882/udp'
-      - '127.0.0.1:${EGRESS_HEALTH_PORT:-7981}:7981'
     extra_hosts:
       # The Control API runs on the host, so the D7 webhook needs a route out.
       - 'host.docker.internal:host-gateway'
@@ -152,17 +148,16 @@ services:
   # Records the room composite (R17). apps/egress then watermarks, hashes,
   # signs and exports the file — egress itself holds no application state.
   #
-  # network_mode joins the livekit container's network namespace. livekit.yaml
-  # advertises 127.0.0.1 ICE candidates so a browser on this host can dial the
-  # published RTC ports; sharing the namespace makes those same candidates
-  # resolve for egress, which is otherwise the one client that could not use
-  # them. Consequence: egress cannot declare its own ports, so 7981 is
-  # published by the livekit service above.
+  # Runs on the compose network and reaches LiveKit at ws://livekit:7880.
+  # livekit.yaml enables enable_loopback_candidate so LiveKit advertises its
+  # bridge address alongside its loopback one; without that, ICE from this
+  # container fails with "could not establish pc connection".
   egress:
     image: livekit/egress:v1.14.1
     container_name: vcip-egress
     restart: unless-stopped
-    network_mode: 'service:livekit'
+    ports:
+      - '127.0.0.1:${EGRESS_HEALTH_PORT:-7981}:7981'
     # Chrome's sandbox needs SYS_ADMIN, and the compositor needs real shared
     # memory. Both are documented LiveKit egress requirements.
     cap_add:

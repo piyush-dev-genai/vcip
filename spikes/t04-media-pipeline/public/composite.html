@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>T04 composite layout</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    background: #0b0b0f;
+    overflow: hidden;
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 8px;
+    height: calc(100% - 16px);
+    box-sizing: border-box;
+  }
+  .tile {
+    position: relative;
+    background: #000;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .tile video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .name {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    font: 600 16px system-ui;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+</style>
+<div id="grid"></div>
+<script src="/vendor/livekit-client.umd.js"></script>
+<script>
+  // Egress room-composite template for the T04 spike.
+  //
+  // Egress launches Chrome at this page with ?url=<ws>&token=<jwt>. The page
+  // must open the LiveKit websocket (egress watches for it) and render the
+  // participants; egress screen-captures the viewport and records the Chrome
+  // audio sink. window.startRecording / window.endRecording are the hooks
+  // egress binds into the page.
+  const q = new URLSearchParams(location.search);
+  const url = q.get('url');
+  const token = q.get('token');
+
+  // Instrumentation: the spike's own static server logs these so the run is
+  // debuggable. Egress does not surface Chrome console output.
+  const report = (m) => {
+    try {
+      navigator.sendBeacon('/report?msg=' + encodeURIComponent(m));
+    } catch (e) {
+      /* best effort */
+    }
+  };
+
+  report('template loaded, url=' + url + ' hasToken=' + !!token + ' sdk=' + typeof LivekitClient);
+
+  window.addEventListener('error', (e) => report('window error: ' + e.message));
+  window.addEventListener('unhandledrejection', (e) => report('unhandled rejection: ' + e.reason));
+
+  const grid = document.getElementById('grid');
+  const tiles = new Map();
+
+  function tileFor(identity) {
+    let t = tiles.get(identity);
+    if (!t) {
+      t = document.createElement('div');
+      t.className = 'tile';
+      const n = document.createElement('div');
+      n.className = 'name';
+      n.textContent = identity;
+      t.appendChild(n);
+      grid.appendChild(t);
+      tiles.set(identity, t);
+    }
+    return t;
+  }
+
+  // Egress does not bind a JS function. It watches Chrome's console output
+  // for the literal tokens START_RECORDING / END_RECORDING, which is exactly
+  // what LiveKit's own bundled template emits.
+  let started = false;
+  function signalStart(why) {
+    if (started) return;
+    started = true;
+    report('emitting START_RECORDING (' + why + ')');
+    console.log('START_RECORDING');
+  }
+  function signalEnd(why) {
+    report('emitting END_RECORDING (' + why + ')');
+    console.log('END_RECORDING');
+  }
+
+  const room = new LivekitClient.Room({ adaptiveStream: false, dynacast: false });
+
+  room.on('trackSubscribed', (track, pub, participant) => {
+    report('trackSubscribed ' + track.kind + ' from ' + participant.identity);
+    const el = track.attach();
+    if (track.kind === 'video') {
+      tileFor(participant.identity).prepend(el);
+    } else {
+      el.style.display = 'none';
+      document.body.appendChild(el);
+    }
+    if (track.kind === 'video') signalStart('first video track');
+  });
+
+  room.on('participantConnected', (p) => report('participantConnected ' + p.identity));
+  room.on('disconnected', (r) => {
+    report('room disconnected: ' + r);
+    signalEnd('room disconnected');
+  });
+
+  (async () => {
+    try {
+      report('connecting...');
+      await room.connect(url, token, { autoSubscribe: true });
+      report('connected, room=' + room.name + ' remotes=' + room.remoteParticipants.size);
+      // If the room already has publishers, tracks arrive via trackSubscribed.
+      // Give egress a start signal regardless so it never hangs on an empty room.
+      setTimeout(() => signalStart('post-connect fallback'), 3000);
+      setInterval(
+        () => report('heartbeat state=' + room.state + ' remotes=' + room.remoteParticipants.size),
+        4000,
+      );
+    } catch (e) {
+      report('CONNECT FAILED: ' + (e && e.message ? e.message : String(e)));
+    }
+  })();
+</script>

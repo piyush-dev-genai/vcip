@@ -15,15 +15,19 @@ rtc:
   tcp_port: 7881
   udp_port: 7882
 
-  # A container cannot discover a host-reachable address on its own.
-  # Candidates are advertised as 127.0.0.1, which matches the loopback-bound
-  # ports published by docker-compose.yml, so a browser on this machine can
-  # dial them. The egress container shares this container's network namespace
-  # (see docker-compose.yml) precisely so that 127.0.0.1 resolves for it too.
+  # Two very different clients must reach this server:
+  #
+  #   a browser on the Windows host  -> via the loopback-published ports
+  #   the egress container           -> via the docker bridge address
+  #
+  # No single advertised address satisfies both, so LiveKit gathers BOTH: the
+  # loopback candidate (normally filtered out) plus the container's bridge IP.
+  # Each client keeps the candidate pair it can actually reach and drops the
+  # other. Pinning node_ip to either one breaks the other client.
   #
   # For LAN or multi-device testing, use LiveKit Cloud instead (D24).
   use_external_ip: false
-  node_ip: 127.0.0.1
+  enable_loopback_candidate: true
 
 redis:
   address: redis:6379

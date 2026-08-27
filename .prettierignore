@@ -17,3 +17,7 @@ pnpm-lock.yaml
 # (escaped markdown, non-breaking-space diagrams) that Prettier would
 # rewrite. See docs/00-decisions.md.
 docs/
+
+# Vendored SDK bundle and generated media inside throwaway spikes.
+spikes/**/public/vendor/
+spikes/**/out/

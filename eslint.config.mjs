@@ -16,6 +16,9 @@ export default tseslint.config(
       '**/.venv/**',
       '**/*.d.ts',
       'docs/**',
+      // Throwaway Day-0 spikes. Mixed browser/Node contexts and a vendored
+      // SDK bundle; they are deleted once the path they prove is implemented.
+      'spikes/**',
     ],
   },
 

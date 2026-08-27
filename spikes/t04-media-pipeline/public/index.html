@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>T04 spike participant</title>
+<style>
+  body {
+    font: 14px system-ui;
+    background: #111;
+    color: #eee;
+    margin: 0;
+    padding: 8px;
+  }
+  video {
+    width: 320px;
+    background: #000;
+    margin: 4px;
+  }
+  #log {
+    white-space: pre-wrap;
+    font-family: monospace;
+    font-size: 12px;
+  }
+</style>
+<h3 id="who">connecting...</h3>
+<div id="videos"></div>
+<div id="log"></div>
+<script src="/vendor/livekit-client.umd.js"></script>
+<script>
+  // Throwaway spike page. Publishes camera + mic, subscribes to everyone else,
+  // and exposes the observed state on window.__state for the Playwright driver.
+  const q = new URLSearchParams(location.search);
+  const identity = q.get('identity');
+  const token = q.get('token');
+  const url = q.get('url');
+
+  window.__state = {
+    identity,
+    connected: false,
+    published: { audio: false, video: false },
+    subscribed: {}, // identity -> { audio, video }
+    errors: [],
+  };
+
+  const log = (m) => {
+    document.getElementById('log').textContent += m + '\n';
+    console.log('[' + identity + '] ' + m);
+  };
+
+  // The fake microphone is a steady sine tone. Browser noise suppression and
+  // AGC treat a constant tone as stationary noise and attenuate it heavily, so
+  // turn the processing off — this spike is testing the transport path, not the
+  // audio processing chain.
+  const room = new LivekitClient.Room({
+    adaptiveStream: false,
+    dynacast: false,
+    audioCaptureDefaults: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+  });
+  window.__room = room;
+
+  room.on('trackSubscribed', (track, pub, participant) => {
+    const s = (window.__state.subscribed[participant.identity] ||= { audio: false, video: false });
+    s[track.kind] = true;
+    log('subscribed ' + track.kind + ' from ' + participant.identity);
+    if (track.kind === 'video' || track.kind === 'audio') {
+      const el = track.attach();
+      if (track.kind === 'video') document.getElementById('videos').appendChild(el);
+    }
+  });
+
+  room.on('disconnected', (r) => log('disconnected: ' + r));
+
+  (async () => {
+    try {
+      await room.connect(url, token);
+      window.__state.connected = true;
+      document.getElementById('who').textContent = identity + ' connected';
+      log('connected to room ' + room.name);
+
+      // Chromium is launched with --use-fake-device-for-media-stream, so this
+      // is a synthetic but genuine camera + microphone capture.
+      await room.localParticipant.enableCameraAndMicrophone();
+      for (const pub of room.localParticipant.trackPublications.values()) {
+        window.__state.published[pub.kind] = true;
+        log('published ' + pub.kind);
+      }
+    } catch (e) {
+      window.__state.errors.push(String(e));
+      log('ERROR ' + e);
+    }
+  })();
+</script>
