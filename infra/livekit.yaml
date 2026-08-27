@@ -1,0 +1,55 @@
+# V-CIP MVP — LiveKit server configuration (local development).
+#
+# NO SECRETS IN THIS FILE. The API key/secret pair is injected by
+# docker compose through the LIVEKIT_KEYS environment variable, which
+# livekit-server merges over this configuration.
+#
+# Per D24 the integration code is identical for local self-hosted LiveKit
+# and for the LiveKit Cloud demo project; only environment values change.
+
+port: 7880
+
+rtc:
+  # Single TCP + single UDP port. Avoids publishing a large UDP range, which
+  # Docker Desktop handles poorly.
+  tcp_port: 7881
+  udp_port: 7882
+
+  # A container cannot discover a host-reachable address on its own.
+  # Candidates are advertised as 127.0.0.1, which matches the loopback-bound
+  # ports published by docker-compose.yml, so a browser on this machine can
+  # dial them. The egress container shares this container's network namespace
+  # (see docker-compose.yml) precisely so that 127.0.0.1 resolves for it too.
+  #
+  # For LAN or multi-device testing, use LiveKit Cloud instead (D24).
+  use_external_ip: false
+  node_ip: 127.0.0.1
+
+redis:
+  address: redis:6379
+  # db 1 is the LiveKit <-> Egress control plane. Application state lives in
+  # db 0 and is never mixed with it (D2).
+  db: 1
+
+# D7 — participant and room lifecycle events are delivered to the Control API,
+# which verifies the signature with the same key pair. The API runs on the host
+# with hot reload, so the container reaches it via host.docker.internal.
+#
+# api_key here names which key signs the webhook. The name is a public
+# identifier, not a credential; the secret arrives via LIVEKIT_KEYS.
+# If LIVEKIT_API_KEY in infra/.env is changed, change this name to match.
+webhook:
+  api_key: devkey
+  urls:
+    - http://host.docker.internal:3001/internal/livekit/webhook
+
+room:
+  # Rooms are created by the Control API when an agent accepts a session.
+  # auto_create stays on so the Day-0 spikes (T04/T05) can join directly.
+  auto_create: true
+  empty_timeout: 300
+  departure_timeout: 20
+
+logging:
+  level: info
+  json: false

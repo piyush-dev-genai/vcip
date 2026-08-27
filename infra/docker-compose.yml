@@ -1,0 +1,205 @@
+# V-CIP MVP — local development infrastructure.
+#
+#   cd infra
+#   cp .env.example .env
+#   docker compose up -d
+#
+# Infrastructure only. The five application processes (api, customer, agent,
+# ai, egress) run on the host with hot reload — see docs/05-development-plan.md
+# section 8.
+#
+# No credential appears in this file, in livekit.yaml, or in egress.yaml.
+# Everything sensitive is interpolated from infra/.env, which is gitignored.
+#
+#   docker compose ps          status
+#   docker compose logs -f     follow
+#   docker compose down        stop, keep data
+#   docker compose down -v     stop and DESTROY all named volumes
+
+name: vcip
+
+services:
+  # ---------------------------------------------------------------- postgres
+  # Authoritative store for durable business state (D1). Bound to loopback so
+  # it is never reachable from outside this machine.
+  postgres:
+    image: postgres:16-alpine
+    container_name: vcip-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in infra/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/.env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in infra/.env}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ------------------------------------------------------------------- redis
+  # Temporary / real-time state only (D2). Never authoritative.
+  #   db 0  application: presence, queue signalling, idempotency
+  #   db 1  LiveKit <-> Egress control plane
+  # Bound to loopback for the same reason as postgres.
+  redis:
+    image: redis:7-alpine
+    container_name: vcip-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--save', '60 1']
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ------------------------------------------------------------------- minio
+  # Local S3-compatible object storage. Production uses real S3; the client
+  # code and bucket layout are identical, only the endpoint changes.
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: vcip-minio
+    restart: unless-stopped
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in infra/.env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in infra/.env}
+      MINIO_REGION: ${S3_REGION:-ap-south-1}
+    ports:
+      - '127.0.0.1:${MINIO_API_PORT:-9000}:9000'
+      - '127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  # One-shot bucket provisioning. Runs to completion and exits; it is not a
+  # long-running service. Without it MinIO starts empty and the first export
+  # would fail. Reuses the minio image, which already ships mc.
+  minio-init:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: vcip-minio-init
+    restart: 'no'
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+      BUCKET_TEMP: ${S3_BUCKET_TEMP:-vcip-temp}
+      BUCKET_ENTERPRISE: ${S3_BUCKET_ENTERPRISE:-vcip-enterprise}
+    # The minio image declares VOLUME /data. This job never writes there, so
+    # back it with tmpfs rather than leaving an anonymous volume behind.
+    tmpfs:
+      - /data
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        mc mb --ignore-existing "local/$$BUCKET_TEMP"
+        mc mb --ignore-existing "local/$$BUCKET_ENTERPRISE"
+        echo "buckets ready:"
+        mc ls local
+
+  # ----------------------------------------------------------------- livekit
+  # Self-hosted for local development; LiveKit Cloud for the demo (D24).
+  # Media never passes through the Control API (I: video path constraint).
+  #
+  # This service also publishes the egress health port, because the egress
+  # container shares this container's network namespace — see below.
+  livekit:
+    image: livekit/livekit-server:v1.13.6
+    container_name: vcip-livekit
+    restart: unless-stopped
+    command: ['--config', '/etc/livekit.yaml']
+    environment:
+      # livekit-server merges LIVEKIT_KEYS over the config file, which is how
+      # the secret stays out of livekit.yaml. Format is "<name>: <secret>".
+      LIVEKIT_KEYS: '${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in infra/.env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in infra/.env}'
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - '127.0.0.1:${LIVEKIT_PORT:-7880}:7880'
+      - '127.0.0.1:${LIVEKIT_RTC_TCP_PORT:-7881}:7881'
+      - '127.0.0.1:${LIVEKIT_RTC_UDP_PORT:-7882}:7882/udp'
+      - '127.0.0.1:${EGRESS_HEALTH_PORT:-7981}:7981'
+    extra_hosts:
+      # The Control API runs on the host, so the D7 webhook needs a route out.
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:7880/']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  # ------------------------------------------------------------------ egress
+  # Records the room composite (R17). apps/egress then watermarks, hashes,
+  # signs and exports the file — egress itself holds no application state.
+  #
+  # network_mode joins the livekit container's network namespace. livekit.yaml
+  # advertises 127.0.0.1 ICE candidates so a browser on this host can dial the
+  # published RTC ports; sharing the namespace makes those same candidates
+  # resolve for egress, which is otherwise the one client that could not use
+  # them. Consequence: egress cannot declare its own ports, so 7981 is
+  # published by the livekit service above.
+  egress:
+    image: livekit/egress:v1.14.1
+    container_name: vcip-egress
+    restart: unless-stopped
+    network_mode: 'service:livekit'
+    # Chrome's sandbox needs SYS_ADMIN, and the compositor needs real shared
+    # memory. Both are documented LiveKit egress requirements.
+    cap_add:
+      - SYS_ADMIN
+    shm_size: 1gb
+    environment:
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in infra/.env}
+      EGRESS_CONFIG_FILE: /home/egress/egress.rendered.yaml
+    volumes:
+      - ./egress.yaml:/etc/egress.yaml:ro
+    # egress.yaml is committed without the secret. Render it into the
+    # container's own writable home at startup, then hand off to the image's
+    # real entrypoint. The rendered copy never leaves the container.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -euo pipefail
+        umask 077
+        sed "s|__LIVEKIT_API_SECRET__|$${LIVEKIT_API_SECRET}|g" \
+          /etc/egress.yaml > /home/egress/egress.rendered.yaml
+        exec /entrypoint.sh
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:7981/']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

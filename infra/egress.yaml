@@ -1,0 +1,29 @@
+# V-CIP MVP — LiveKit Egress configuration (local development).
+#
+# NO SECRETS IN THIS FILE. api_secret is injected at container start from
+# infra/.env; see the egress service in docker-compose.yml.
+#
+# Egress records the room composite (R17: both participants, one file). The
+# S3 destination is supplied per request by the Control API, so no storage
+# credentials live here either.
+#
+# Egress holds NO PostgreSQL and NO application Redis credentials. The redis
+# entry below is the LiveKit control plane on db 1 only; every state change
+# still goes through /internal/* on the Control API (D10).
+
+# The key NAME is a public identifier. The secret is substituted at startup.
+api_key: devkey
+api_secret: __LIVEKIT_API_SECRET__
+
+# The egress container shares the livekit container's network namespace, so
+# LiveKit is reachable on loopback and the 127.0.0.1 ICE candidates that
+# livekit.yaml advertises resolve correctly from here.
+ws_url: ws://127.0.0.1:7880
+insecure: true
+
+redis:
+  address: redis:6379
+  db: 1
+
+health_port: 7981
+log_level: info
