@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../common/auth/auth.module.js';
+import { EventsModule } from '../common/events/events.module.js';
 import { GeoModule } from '../common/geo/geo.module.js';
 import { IdempotencyModule } from '../common/idempotency/idempotency.module.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
@@ -16,10 +17,11 @@ import { SessionsService } from './sessions.service.js';
  *
  * `AuthModule` supplies the guards and the customer-token secret;
  * `IdempotencyModule` the interceptor for the two idempotent routes;
- * `TenantsModule` the preflight thresholds; `GeoModule` the `GeoProvider`.
+ * `TenantsModule` the preflight thresholds; `GeoModule` the `GeoProvider`;
+ * `EventsModule` the append-only session-event writer (T13).
  */
 @Module({
-  imports: [AuthModule, IdempotencyModule, TenantsModule, GeoModule],
+  imports: [AuthModule, IdempotencyModule, TenantsModule, GeoModule, EventsModule],
   controllers: [SessionsController],
   providers: [{ provide: SESSION_REPOSITORY, useClass: DrizzleSessionRepository }, SessionsService],
   exports: [SessionsService, SESSION_REPOSITORY],

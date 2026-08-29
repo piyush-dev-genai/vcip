@@ -25,11 +25,14 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { SessionEventType, SessionStatus } from '@vcip/shared';
 import { and, eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import { sessionEvents, sessions } from '../../db/schema.js';
+import { sessions } from '../../db/schema.js';
 import { InjectDatabase } from '../common/db/db.tokens.js';
+import type { EventActorType, EventPayload, SessionEventWriter } from '../common/events/index.js';
+import { InjectSessionEventWriter } from '../common/events/index.js';
 
-/** `session_events.actor_type`. Mirrors the ACTOR_TYPES CHECK in the schema. */
-export type EventActorType = 'CUSTOMER' | 'AGENT' | 'SYSTEM' | 'ENTERPRISE';
+// Re-exported, not redefined: T13 moved the actor union to the event writer,
+// where it is derived from the schema's own ACTOR_TYPES rather than retyped.
+export type { EventActorType };
 
 /**
  * A session row, as the API reads it.
@@ -75,16 +78,20 @@ export interface SessionRow {
 /**
  * An event to append alongside a mutation.
  *
- * `payload` is `unknown`-typed on purpose at this layer: what may go in it is a
- * sensitive-data question the caller answers (no coordinates, no credentials,
- * no document content), and the repository's job is to store what it is given,
- * not to re-litigate the boundary. See the payload builders in `sessions.service.ts`.
+ * The tenant and session are absent because the repository already knows them —
+ * they come from the mutation being performed, never from the event, so the two
+ * cannot disagree.
+ *
+ * `payload` is `EventPayload`, which is a JSON type rather than
+ * `Record<string, unknown>`: the column is JSONB, and a value that cannot
+ * survive serialisation should fail to compile rather than serialise to `null`.
+ * Which keys are permitted is the writer's boundary (T13), not this file's.
  */
 export interface SessionEventInput {
   readonly type: SessionEventType;
   readonly actorType: EventActorType;
   readonly actorId: string | null;
-  readonly payload: Record<string, unknown>;
+  readonly payload: EventPayload;
 }
 
 export interface CreateSessionInput {
@@ -192,7 +199,13 @@ const toRow = (row: SelectedSession): SessionRow => row as unknown as SessionRow
 
 @Injectable()
 export class DrizzleSessionRepository implements SessionRepository {
-  constructor(@InjectDatabase() private readonly db: PostgresJsDatabase) {}
+  constructor(
+    @InjectDatabase() private readonly db: PostgresJsDatabase,
+    // T13's shared writer. It is handed this method's transaction, so the
+    // session write and its event still commit or roll back together — the
+    // property the inline inserts used to provide, now provided in one place.
+    @InjectSessionEventWriter() private readonly events: SessionEventWriter,
+  ) {}
 
   async create(input: CreateSessionInput): Promise<SessionRow> {
     return this.db.transaction(async (tx) => {
@@ -216,14 +229,19 @@ export class DrizzleSessionRepository implements SessionRepository {
       /* c8 ignore next */
       if (row === undefined) throw new Error('session insert returned no row');
 
-      await tx.insert(sessionEvents).values({
-        tenantId: input.tenantId,
-        sessionId: input.id,
-        eventType: input.event.type,
-        actorType: input.event.actorType,
-        actorId: input.event.actorId,
-        payload: input.event.payload,
-      });
+      // The session was inserted a moment ago in this same transaction, so the
+      // writer's `WHERE EXISTS` ownership check sees it.
+      await this.events.append(
+        {
+          tenantId: input.tenantId,
+          sessionId: input.id,
+          eventType: input.event.type,
+          actorType: input.event.actorType,
+          actorId: input.event.actorId,
+          payload: input.event.payload,
+        },
+        tx,
+      );
 
       return toRow(row);
     });
@@ -269,14 +287,17 @@ export class DrizzleSessionRepository implements SessionRepository {
       // happen.
       if (row === undefined) return null;
 
-      await tx.insert(sessionEvents).values({
-        tenantId: command.tenantId,
-        sessionId: command.sessionId,
-        eventType: command.event.type,
-        actorType: command.event.actorType,
-        actorId: command.event.actorId,
-        payload: command.event.payload,
-      });
+      await this.events.append(
+        {
+          tenantId: command.tenantId,
+          sessionId: command.sessionId,
+          eventType: command.event.type,
+          actorType: command.event.actorType,
+          actorId: command.event.actorId,
+          payload: command.event.payload,
+        },
+        tx,
+      );
 
       return toRow(row);
     });
