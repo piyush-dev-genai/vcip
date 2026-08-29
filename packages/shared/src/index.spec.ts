@@ -51,6 +51,19 @@ const PUBLIC_SURFACE: readonly string[] = [
   'DomainError',
   'isDomainError',
   'toApiErrorBody',
+
+  // session events
+  'SessionEventType',
+  'SESSION_EVENT_TYPES',
+  'isSessionEventType',
+
+  // wire-contract schemas
+  'createSessionSchema',
+  'consentSchema',
+  'preflightSchema',
+  'locationSchema',
+  'PREFLIGHT_MEASUREMENTS',
+  'LOCATION_CHECKS',
 ];
 
 describe('package entry point', () => {

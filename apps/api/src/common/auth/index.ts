@@ -8,5 +8,6 @@ export * from './api-key.store.js';
 export * from './customer-token.guard.js';
 export * from './internal-token.guard.js';
 export * from './tenant.guard.js';
+export * from './any-of.guard.js';
 export * from './tenant-scope.js';
 export * from './tokens.js';

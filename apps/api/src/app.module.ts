@@ -5,6 +5,8 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module.js';
 import { LoggingModule } from './common/logging/logging.module.js';
 import { RedisModule } from './common/redis/redis.module.js';
 import { HealthModule } from './health/health.module';
+import { SessionsModule } from './sessions/sessions.module.js';
+import { TenantsModule } from './tenants/tenants.module.js';
 
 /**
  * Root module of the Control API.
@@ -13,11 +15,20 @@ import { HealthModule } from './health/health.module';
  * so correlation is established before any guard runs and every failure - the
  * authentication ones included - carries a request id.
  *
- * Business modules (tenants, sessions, queue, agents, checklist, billing,
- * livekit, realtime, exports, webhooks, internal) are added in later tasks.
- * See docs/05-development-plan.md section 6.1.
+ * The remaining business modules (queue, agents, checklist, billing, livekit,
+ * realtime, exports, webhooks, internal) are added in later tasks. See
+ * docs/05-development-plan.md section 6.1.
  */
 @Module({
-  imports: [LoggingModule, DbModule, RedisModule, AuthModule, IdempotencyModule, HealthModule],
+  imports: [
+    LoggingModule,
+    DbModule,
+    RedisModule,
+    AuthModule,
+    IdempotencyModule,
+    TenantsModule,
+    SessionsModule,
+    HealthModule,
+  ],
 })
 export class AppModule {}

@@ -2,7 +2,7 @@
   "name": "@vcip/shared",
   "version": "0.0.0",
   "private": true,
-  "description": "V-CIP shared domain logic — enums, state machine, billing, errors. Pure; no I/O.",
+  "description": "V-CIP shared domain logic — enums, state machine, billing, errors, events, API schemas. Pure; no I/O.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -22,5 +22,8 @@
   "devDependencies": {
     "typescript": "^6.0.3",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "zod": "^4.5.1"
   }
 }
