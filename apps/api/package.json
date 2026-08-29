@@ -8,13 +8,18 @@
     "build": "nest build",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
     "@vcip/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
@@ -25,6 +30,7 @@
     "@swc/core": "^1.7.0",
     "@types/node": "^22.0.0",
     "@types/supertest": "^6.0.2",
+    "drizzle-kit": "^0.31.10",
     "supertest": "^7.0.0",
     "unplugin-swc": "^1.5.1",
     "vitest": "^3.0.0"
