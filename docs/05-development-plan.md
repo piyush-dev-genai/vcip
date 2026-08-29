@@ -253,7 +253,7 @@ gate and report.
 | T03 | 0 | `infra/docker-compose.yml` — postgres, redis, livekit, livekit-egress, minio | done |
 | T04 | 0 | (!) Spike: two browsers -> room-composite egress -> mp4 in MinIO -> FFmpeg watermark | done |
 | T05 | 0 | (!) Spike: `livekit-rtc` install + frame decode on dev machine -> decides D23 | done |
-| T06 | 1 | `@vcip/shared`: enums, state-machine, billing, errors — pure, unit-tested | todo |
+| T06 | 1 | `@vcip/shared`: enums, state-machine, billing, errors — pure, unit-tested | done |
 | T07 | 1 | Drizzle schema: 15 tables, D3/D11 columns, indexes, partial offer-expiry index | todo |
 | T08 | 1 | `db/seed.ts`: tenant, 2 agents, checklist template, API key, webhook endpoint | todo |
 | T09 | 1 | Four auth guards (ApiKey / CustomerToken / AgentJwt / Internal) + tenant guard | todo |
