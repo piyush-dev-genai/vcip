@@ -258,7 +258,7 @@ gate and report.
 | T08 | 1 | `db/seed.ts`: tenant, 2 agents, checklist template, API key, webhook endpoint | done |
 | T09 | 1 | Four auth guards (ApiKey / CustomerToken / AgentJwt / Internal) + tenant guard | done |
 | T10 | 1 | Error filter + pino redaction list | done |
-| T11 | 1 | Idempotency interceptor (Redis, 24h) | todo |
+| T11 | 1 | Idempotency interceptor (Redis, 24h) | done |
 | T12 | 1 | `sessions`: create, consent, preflight with server-side thresholds, location, get, abort | todo |
 | T13 | 1 | `session_events` append-only writer | todo |
 | T14 | 1 | Customer UI screens 1-4 | todo |

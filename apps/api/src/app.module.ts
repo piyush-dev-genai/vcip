@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from './common/auth/auth.module.js';
 import { DbModule } from './common/db/db.module.js';
+import { IdempotencyModule } from './common/idempotency/idempotency.module.js';
 import { LoggingModule } from './common/logging/logging.module.js';
+import { RedisModule } from './common/redis/redis.module.js';
 import { HealthModule } from './health/health.module';
 
 /**
@@ -16,6 +18,6 @@ import { HealthModule } from './health/health.module';
  * See docs/05-development-plan.md section 6.1.
  */
 @Module({
-  imports: [LoggingModule, DbModule, AuthModule, HealthModule],
+  imports: [LoggingModule, DbModule, RedisModule, AuthModule, IdempotencyModule, HealthModule],
 })
 export class AppModule {}
