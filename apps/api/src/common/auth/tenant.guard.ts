@@ -29,6 +29,7 @@ import type { AuthenticatedRequest } from './auth-context.js';
 // resolves this constructor argument by, so erasing it at compile time makes
 // the module unresolvable at boot. A unit test that constructs the guard
 // directly cannot catch that, which is why the build is booted before release.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- see above
 import { TenantScope } from './tenant-scope.js';
 
 /** Where a client might try to assert a tenant. */
