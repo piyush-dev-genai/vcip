@@ -501,7 +501,11 @@ export const billingEntries = pgTable(
  * The export *state* lives on `sessions.export_status`, not here, so the
  * webhook eligibility join stays a single-table condition.
  */
-export const exports = pgTable(
+// Named `sessionExports`, not `exports`: a module compiled to CommonJS already
+// reserves `exports` at top level, so the shorter name makes the whole schema
+// file uncompilable the moment the API imports it. The SQL table is still
+// `exports` - this is a binding name, not a schema change.
+export const sessionExports = pgTable(
   'exports',
   {
     sessionId: uuid('session_id')
@@ -694,7 +698,7 @@ export const schema = {
   sessionChecklistItems,
   sessionAiSummaries,
   billingEntries,
-  exports,
+  exports: sessionExports,
   webhookEndpoints,
   webhookEvents,
   webhookDeliveries,

@@ -3,13 +3,14 @@
   "exclude": [
     "node_modules",
     "dist",
-    "db",
+    "db/seed.ts",
+    "db/migrations",
     "drizzle.config.ts",
     "**/*.spec.ts",
     "src/test-setup.ts"
   ],
   "compilerOptions": {
-    "rootDir": "./src"
+    "rootDir": "."
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "db/schema.ts"]
 }
