@@ -1,0 +1,237 @@
+/*
+ * One stylesheet for the agent portal, shared with the customer app.
+ *
+ * No framework: the repository has none, and four screens do not justify
+ * introducing a build-chain dependency. Plain custom properties and a handful
+ * of classes are enough, and they keep the markup readable.
+ *
+ * Sized for a phone first — this is a screen someone opens on the device whose
+ * camera they are about to use.
+ */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #16181d;
+  --ink-soft: #5b6070;
+  --line: #dfe2e8;
+  --accent: #1f5fd8;
+  --accent-ink: #ffffff;
+  --ok: #1a7f4b;
+  --warn: #a35a00;
+  --bad: #b3261e;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --surface: #1d2027;
+    --ink: #f2f3f5;
+    --ink-soft: #a4a9b6;
+    --line: #2f333d;
+    --accent: #7aa2f7;
+    --accent-ink: #10131a;
+    --ok: #59c68d;
+    --warn: #e0a458;
+    --bad: #f2837a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  line-height: 1.55;
+}
+
+.shell {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+}
+
+h1 {
+  font-size: 1.35rem;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin: 1.25rem 0 0.4rem;
+}
+
+p {
+  margin: 0.5rem 0;
+}
+
+.muted {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.step {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 0 0.5rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+}
+
+button {
+  font: inherit;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.65rem 1.1rem;
+  cursor: pointer;
+  min-height: 2.75rem;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+ul.plain {
+  margin: 0.5rem 0;
+  padding-left: 1.1rem;
+}
+
+.notice {
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+  margin-top: 1rem;
+}
+
+.notice.bad {
+  border-left-color: var(--bad);
+}
+
+.notice.warn {
+  border-left-color: var(--warn);
+}
+
+.notice.ok {
+  border-left-color: var(--ok);
+}
+
+.notice h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.gates {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.gates li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.gates li:first-child {
+  border-top: 0;
+}
+
+.mark {
+  font-weight: 600;
+  min-width: 1.4rem;
+}
+
+.mark.done {
+  color: var(--ok);
+}
+
+.mark.todo {
+  color: var(--ink-soft);
+}
+
+.state {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+}
+
+.ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  word-break: break-all;
+}
+
+/*
+ * Agent portal additions.
+ *
+ * The stylesheet above is shared with the customer app, unchanged, so the two
+ * surfaces look like one product. Only the login form needs anything the
+ * customer flow never had: labelled text inputs.
+ */
+
+.field {
+  display: block;
+  margin-top: 0.9rem;
+}
+
+.field span {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  margin-bottom: 0.25rem;
+}
+
+.field input {
+  font: inherit;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.7rem;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

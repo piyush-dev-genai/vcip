@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AgentsModule } from './agents/agents.module.js';
 import { AuthModule } from './common/auth/auth.module.js';
 import { DbModule } from './common/db/db.module.js';
 import { IdempotencyModule } from './common/idempotency/idempotency.module.js';
@@ -15,7 +16,7 @@ import { TenantsModule } from './tenants/tenants.module.js';
  * so correlation is established before any guard runs and every failure - the
  * authentication ones included - carries a request id.
  *
- * The remaining business modules (queue, agents, checklist, billing, livekit,
+ * The remaining business modules (queue, checklist, billing, livekit,
  * realtime, exports, webhooks, internal) are added in later tasks. See
  * docs/05-development-plan.md section 6.1.
  */
@@ -28,6 +29,7 @@ import { TenantsModule } from './tenants/tenants.module.js';
     IdempotencyModule,
     TenantsModule,
     SessionsModule,
+    AgentsModule,
     HealthModule,
   ],
 })

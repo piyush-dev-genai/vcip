@@ -1233,7 +1233,123 @@ Billing:
 
 
 
-\## 15.1 Agent Availability
+\## 15.1 Agent Login
+
+
+
+\### Endpoint
+
+
+
+```http
+
+POST /v1/agent/login
+
+```
+
+
+
+\### Authentication
+
+
+
+None. This is the route that mints an agent credential.
+
+
+
+\### Request
+
+
+
+```json
+
+{
+
+&#x20; "tenant\_slug": "demo-bank",
+
+&#x20; "email": "agent1@example.com",
+
+&#x20; "password": "..."
+
+}
+
+```
+
+
+
+`tenant\_slug` is required because `users.email` is unique per tenant, not
+
+globally — `users\_tenant\_email\_unique` is on `(tenant\_id, email)`, so an email
+
+alone does not identify a user. The slug selects which tenant's users to look
+
+in and grants nothing on its own; the password must still match a row that
+
+belongs to that tenant. The tenant in the issued token comes from the matched
+
+database row, never from the request.
+
+
+
+\### Response
+
+
+
+```json
+
+{
+
+&#x20; "data": {
+
+&#x20;   "access\_token": "...",
+
+&#x20;   "token\_type": "Bearer",
+
+&#x20;   "expires\_at": "2026-08-31T21:00:00.000Z"
+
+&#x20; }
+
+}
+
+```
+
+
+
+`expires\_at` is ISO-8601 UTC and matches the token's `exp`. There is no refresh
+
+token and no revocation: agent tokens are short-lived and stateless, as R8's
+
+model is for the customer token.
+
+
+
+\### Failure
+
+
+
+Every rejection is the same `401 UNAUTHENTICATED` with the same message —
+
+wrong password, unknown email, unknown tenant, disabled user, non-active
+
+tenant, a user who is not an `AGENT`, and a user with no password. Since the
+
+caller chooses the tenant slug, a distinguishable response would be a
+
+cross-tenant user-enumeration oracle, which invariant I8 forbids.
+
+
+
+Login does not change presence. The agent becomes available only by calling
+
+`POST /v1/agent/availability`.
+
+
+
+\---
+
+
+
+\## 15.2 Agent Availability
 
 
 
@@ -1314,6 +1430,109 @@ Agent availability is temporary state and is maintained in Redis.
 
 
 \---
+
+
+
+\## 15.3 Agent Heartbeat
+
+
+
+\### Endpoint
+
+
+
+```http
+
+POST /v1/agent/heartbeat
+
+```
+
+
+
+\### Authentication
+
+
+
+Agent JWT.
+
+
+
+\### Request
+
+
+
+```json
+
+{}
+
+```
+
+
+
+No fields. The agent is taken from the token; there is nothing for the client
+
+to assert, and a body carrying `status`, `agent\_id`, or `languages` is
+
+rejected with `400 VALIDATION\_ERROR` rather than silently ignored.
+
+
+
+\### Response
+
+
+
+```json
+
+{
+
+&#x20; "data": {
+
+&#x20;   "agent\_id": "agent-uuid",
+
+&#x20;   "status": "AVAILABLE",
+
+&#x20;   "last\_seen": "2026-08-31T09:00:10.000Z"
+
+&#x20; }
+
+}
+
+```
+
+
+
+\### Behaviour
+
+
+
+The heartbeat refreshes an **existing** presence's `last\_seen` and re-arms its
+
+TTL. It never creates one and never writes `status`:
+
+
+
+- an agent who chose `UNAVAILABLE` is not resurrected by a heartbeat still in
+
+&#x20; flight,
+
+- an agent the server has marked `BUSY` stays `BUSY`.
+
+
+
+When there is no presence — the agent is unavailable, or the key expired — the
+
+response is `200` with `status: "UNAVAILABLE"` and `last\_seen: null`, and no
+
+key is created.
+
+
+
+The TTL itself is not exposed. It is the liveness mechanism's own detail, and a
+
+client that could read it would start making decisions with it.
+
+
+
 
 
 

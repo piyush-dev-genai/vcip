@@ -263,7 +263,7 @@ gate and report.
 | T13 | 1 | `session_events` append-only writer | done |
 | T14 | 1 | Customer UI screens 1-4 | done |
 | T15 | 2 | Redis ZSET queue, position, post-commit enqueue with retry | done |
-| T16 | 2 | Agent login, availability, heartbeat, presence TTL, internal BUSY | todo |
+| T16 | 2 | Agent login, availability, heartbeat, presence TTL, internal BUSY | done |
 | T17 | 2 | `GET /v1/agent/queue` | todo |
 | T18 | 2 | Claim `QUEUED -> OFFERED` (conditional update) | todo |
 | T19 | 2 | Accept `OFFERED -> IN_CALL` (conditional update, offer not expired) | todo |

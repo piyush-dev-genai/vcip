@@ -14,7 +14,8 @@
     "db:push": "drizzle-kit push",
     "db:seed": "tsx db/seed.ts",
     "db:verify-events": "tsx scripts/verify-events.ts",
-    "db:verify-queue": "tsx scripts/verify-queue.ts"
+    "db:verify-queue": "tsx scripts/verify-queue.ts",
+    "db:verify-presence": "tsx scripts/verify-presence.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

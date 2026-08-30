@@ -68,6 +68,36 @@ describe('corsPolicyFromEnv', () => {
     expect(corsPolicyFromEnv({}).origin).toEqual([]);
   });
 
+  it('reads the agent portal from AGENT_ORIGIN (T16)', () => {
+    const policy = corsPolicyFromEnv({ AGENT_ORIGIN: 'http://localhost:3002' });
+    expect(policy.origin).toEqual(['http://localhost:3002']);
+  });
+
+  it('allows both apps when both are set', () => {
+    const policy = corsPolicyFromEnv({
+      CUSTOMER_ORIGIN: 'http://localhost:3000',
+      AGENT_ORIGIN: 'http://localhost:3002',
+    });
+    expect(policy.origin).toEqual(['http://localhost:3000', 'http://localhost:3002']);
+  });
+
+  it('does not let one app widen the list by leaving the other blank', () => {
+    // An empty string must contribute nothing, not an empty entry that a
+    // sloppy join could turn into a wildcard-ish blank origin.
+    expect(corsPolicyFromEnv({ CUSTOMER_ORIGIN: '', AGENT_ORIGIN: '' }).origin).toEqual([]);
+    expect(
+      corsPolicyFromEnv({ CUSTOMER_ORIGIN: '   ', AGENT_ORIGIN: 'http://localhost:3002' }).origin,
+    ).toEqual(['http://localhost:3002']);
+  });
+
+  it('deduplicates when both variables name the same origin', () => {
+    const policy = corsPolicyFromEnv({
+      CUSTOMER_ORIGIN: 'http://localhost:3000',
+      AGENT_ORIGIN: 'http://localhost:3000',
+    });
+    expect(policy.origin).toEqual(['http://localhost:3000']);
+  });
+
   it('never enables credentials', () => {
     // The apps authenticate with an Authorization header they set themselves.
     // Allowing ambient credentials would add a CSRF surface for nothing.

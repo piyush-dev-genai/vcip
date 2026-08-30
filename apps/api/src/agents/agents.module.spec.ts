@@ -1,0 +1,92 @@
+/**
+ * Every provider T16 adds, resolved through Nest's real DI container.
+ *
+ * Same reason as `sessions.module.spec.ts`: the HTTP suite builds its own
+ * providers, so it cannot see a wiring mistake — an `import type` that erases
+ * an injection token, or a constructor argument Nest reads as `Object`. This
+ * resolves the production graph and touches each instance.
+ *
+ * `PresenceService` is the one at risk here: its fourth constructor argument is
+ * an optional clock with no injection token, which is exactly the shape that
+ * broke `StaticGeoProvider` in T12.
+ */
+
+import { Global, Module } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import type { TestingModule } from '@nestjs/testing';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { API_KEY_STORE } from '../common/auth/api-key.store.js';
+import type { AuthConfig } from '../common/auth/auth.config.js';
+import { AUTH_CONFIG } from '../common/auth/auth.config.js';
+import { DATABASE } from '../common/db/db.tokens.js';
+import { LoggingModule } from '../common/logging/logging.module.js';
+import { REDIS } from '../common/redis/redis.tokens.js';
+import { AGENT_REPOSITORY } from './agent.repository.js';
+import { AgentsController } from './agents.controller.js';
+import { AgentsModule } from './agents.module.js';
+import { AgentsService } from './agents.service.js';
+import { PRESENCE_REPOSITORY } from './presence.repository.js';
+import { PresenceService } from './presence.service.js';
+
+/** Secrets are fake and never leave this file. 32+ chars, as the config demands. */
+const TEST_AUTH_CONFIG: AuthConfig = {
+  customerTokenSecret: 'FAKE-customer-secret-for-di-tests-000001',
+  agentJwtSecret: 'FAKE-agent-secret-for-di-tests-00000002',
+  internalToken: 'FAKE-internal-token-for-di-tests-0000003',
+  customerTokenTtlSeconds: 7200,
+  agentJwtTtlSeconds: 3600,
+};
+
+@Global()
+@Module({
+  providers: [{ provide: DATABASE, useValue: {} }],
+  exports: [DATABASE],
+})
+class FakeDbModule {}
+
+@Global()
+@Module({
+  providers: [{ provide: REDIS, useValue: {} }],
+  exports: [REDIS],
+})
+class FakeRedisModule {}
+
+describe('AgentsModule resolves through the container', () => {
+  let moduleRef: TestingModule;
+
+  beforeEach(async () => {
+    moduleRef = await Test.createTestingModule({
+      imports: [LoggingModule, FakeDbModule, FakeRedisModule, AgentsModule],
+    })
+      .overrideProvider(AUTH_CONFIG)
+      .useValue(TEST_AUTH_CONFIG)
+      .overrideProvider(API_KEY_STORE)
+      .useValue({ findByPrefix: () => Promise.resolve(null) })
+      .compile();
+  });
+
+  it('constructs the module without a boot error', () => {
+    expect(moduleRef).toBeDefined();
+  });
+
+  it('resolves the controller with both services', () => {
+    expect(moduleRef.get(AgentsController, { strict: false })).toBeInstanceOf(AgentsController);
+  });
+
+  it('resolves AgentsService', () => {
+    expect(moduleRef.get(AgentsService, { strict: false })).toBeInstanceOf(AgentsService);
+  });
+
+  it('resolves PresenceService despite its optional clock argument', () => {
+    const service = moduleRef.get(PresenceService, { strict: false });
+    expect(service).toBeInstanceOf(PresenceService);
+    // Resolution alone was not enough in T12: call something that uses the
+    // argument Nest could not have supplied.
+    expect(typeof service.markBusy).toBe('function');
+  });
+
+  it('resolves both repositories behind their tokens', () => {
+    expect(moduleRef.get(AGENT_REPOSITORY, { strict: false })).toBeDefined();
+    expect(moduleRef.get(PRESENCE_REPOSITORY, { strict: false })).toBeDefined();
+  });
+});

@@ -64,6 +64,10 @@ const PUBLIC_SURFACE: readonly string[] = [
   'locationSchema',
   'PREFLIGHT_MEASUREMENTS',
   'LOCATION_CHECKS',
+  'agentLoginSchema',
+  'agentAvailabilitySchema',
+  'agentHeartbeatSchema',
+  'AGENT_AVAILABILITY_VALUES',
 ];
 
 describe('package entry point', () => {

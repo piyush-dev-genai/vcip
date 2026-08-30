@@ -90,13 +90,23 @@ export function parseOrigins(raw: string | undefined): readonly string[] {
 /**
  * Build the policy from the environment.
  *
- * `CUSTOMER_ORIGIN` accepts one origin or several separated by commas. The
- * agent portal is not listed: it has no API routes until T16, and adding an
- * origin before anything needs it is how allow-lists rot.
+ * Two variables, each accepting one origin or several separated by commas:
+ * `CUSTOMER_ORIGIN` for the customer app and `AGENT_ORIGIN` for the agent
+ * portal, which gained its first API routes in T16. They are separate rather
+ * than one merged list because the two apps are deployed to different origins
+ * and an operator should be able to change one without retyping the other.
+ *
+ * Both unset still means NO origin is allowed. A missing allow-list stops the
+ * browser rather than opening the API, and CORS grants no authority in either
+ * case — every route still requires its own credential.
  */
 export function corsPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): CorsPolicy {
   return Object.freeze({
-    origin: parseOrigins(env['CUSTOMER_ORIGIN']),
+    origin: parseOrigins(
+      [env['CUSTOMER_ORIGIN'], env['AGENT_ORIGIN']]
+        .filter((value): value is string => value !== undefined && value.trim().length > 0)
+        .join(','),
+    ),
     methods: ALLOWED_METHODS,
     allowedHeaders: ALLOWED_HEADERS,
     credentials: false as const,

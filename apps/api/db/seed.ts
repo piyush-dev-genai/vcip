@@ -18,6 +18,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+// The application's own KDF, not a copy. A second hashing implementation here
+// could drift from the verifier by one parameter and lock every seeded agent
+// out with no failing test to show for it.
+import { hashPassword } from '../src/common/auth/password.js';
 import {
   agentProfiles,
   checklistTemplates,
@@ -128,7 +132,40 @@ async function main(): Promise<void> {
     //
     // Matched on (tenant_id, email) — the same unique index that keeps one
     // tenant's agents out of another's.
+    //
+    // T16 gave these rows a password (`users.password_hash`). Where it comes
+    // from is deliberate:
+    //
+    //   - `VCIP_DEMO_AGENT_PASSWORD` set  -> hashed and stored on every run, so
+    //     a developer can choose one, put it in .env, and keep it across
+    //     re-seeds.
+    //   - unset -> one is generated for agents that have no hash yet, printed
+    //     once at the end, and never stored in plaintext or written to a file.
+    //     Agents that already have a hash keep it, so re-running the seed does
+    //     not silently change the password someone is using.
+    //
+    // Only the hash reaches PostgreSQL, and nothing here logs the plaintext
+    // except that single deliberate line.
+    const chosenPassword = process.env.VCIP_DEMO_AGENT_PASSWORD;
+    let issuedPassword: string | null = null;
+    const passwordFor = async (existingHash: string | null): Promise<string | null> => {
+      if (chosenPassword !== undefined && chosenPassword.length > 0) {
+        return hashPassword(chosenPassword);
+      }
+      if (existingHash !== null) return null;
+      issuedPassword ??= randomBytes(18).toString('base64url');
+      return hashPassword(issuedPassword);
+    };
+
     for (const agent of DEMO.agents) {
+      const [existing] = await db
+        .select({ passwordHash: users.passwordHash })
+        .from(users)
+        .where(and(eq(users.tenantId, tenant.id), eq(users.email, agent.email)))
+        .limit(1);
+
+      const passwordHash = await passwordFor(existing?.passwordHash ?? null);
+
       const [user] = await db
         .insert(users)
         .values({
@@ -136,16 +173,26 @@ async function main(): Promise<void> {
           email: agent.email,
           role: 'AGENT',
           status: 'ACTIVE',
-          // No password hash: agent login is a later task's concern.
+          passwordHash,
         })
         .onConflictDoUpdate({
           target: [users.tenantId, users.email],
-          set: { status: 'ACTIVE', updatedAt: new Date() },
+          set: {
+            status: 'ACTIVE',
+            updatedAt: new Date(),
+            // Only when there is a new hash to write. `undefined` leaves the
+            // column alone; writing null would delete a working credential.
+            ...(passwordHash === null ? {} : { passwordHash }),
+          },
         })
         .returning({ id: users.id, createdAt: users.createdAt, updatedAt: users.updatedAt });
 
       if (user === undefined) throw new Error(`user upsert returned no row for ${agent.email}`);
       (isNewRow(user) ? created : kept)('agent            ', `${agent.email}  ${user.id}`);
+      log(
+        `          password ${passwordHash === null ? 'kept' : 'set'}` +
+          (chosenPassword === undefined ? '' : ' from VCIP_DEMO_AGENT_PASSWORD'),
+      );
 
       // -------------------------------------------------- 3. agent profile
       await db
@@ -291,6 +338,16 @@ async function main(): Promise<void> {
     const [sessionCount] = await db.select({ n: sql<number>`count(*)::int` }).from(sessions);
     if (sessionCount !== undefined && sessionCount.n > 0) {
       log('\n   note: sessions exist in this database. The seed did not create them.');
+    }
+
+    if (issuedPassword !== null) {
+      log('\n' + '-'.repeat(72));
+      log('DEVELOPMENT AGENT PASSWORD - shown once, not stored, not committed:');
+      log('\n   ' + issuedPassword + '\n');
+      log(`Log in at POST /v1/agent/login with tenant_slug "${DEMO.tenantSlug}" and any of:`);
+      for (const agent of DEMO.agents) log('   ' + agent.email);
+      log('\nSet VCIP_DEMO_AGENT_PASSWORD to choose your own and keep it across re-seeds.');
+      log('-'.repeat(72));
     }
 
     if (issuedKey !== null) {
