@@ -122,6 +122,14 @@ export interface SessionMutation {
   readonly gpsAccuracyM?: number;
   readonly geoCheckedAt?: Date;
   readonly ipCountry?: string | null;
+  /**
+   * Set once, on `CREATED -> QUEUED` (T15).
+   *
+   * Authoritative for queue ordering: the Redis ZSET score is this value, so a
+   * retry or a reconciliation minutes later restores the customer's original
+   * place rather than sending them to the back. Nothing rewrites it.
+   */
+  readonly queuedAt?: Date;
   readonly endedAt?: Date;
 }
 

@@ -77,6 +77,7 @@ describe('the credential', () => {
     const { calls, fetchImpl } = recorder({ body: { data: {} } });
     const api = client(fetchImpl);
     await api.getSession(SESSION);
+    await api.joinQueue(SESSION);
     await api.submitConsent(SESSION, { accepted: true, consent_version: 'v1' });
     await api.submitPreflight(SESSION, MEASUREMENTS);
     await api.submitLocation(SESSION, {
@@ -87,7 +88,7 @@ describe('the credential', () => {
     });
     await api.abortSession(SESSION);
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     for (const call of calls) {
       expect(call.url).not.toContain(TOKEN);
       expect(call.url).not.toContain('token=');
@@ -184,6 +185,89 @@ describe('routes and payloads', () => {
       } as never),
     ).rejects.toThrow();
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ----------------------------------------------------------------- queue
+
+describe('joinQueue', () => {
+  it('posts to the queue route with an Idempotency-Key', async () => {
+    const { calls, fetchImpl } = recorder({
+      body: { data: { session_id: SESSION, status: 'QUEUED', queue_position: 3 } },
+    });
+    const result = await client(fetchImpl).joinQueue(SESSION);
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/sessions/${SESSION}/queue`);
+    expect(calls[0]?.init?.method).toBe('POST');
+    expect(headersOf(calls[0]?.init)['Idempotency-Key']).toBe('fixed-key-for-test');
+    expect(result.queue_position).toBe(3);
+  });
+
+  it('sends no body — the server owns every field of the outcome', async () => {
+    const { calls, fetchImpl } = recorder({ body: { data: {} } });
+    await client(fetchImpl).joinQueue(SESSION);
+    expect(calls[0]?.init?.body).toBeUndefined();
+  });
+
+  it('passes a null queue_position through rather than substituting a number', async () => {
+    // Redis was unavailable. The session is queued; the position is unknown.
+    const { fetchImpl } = recorder({
+      body: { data: { session_id: SESSION, status: 'QUEUED', queue_position: null } },
+    });
+    const result = await client(fetchImpl).joinQueue(SESSION);
+
+    expect(result.status).toBe('QUEUED');
+    expect(result.queue_position).toBeNull();
+  });
+
+  it('reuses one key per session, so a double-click cannot queue twice', async () => {
+    let issued = 0;
+    const { calls, fetchImpl } = recorder({ body: { data: {} } });
+    const api = createSessionApi({
+      baseUrl: BASE,
+      token: () => TOKEN,
+      fetchImpl,
+      newIdempotencyKey: () => `key-${String((issued += 1))}`,
+    });
+    await api.joinQueue(SESSION);
+    await api.joinQueue(SESSION);
+
+    expect(headersOf(calls[0]?.init)['Idempotency-Key']).toBe('key-1');
+    expect(headersOf(calls[1]?.init)['Idempotency-Key']).toBe('key-1');
+  });
+
+  it('uses a different key from abort, which is a different intent', async () => {
+    let issued = 0;
+    const { calls, fetchImpl } = recorder({ body: { data: {} } });
+    const api = createSessionApi({
+      baseUrl: BASE,
+      token: () => TOKEN,
+      fetchImpl,
+      newIdempotencyKey: () => `key-${String((issued += 1))}`,
+    });
+    await api.joinQueue(SESSION);
+    await api.abortSession(SESSION);
+
+    expect(headersOf(calls[0]?.init)['Idempotency-Key']).not.toBe(
+      headersOf(calls[1]?.init)['Idempotency-Key'],
+    );
+  });
+
+  it('surfaces an ineligible session as an ApiError the UI can map', async () => {
+    const { fetchImpl } = recorder({
+      status: 422,
+      body: {
+        error: {
+          code: 'SESSION_NOT_ELIGIBLE_FOR_QUEUE',
+          message: 'Consent, preflight and location validation are required.',
+          request_id: 'req-9',
+        },
+      },
+    });
+    await expect(client(fetchImpl).joinQueue(SESSION)).rejects.toMatchObject({
+      status: 422,
+      code: 'SESSION_NOT_ELIGIBLE_FOR_QUEUE',
+    });
   });
 });
 

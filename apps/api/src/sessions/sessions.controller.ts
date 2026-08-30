@@ -49,6 +49,7 @@ import type {
   CreateSessionResult,
   LocationResultBody,
   PreflightResultBody,
+  QueueResult,
 } from './sessions.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { SessionsService } from './sessions.service.js';
@@ -137,6 +138,26 @@ export class SessionsController {
     return data(
       await this.sessions.location(asCustomer(actor), id, body, ip.length > 0 ? ip : null),
     );
+  }
+
+  /**
+   * Join the queue (contract §11).
+   *
+   * Idempotent (D13). The transition commits in PostgreSQL first and Redis is
+   * updated after; a Redis failure yields `queue_position: null` on an
+   * otherwise successful `200`, never an error — the session is queued either
+   * way, and saying otherwise would contradict a committed transaction.
+   */
+  @Post(':id/queue')
+  @HttpCode(200)
+  @UseGuards(CustomerTokenGuard, TenantGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent('POST /v1/sessions/{id}/queue')
+  async queue(
+    @Auth() actor: Actor,
+    @Param('id', sessionIdParam()) id: string,
+  ): Promise<ApiData<QueueResult>> {
+    return data(await this.sessions.queue(asCustomer(actor), id));
   }
 
   /**

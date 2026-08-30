@@ -52,6 +52,8 @@ import type {
   SessionRepository,
   SessionRow,
 } from './session.repository.js';
+import { QUEUE_REPOSITORY, RedisQueueRepository } from '../queue/queue.repository.js';
+import { QueueService } from '../queue/queue.service.js';
 import { SESSION_REPOSITORY } from './session.repository.js';
 import { SessionsController } from './sessions.controller.js';
 import { SessionsService } from './sessions.service.js';
@@ -218,6 +220,12 @@ class InMemorySessionRepository implements SessionRepository {
 
   async update(command: GuardedUpdate): Promise<SessionRow | null> {
     await this.hop();
+    if (this.failNextUpdate) {
+      // Zero rows affected — what the real guarded UPDATE returns when another
+      // writer moved the session first. The transaction rolls back with it.
+      this.failNextUpdate = false;
+      return null;
+    }
     const row = this.rows.get(command.sessionId);
     // The full WHERE clause. Dropping any one of these four is the mutation the
     // concurrency and tenant-isolation tests are meant to catch.
@@ -246,6 +254,10 @@ class InMemorySessionRepository implements SessionRepository {
     });
     return updated;
   }
+
+  /** Test-only: make the next guarded update lose its race, as a concurrent
+   *  writer would. */
+  failNextUpdate = false;
 
   /** Test-only helper: force a session into a state a later task would create. */
   place(sessionId: string, patch: Partial<SessionRow>): void {
@@ -310,6 +322,56 @@ class FakeRedis {
   keys(): string[] {
     return [...this.data.keys()];
   }
+
+  // ------------------------------------------------------------ sorted sets
+  //
+  // Enough of the ZSET commands for the queue projection (T15), with the same
+  // semantics the real server has: `ZADD` on an existing member updates its
+  // score rather than duplicating it, and `ZRANK` orders by score ascending
+  // with equal scores broken by lexical order of the member.
+
+  private readonly zsets = new Map<string, Map<string, number>>();
+
+  /** Set when a test wants ZADD to fail after the database has committed. */
+  zaddFailure: Error | null = null;
+
+  async zadd(key: string, score: number, member: string): Promise<number> {
+    await this.hop();
+    if (this.zaddFailure !== null) throw this.zaddFailure;
+    const set = this.zsets.get(key) ?? new Map<string, number>();
+    const isNew = !set.has(member);
+    set.set(member, score);
+    this.zsets.set(key, set);
+    return isNew ? 1 : 0;
+  }
+
+  async zrank(key: string, member: string): Promise<number | null> {
+    await this.hop();
+    if (this.zaddFailure !== null) throw this.zaddFailure;
+    const set = this.zsets.get(key);
+    if (set === undefined || !set.has(member)) return null;
+    const ordered = [...set.entries()].sort(
+      (a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
+    );
+    return ordered.findIndex(([id]) => id === member);
+  }
+
+  /** Test-only: inspect a queue without going through the adapter. */
+  zsetMembers(key: string): { member: string; score: number }[] {
+    const set = this.zsets.get(key);
+    if (set === undefined) return [];
+    return [...set.entries()]
+      .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([member, score]) => ({ member, score }));
+  }
+
+  zsetKeys(): string[] {
+    return [...this.zsets.keys()];
+  }
+
+  clearZsets(): void {
+    this.zsets.clear();
+  }
 }
 
 // ------------------------------------------------------------- application
@@ -337,6 +399,8 @@ const redis = new FakeRedis();
     TenantsService,
     { provide: GEO_PROVIDER, useValue: geo },
     { provide: SESSION_REPOSITORY, useValue: repository },
+    { provide: QUEUE_REPOSITORY, useClass: RedisQueueRepository },
+    QueueService,
     SessionsService,
   ],
 })
@@ -400,6 +464,7 @@ describe('session lifecycle over HTTP', () => {
     repository.rows.clear();
     repository.events.length = 0;
     repository.createCalls = 0;
+    repository.failNextUpdate = false;
     tenantStore.configs.set(TENANT_A, defaultConfig(TENANT_A));
     tenantStore.configs.set(TENANT_B, defaultConfig(TENANT_B));
     tenantStore.checklistTemplateId = 'template-1';
@@ -407,6 +472,8 @@ describe('session lifecycle over HTTP', () => {
     geo.seenIps = [];
     geo.calls = 0;
     for (const key of redis.keys()) await redis.del(key);
+    redis.clearZsets();
+    redis.zaddFailure = null;
     logged = '';
 
     const stream = new Writable({
@@ -1196,6 +1263,333 @@ describe('session lifecycle over HTTP', () => {
   });
 
   // -------------------------------------------------------------- abort
+
+  describe('POST /v1/sessions/:id/queue', () => {
+    const join = async (sessionId: string, token: string, key = idem()) =>
+      request(app.getHttpServer())
+        .post(`/v1/sessions/${sessionId}/queue`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({});
+
+    /** A session that has passed all three customer gates. */
+    const eligible = async (language = 'en') => {
+      const created = await createSession(API_KEY_A, {
+        external_ref: 'loan-12345',
+        language,
+      });
+      const id = created.body.data.session_id as string;
+      repository.place(id, { consentOk: true, preflightOk: true, geoOk: true });
+      return { id, token: created.body.data.customer_token as string };
+    };
+
+    const keyFor = (tenantId: string, language: string) => `queue:${tenantId}:${language}`;
+
+    // ------------------------------------------------------ the transition
+
+    it('takes an eligible CREATED session to QUEUED', async () => {
+      const { id, token } = await eligible();
+      const response = await join(id, token);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe('QUEUED');
+      expect(repository.rows.get(id)?.status).toBe('QUEUED');
+    });
+
+    it('assigns queued_at and increments version', async () => {
+      const { id, token } = await eligible();
+      const before = repository.rows.get(id)?.version ?? 0;
+      await join(id, token);
+
+      const row = repository.rows.get(id);
+      expect(row?.queuedAt).toBeInstanceOf(Date);
+      expect(row?.version).toBe(before + 1);
+    });
+
+    it('appends exactly one SESSION_QUEUED event', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+
+      const events = repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED');
+      expect(events).toHaveLength(1);
+      expect(events[0]?.actorType).toBe('CUSTOMER');
+      expect(events[0]?.payload).toEqual({ language: 'en' });
+    });
+
+    it('refuses when consent has not passed', async () => {
+      const { id, token } = await eligible();
+      repository.place(id, { consentOk: false });
+      const response = await join(id, token);
+
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe(ErrorCode.SESSION_NOT_ELIGIBLE_FOR_QUEUE);
+      expect(repository.rows.get(id)?.status).toBe('CREATED');
+    });
+
+    it('refuses when preflight has not passed', async () => {
+      const { id, token } = await eligible();
+      repository.place(id, { preflightOk: false });
+      const response = await join(id, token);
+      expect(response.status).toBe(422);
+      expect(repository.rows.get(id)?.status).toBe('CREATED');
+    });
+
+    it('refuses when location has not passed', async () => {
+      const { id, token } = await eligible();
+      repository.place(id, { geoOk: false });
+      const response = await join(id, token);
+      expect(response.status).toBe(422);
+      expect(repository.rows.get(id)?.status).toBe('CREATED');
+    });
+
+    it('writes nothing to Redis when the transition is refused', async () => {
+      const { id, token } = await eligible();
+      repository.place(id, { geoOk: false });
+      await join(id, token);
+      expect(redis.zsetKeys()).toEqual([]);
+    });
+
+    it('refuses to re-queue an OFFERED session', async () => {
+      // `OFFERED -> QUEUED` is a legal edge in the shared state machine — T20's
+      // offer-expiry sweeper uses it — so `canTransition` alone would permit
+      // this. The `CREATED` guard is what stops a *customer* driving it and
+      // pulling their session back from the agent who just claimed it.
+      const { id, token } = await eligible();
+      repository.place(id, { status: SessionStatus.OFFERED });
+
+      const response = await join(id, token);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe(ErrorCode.SESSION_INVALID_STATE);
+      expect(repository.rows.get(id)?.status).toBe('OFFERED');
+      expect(repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED')).toHaveLength(0);
+      expect(redis.zsetKeys()).toEqual([]);
+    });
+
+    it('refuses to re-queue an IN_CALL session', async () => {
+      const { id, token } = await eligible();
+      repository.place(id, { status: SessionStatus.IN_CALL, connectedAt: new Date() });
+      const response = await join(id, token);
+
+      expect(response.status).toBe(409);
+      expect(repository.rows.get(id)?.status).toBe('IN_CALL');
+      expect(redis.zsetKeys()).toEqual([]);
+    });
+
+    it('writes nothing to Redis when the transaction rolls back', async () => {
+      // The ordering test that matters, and the one a naive suite misses: the
+      // gates pass, the status check passes, and then the guarded UPDATE loses
+      // its race. Nothing committed, so nothing may be in the queue — a member
+      // here would be claimable by an agent for a session that is still
+      // `CREATED`.
+      const { id, token } = await eligible();
+      repository.failNextUpdate = true;
+
+      const response = await join(id, token);
+
+      expect(response.status).toBe(409);
+      expect(repository.rows.get(id)?.status).toBe('CREATED');
+      expect(repository.rows.get(id)?.queuedAt).toBeNull();
+      expect(repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED')).toHaveLength(0);
+      expect(redis.zsetKeys()).toEqual([]);
+    });
+
+    it('refuses from a terminal state with 409, not 422', async () => {
+      const { id, token } = await eligible();
+      repository.place(id, { status: SessionStatus.PREFLIGHT_FAILED });
+      const response = await join(id, token);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe(ErrorCode.SESSION_INVALID_STATE);
+      expect(redis.zsetKeys()).toEqual([]);
+    });
+
+    // --------------------------------------------------------- the queue
+
+    it('adds the session to queue:{tenant}:{language} at its queued_at score', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+
+      const members = redis.zsetMembers(keyFor(TENANT_A, 'en'));
+      expect(members).toHaveLength(1);
+      expect(members[0]?.member).toBe(id);
+      expect(members[0]?.score).toBe(repository.rows.get(id)?.queuedAt?.getTime());
+    });
+
+    it('reports position 1 for the first session and 2 for the second', async () => {
+      const first = await eligible();
+      const second = await eligible();
+
+      const one = await join(first.id, first.token);
+      const two = await join(second.id, second.token);
+
+      expect(one.body.data.queue_position).toBe(1);
+      expect(two.body.data.queue_position).toBe(2);
+    });
+
+    it('keeps different languages in different queues', async () => {
+      const en = await eligible('en');
+      const hi = await eligible('hi');
+      const enResponse = await join(en.id, en.token);
+      const hiResponse = await join(hi.id, hi.token);
+
+      // Each is first in its own queue, not first and second in a shared one.
+      expect(enResponse.body.data.queue_position).toBe(1);
+      expect(hiResponse.body.data.queue_position).toBe(1);
+      expect(redis.zsetKeys().sort()).toEqual(
+        [keyFor(TENANT_A, 'en'), keyFor(TENANT_A, 'hi')].sort(),
+      );
+    });
+
+    it('scopes the queue key to the authenticated tenant', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+      expect(redis.zsetKeys()).toEqual([keyFor(TENANT_A, 'en')]);
+      expect(redis.zsetKeys()[0]).not.toContain(TENANT_B);
+    });
+
+    // ------------------------------------------------- already queued (§7)
+
+    it('answers an already-QUEUED session with 200, not 409', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+      // A fresh idempotency key: this is the retry that arrives after T11's
+      // record has expired, not a replay.
+      const again = await join(id, token, idem());
+
+      expect(again.status).toBe(200);
+      expect(again.body.data.status).toBe('QUEUED');
+    });
+
+    it('does not append a second SESSION_QUEUED event', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+      await join(id, token, idem());
+
+      expect(repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED')).toHaveLength(1);
+    });
+
+    it('does not move queued_at', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+      const original = repository.rows.get(id)?.queuedAt;
+      await join(id, token, idem());
+
+      expect(repository.rows.get(id)?.queuedAt).toEqual(original);
+    });
+
+    it('does not bump version a second time', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+      const version = repository.rows.get(id)?.version;
+      await join(id, token, idem());
+      expect(repository.rows.get(id)?.version).toBe(version);
+    });
+
+    it('reconciles missing Redis membership on a repeat request', async () => {
+      const { id, token } = await eligible();
+      await join(id, token);
+      // Simulate the member being lost after the commit.
+      redis.clearZsets();
+      expect(redis.zsetKeys()).toEqual([]);
+
+      const again = await join(id, token, idem());
+
+      expect(again.body.data.queue_position).toBe(1);
+      expect(redis.zsetMembers(keyFor(TENANT_A, 'en'))[0]?.member).toBe(id);
+    });
+
+    // ---------------------------------------- redis failure after commit
+
+    it('still returns 200 when the Redis enqueue fails', async () => {
+      const { id, token } = await eligible();
+      redis.zaddFailure = new Error('ECONNREFUSED');
+      const response = await join(id, token);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe('QUEUED');
+    });
+
+    it('reports queue_position null rather than a fabricated number', async () => {
+      const { id, token } = await eligible();
+      redis.zaddFailure = new Error('ECONNREFUSED');
+      const response = await join(id, token);
+
+      expect(response.body.data.queue_position).toBeNull();
+      expect(response.body.data.queue_position).not.toBe(0);
+    });
+
+    it('leaves the session durably QUEUED in PostgreSQL', async () => {
+      // The whole point: Redis cannot undo a committed business transition.
+      const { id, token } = await eligible();
+      redis.zaddFailure = new Error('ECONNREFUSED');
+      await join(id, token);
+
+      expect(repository.rows.get(id)?.status).toBe('QUEUED');
+      expect(repository.rows.get(id)?.queuedAt).toBeInstanceOf(Date);
+      expect(repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED')).toHaveLength(1);
+    });
+
+    it('recovers the membership at the original score once Redis returns', async () => {
+      const { id, token } = await eligible();
+      redis.zaddFailure = new Error('ECONNREFUSED');
+      await join(id, token);
+      const queuedAt = repository.rows.get(id)?.queuedAt;
+
+      redis.zaddFailure = null;
+      const recovered = await request(app.getHttpServer())
+        .get(`/v1/sessions/${id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(recovered.body.data.queue_position).toBe(1);
+      expect(redis.zsetMembers(keyFor(TENANT_A, 'en'))[0]?.score).toBe(queuedAt?.getTime());
+    });
+
+    // -------------------------------------------------------- the route
+
+    it('requires a customer token', async () => {
+      const { id } = await eligible();
+      const response = await request(app.getHttpServer())
+        .post(`/v1/sessions/${id}/queue`)
+        .set('Idempotency-Key', idem())
+        .send({});
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects a token scoped to another session', async () => {
+      const { id } = await eligible();
+      const other = await eligible();
+      const response = await join(id, other.token);
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects a token from another tenant with a 404', async () => {
+      const { id } = await eligible();
+      const response = await join(id, customerTokenFor(TENANT_B, id));
+      expect(response.status).toBe(404);
+    });
+
+    it('requires an Idempotency-Key', async () => {
+      const { id, token } = await eligible();
+      const response = await request(app.getHttpServer())
+        .post(`/v1/sessions/${id}/queue`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(response.status).toBe(400);
+    });
+
+    it('replays the original response for a repeated key', async () => {
+      const { id, token } = await eligible();
+      const key = idem();
+      const first = await join(id, token, key);
+      const second = await join(id, token, key);
+
+      expect(second.status).toBe(first.status);
+      expect(second.body).toEqual(first.body);
+      // One transition, not two.
+      expect(repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED')).toHaveLength(1);
+    });
+  });
 
   describe('POST /v1/sessions/:id/abort', () => {
     const abort = async (sessionId: string, token: string, key = idem()) =>

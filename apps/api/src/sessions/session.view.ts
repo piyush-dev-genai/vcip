@@ -30,11 +30,12 @@ export interface SessionView {
   readonly preflight_ok: boolean;
   readonly geo_ok: boolean;
   /**
-   * Null until T15 builds the Redis queue.
+   * Position in the Redis queue, or null.
    *
-   * Present in the response now because the contract's §12 shape includes it
-   * and a client polling this endpoint should not have to handle the key
-   * appearing later. Null means "not available", never "position zero".
+   * Null means "not available": either the session is not queued, or Redis
+   * could not answer. It never means "position zero", and it never contradicts
+   * `status` — `status` is the statement about whether the session is queued,
+   * and it comes from PostgreSQL (D1).
    */
   readonly queue_position: number | null;
   readonly agent_connected: boolean;
@@ -50,11 +51,16 @@ const iso = (value: Date | null): string | null => (value === null ? null : valu
 /**
  * Project a session row for the customer or agent reading it.
  *
- * The row comes from PostgreSQL, which is authoritative (D1). Redis contributes
- * nothing here — the queue position stays null until T15, rather than being
- * derived from a cache this endpoint would then be trusting.
+ * The row comes from PostgreSQL, which is authoritative (D1). The queue
+ * position is the one field that does not, so it arrives as an **argument**
+ * rather than being fetched here: this function stays pure and synchronous,
+ * testable without Redis, and incapable of deciding anything about the queue.
+ * `SessionsService` asks `QueueService` and passes the answer in.
+ *
+ * It defaults to null so every caller that has no queue context — and every
+ * test written before T15 — still produces a valid view.
  */
-export function toSessionView(row: SessionRow): SessionView {
+export function toSessionView(row: SessionRow, queuePosition: number | null = null): SessionView {
   return {
     session_id: row.id,
     status: row.status,
@@ -63,7 +69,7 @@ export function toSessionView(row: SessionRow): SessionView {
     consent_ok: row.consentOk,
     preflight_ok: row.preflightOk,
     geo_ok: row.geoOk,
-    queue_position: null,
+    queue_position: queuePosition,
     // Derived from the timestamp the LiveKit webhook sets, not from Redis.
     agent_connected: row.connectedAt !== null && row.endedAt === null,
     queued_at: iso(row.queuedAt),

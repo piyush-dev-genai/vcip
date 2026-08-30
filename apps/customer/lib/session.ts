@@ -65,3 +65,16 @@ export interface AbortResult {
   readonly bill_category: string | null;
   readonly bill_amount_paise: number;
 }
+
+/**
+ * `POST /v1/sessions/{id}/queue`.
+ *
+ * `queue_position` is null when Redis could not answer. It never means "not
+ * queued" — `status` is the statement about that, and it comes from a committed
+ * PostgreSQL transaction.
+ */
+export interface QueueResult {
+  readonly session_id: string;
+  readonly status: SessionStatus;
+  readonly queue_position: number | null;
+}

@@ -25,6 +25,7 @@ import type {
   ConsentResult,
   LocationResult,
   PreflightResult,
+  QueueResult,
   SessionView,
 } from './session';
 
@@ -52,6 +53,7 @@ export interface SessionApi {
   submitConsent(sessionId: string, body: ConsentRequest): Promise<ConsentResult>;
   submitPreflight(sessionId: string, body: PreflightRequest): Promise<PreflightResult>;
   submitLocation(sessionId: string, body: LocationRequest): Promise<LocationResult>;
+  joinQueue(sessionId: string): Promise<QueueResult>;
   abortSession(sessionId: string): Promise<AbortResult>;
 }
 
@@ -91,19 +93,21 @@ export function createSessionApi(deps: SessionApiDeps): SessionApi {
   const newKey = deps.newIdempotencyKey ?? defaultIdempotencyKey;
 
   /**
-   * One idempotency key per session, for the lifetime of this client.
+   * One idempotency key per intent per session, for this client's lifetime.
    *
    * A fresh key per call would be wrong: two keys are two operations as far as
    * T11 is concerned, so a double-click or a retry after a dropped connection
-   * would race the terminal transition a second time instead of replaying the
-   * first answer. Aborting a session is one intent, and it gets one key.
+   * would attempt the transition a second time instead of replaying the first
+   * answer. Joining the queue is one intent and aborting is another; each gets
+   * one stable key.
    */
-  const abortKeys = new Map<string, string>();
-  const abortKeyFor = (sessionId: string): string => {
-    const existing = abortKeys.get(sessionId);
+  const keysByIntent = new Map<string, string>();
+  const keyFor = (intent: string, sessionId: string): string => {
+    const cacheKey = `${intent}:${sessionId}`;
+    const existing = keysByIntent.get(cacheKey);
     if (existing !== undefined) return existing;
     const created = newKey();
-    abortKeys.set(sessionId, created);
+    keysByIntent.set(cacheKey, created);
     return created;
   };
 
@@ -195,12 +199,22 @@ export function createSessionApi(deps: SessionApiDeps): SessionApi {
       });
     },
 
+    joinQueue(sessionId) {
+      // No body: the server takes the tenant from the credential and the
+      // session from the path. There is nothing for the client to assert, and
+      // `queue_position` in the response is the server's, not a request field.
+      return request<QueueResult>(buildUrl(deps.baseUrl, sessionId, '/queue'), {
+        method: 'POST',
+        idempotencyKey: keyFor('queue', sessionId),
+      });
+    },
+
     abortSession(sessionId) {
       // T11 requires the header on this route, and the key is stable per
       // session so a repeated press replays the first response (D13).
       return request<AbortResult>(buildUrl(deps.baseUrl, sessionId, '/abort'), {
         method: 'POST',
-        idempotencyKey: abortKeyFor(sessionId),
+        idempotencyKey: keyFor('abort', sessionId),
       });
     },
   };

@@ -18,8 +18,10 @@
  *
  *   - No billing rows. T35 owns those. `abort` reports the amount the shared
  *     table derives for the outcome, and writes nothing.
- *   - No queue entries, no Redis. T15 owns the queue; PostgreSQL is the only
- *     source of truth consulted here (D1/D2).
+ *   - No queue *ordering* decisions. T15 added `queue`, but the Redis
+ *     projection lives behind `QueueService`: this service commits the
+ *     PostgreSQL transition and then asks the queue to reflect it. Redis is
+ *     never consulted to decide whether a transition may happen (D1/D2).
  *   - No status assignment from a client. Every status this service writes is
  *     computed from the operation and the current row.
  */
@@ -54,6 +56,8 @@ import { CUSTOMER_ACTOR_CLAIM } from '../common/auth/customer-token.guard.js';
 import type { GeoProvider } from '../common/geo/geo.provider.js';
 import { InjectGeoProvider } from '../common/geo/geo.provider.js';
 import { setContextSession } from '../common/logging/request-context.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { QueueService } from '../queue/queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- see above
 import { TenantsService } from '../tenants/tenants.service.js';
 import { evaluateLocation } from './location.js';
@@ -105,6 +109,19 @@ export interface LocationResultBody {
   readonly failed_checks?: readonly string[];
 }
 
+/**
+ * `POST /v1/sessions/{id}/queue` (contract §11).
+ *
+ * `queue_position` is nullable for one reason only: Redis could not answer. The
+ * session is `QUEUED` either way — that is what `status` says, and it comes
+ * from a committed PostgreSQL transaction.
+ */
+export interface QueueResult {
+  readonly session_id: string;
+  readonly status: string;
+  readonly queue_position: number | null;
+}
+
 export interface AbortResult {
   readonly session_id: string;
   readonly status: string;
@@ -134,6 +151,9 @@ export class SessionsService {
     private readonly scope: TenantScope,
     @InjectAuthConfig() private readonly authConfig: AuthConfig,
     @InjectGeoProvider() private readonly geo: GeoProvider,
+    // The Redis queue projection (T15). Consulted only after PostgreSQL has
+    // answered, and never able to fail an operation PostgreSQL committed.
+    private readonly queueProjection: QueueService,
   ) {}
 
   // ------------------------------------------------------------- create
@@ -397,6 +417,82 @@ export class SessionsService {
     };
   }
 
+  // -------------------------------------------------------------- queue
+
+  /**
+   * `POST /v1/sessions/{id}/queue` — the customer joins the queue (T15).
+   *
+   * The ordering is the whole point, and it is not negotiable:
+   *
+   *   BEGIN; update to QUEUED; append SESSION_QUEUED; COMMIT
+   *   then ZADD
+   *
+   * Redis is touched only after the transaction commits. A `ZADD` inside the
+   * transaction would attach a write that cannot be rolled back to one that
+   * can, and a rolled-back queue transition would leave a phantom member that
+   * an agent could claim.
+   *
+   * The converse — committed in PostgreSQL, absent from Redis — is *expected*
+   * and safe. `enqueue` never throws, the response reports
+   * `queue_position: null`, and the next position lookup reconciles it.
+   *
+   * An already-`QUEUED` session is not an error. It returns `200` with the
+   * existing state, appends no second event, and leaves `queued_at` untouched.
+   * That is what makes a retry safe once T11's 24-hour idempotency record has
+   * expired, and it matches how `consent` already treats a repeated identical
+   * submission. It is a deliberate departure from `abort`, which does answer a
+   * wrong state with `409`: aborting twice is a second attempt at a terminal
+   * transition, whereas queueing twice is a request for a state the session is
+   * already in.
+   */
+  async queue(actor: CustomerActor, sessionId: string): Promise<QueueResult> {
+    const session = await this.load(actor, sessionId);
+
+    // Already queued. Reconcile Redis if it is missing, and report.
+    if (session.status === Status.QUEUED) {
+      return {
+        session_id: session.id,
+        status: session.status,
+        queue_position: await this.queueProjection.positionFor(session),
+      };
+    }
+
+    this.requireStatus(session, Status.CREATED, 'This session cannot join the queue.');
+
+    // The three gates, checked against the row rather than against anything the
+    // client sent. `422`, not `409`: the request is well formed and the session
+    // exists, but a business precondition is unmet (contract §11).
+    if (!session.consentOk || !session.preflightOk || !session.geoOk) {
+      throw new DomainError(
+        ErrorCode.SESSION_NOT_ELIGIBLE_FOR_QUEUE,
+        'Consent, preflight and location validation are required.',
+      );
+    }
+
+    const queuedAt = new Date();
+    const updated = await this.mutate(session, {
+      to: Status.QUEUED,
+      set: { queuedAt },
+      event: {
+        type: SessionEventType.SESSION_QUEUED,
+        actorType: 'CUSTOMER',
+        actorId: null,
+        // Flags and metadata only (§15). The language is the queue partition,
+        // which is what makes this event explain the placement it caused.
+        payload: { language: session.language },
+      },
+    });
+
+    // Committed. From here nothing may fail the operation.
+    const position = await this.queueProjection.enqueue(updated);
+
+    return {
+      session_id: updated.id,
+      status: updated.status,
+      queue_position: position,
+    };
+  }
+
   // ---------------------------------------------------------------- get
 
   /**
@@ -408,7 +504,12 @@ export class SessionsService {
    */
   async get(actor: Actor, sessionId: string): Promise<SessionView> {
     const session = await this.load(actor, sessionId);
-    return toSessionView(session);
+    // The queue position is the one field PostgreSQL cannot answer. Asking here
+    // is also where a missing member gets reconciled: the moment someone wants
+    // to know where a session sits is the moment it is worth making sure it is
+    // actually there. Never throws, and never reports a position for a session
+    // PostgreSQL does not call `QUEUED`.
+    return toSessionView(session, await this.queueProjection.positionFor(session));
   }
 
   // -------------------------------------------------------------- abort

@@ -163,6 +163,15 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
     });
   };
 
+  const onJoinQueue = (): void => {
+    void submit(async () => {
+      // The response carries the position, but the refresh that follows is what
+      // the screen renders — server state, read back, exactly as every other
+      // step in this flow works.
+      await api.joinQueue(sessionId);
+    });
+  };
+
   const onAbort = (): void => {
     void submit(async () => {
       setAborted(await api.abortSession(sessionId));
@@ -231,6 +240,7 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
           refreshing={refreshing}
           lastCheckedAt={lastCheckedAt}
           aborted={aborted}
+          onJoinQueue={onJoinQueue}
           onAbort={onAbort}
           onRefresh={() => {
             void manualRefresh();

@@ -209,8 +209,11 @@ describe('coordinates are handled in one place and kept out of storage', () => {
 // -------------------------------------------------------------- scope
 
 describe('T14 scope', () => {
-  it('never calls the queue endpoint, which is T15', () => {
-    expect(offenders(sources, /\/queue\b/)).toEqual([]);
+  it('calls the queue endpoint from the API client and nowhere else', () => {
+    // T15 wires the Join Queue action. The route belongs in `lib/api.ts` with
+    // every other request — a component reaching for it directly would be the
+    // scattered `fetch` the client exists to prevent.
+    expect(offenders(sources, /'\/queue'/)).toEqual(['lib/api.ts']);
   });
 
   it('calls none of the endpoints later tasks add', () => {
