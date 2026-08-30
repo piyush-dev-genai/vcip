@@ -18,7 +18,7 @@ import { Writable } from 'node:stream';
 import { Module } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { AgentPresence, ErrorCode } from '@vcip/shared';
+import { AgentPresence, ErrorCode, SessionStatus } from '@vcip/shared';
 import request from 'supertest';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AGENT_ACTOR_CLAIM, AgentJwtGuard } from '../common/auth/agent-jwt.guard.js';
@@ -37,8 +37,25 @@ import { ApiErrorFilter } from '../common/errors/api-error.filter.js';
 import { createLogger } from '../common/logging/logger.js';
 import { LoggingModule } from '../common/logging/logging.module.js';
 import { LOGGER } from '../common/logging/logging.tokens.js';
+import { queueKey } from '../queue/queue.keys.js';
+import type {
+  QueueCandidate,
+  QueueEntry,
+  QueueMember,
+  QueueRepository,
+} from '../queue/queue.repository.js';
+import { QUEUE_REPOSITORY } from '../queue/queue.repository.js';
+import type {
+  CreateSessionInput,
+  GuardedUpdate,
+  QueuedSessionRow,
+  SessionRepository,
+  SessionRow,
+} from '../sessions/session.repository.js';
+import { SESSION_REPOSITORY } from '../sessions/session.repository.js';
 import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './agent.repository.js';
 import { AGENT_REPOSITORY } from './agent.repository.js';
+import { AgentQueueService } from './agent-queue.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
 import { presenceKey, PRESENCE_FIELDS, PRESENCE_TTL_SECONDS } from './presence.keys.js';
@@ -166,6 +183,125 @@ class FakePresenceRepository implements PresenceRepository {
   }
 }
 
+/**
+ * A real ZSET, and deliberately no notion of session status.
+ *
+ * Redis does not know what `QUEUED` means, and neither does this. Anything
+ * seeded here comes back from `range` — which is what makes the PostgreSQL
+ * validation testable rather than assumed.
+ */
+class FakeQueueRepository implements QueueRepository {
+  readonly sets = new Map<string, Map<string, number>>();
+  readonly readKeys: string[] = [];
+
+  clear(): void {
+    this.sets.clear();
+    this.readKeys.length = 0;
+  }
+
+  seed(tenantId: string, language: string, sessionId: string, score: number): void {
+    const key = queueKey(tenantId, language);
+    const set = this.sets.get(key) ?? new Map<string, number>();
+    set.set(sessionId, score);
+    this.sets.set(key, set);
+  }
+
+  add(entry: QueueEntry): Promise<void> {
+    this.seed(entry.tenantId, entry.language, entry.sessionId, entry.score);
+    return Promise.resolve();
+  }
+
+  rank(member: QueueMember): Promise<number | null> {
+    const set = this.sets.get(queueKey(member.tenantId, member.language));
+    if (set === undefined || !set.has(member.sessionId)) return Promise.resolve(null);
+    return Promise.resolve(this.ordered(set).findIndex(([id]) => id === member.sessionId));
+  }
+
+  range(tenantId: string, language: string, limit: number): Promise<readonly QueueCandidate[]> {
+    const key = queueKey(tenantId, language);
+    this.readKeys.push(key);
+    const set = this.sets.get(key);
+    if (set === undefined || limit <= 0) return Promise.resolve([]);
+    return Promise.resolve(
+      this.ordered(set)
+        .slice(0, limit)
+        .map(([sessionId, score]) => ({ sessionId, score })),
+    );
+  }
+
+  private ordered(set: Map<string, number>): Array<[string, number]> {
+    return [...set.entries()].sort(
+      (a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
+    );
+  }
+}
+
+interface StoredSession {
+  id: string;
+  tenantId: string;
+  status: SessionStatus;
+  language: string;
+  priority: number;
+  queuedAt: Date;
+  version: number;
+}
+
+/**
+ * The session store, with a mutation counter.
+ *
+ * `writes` is what proves the read-only invariant over HTTP: the three
+ * mutating methods increment it and then throw, so a queue view that touched a
+ * session would fail loudly rather than pass quietly.
+ */
+class FakeSessionStore implements SessionRepository {
+  readonly rows = new Map<string, StoredSession>();
+  writes = 0;
+
+  clear(): void {
+    this.rows.clear();
+    this.writes = 0;
+  }
+
+  seed(session: StoredSession): void {
+    this.rows.set(session.id, session);
+  }
+
+  findQueued(
+    tenantId: string,
+    sessionIds: readonly string[],
+  ): Promise<readonly QueuedSessionRow[]> {
+    const wanted = new Set(sessionIds);
+    return Promise.resolve(
+      [...this.rows.values()]
+        .filter(
+          (row) =>
+            wanted.has(row.id) && row.tenantId === tenantId && row.status === SessionStatus.QUEUED,
+        )
+        .map((row) => ({
+          id: row.id,
+          language: row.language,
+          priority: row.priority,
+          queuedAt: row.queuedAt,
+        })),
+    );
+  }
+
+  create(_input: CreateSessionInput): Promise<SessionRow> {
+    this.writes += 1;
+    throw new Error('the queue view must not create a session');
+  }
+
+  findById(_sessionId: string): Promise<SessionRow | null> {
+    this.writes += 1;
+    throw new Error('the queue view must not read sessions one at a time');
+  }
+
+  update(_command: GuardedUpdate): Promise<SessionRow | null> {
+    this.writes += 1;
+    throw new Error('the queue view must not update a session');
+  }
+}
+
 class FakeApiKeyStore implements ApiKeyStore {
   findByPrefix(prefix: string): Promise<ApiKeyRecord | null> {
     if (prefix !== 'vcip_tenanta') return Promise.resolve(null);
@@ -183,6 +319,8 @@ class FakeApiKeyStore implements ApiKeyStore {
 // ------------------------------------------------------------- application
 
 const presenceStore = new FakePresenceRepository();
+const queueStore = new FakeQueueRepository();
+const sessionStore = new FakeSessionStore();
 
 @Module({
   imports: [LoggingModule],
@@ -202,6 +340,18 @@ const presenceStore = new FakePresenceRepository();
       useFactory: (presence: PresenceRepository, agents: AgentRepository, logger) =>
         new PresenceService(presence, agents, logger, () => new Date(clockMs)),
       inject: [PRESENCE_REPOSITORY, AGENT_REPOSITORY, LOGGER],
+    },
+    { provide: QUEUE_REPOSITORY, useValue: queueStore },
+    { provide: SESSION_REPOSITORY, useValue: sessionStore },
+    {
+      provide: AgentQueueService,
+      useFactory: (
+        queue: QueueRepository,
+        sessions: SessionRepository,
+        agents: AgentRepository,
+        logger,
+      ) => new AgentQueueService(queue, sessions, agents, logger, () => new Date(clockMs)),
+      inject: [QUEUE_REPOSITORY, SESSION_REPOSITORY, AGENT_REPOSITORY, LOGGER],
     },
   ],
 })
@@ -288,6 +438,8 @@ describe('agent identity and presence over HTTP', () => {
   beforeEach(async () => {
     clockMs = Date.parse('2026-08-31T09:00:00.000Z');
     presenceStore.keys.clear();
+    queueStore.clear();
+    sessionStore.clear();
     logged = '';
 
     const stream = new Writable({
@@ -699,6 +851,466 @@ describe('agent identity and presence over HTTP', () => {
   });
 
   // ---------------------------------------------------------- isolation
+
+  // ------------------------------------------------------------- queue
+
+  describe('GET /v1/agent/queue', () => {
+    /** 32 seconds before the frozen clock, so wait_seconds is predictable. */
+    const QUEUED_AT = Date.parse('2026-08-31T08:59:28.000Z');
+
+    const get = (token: string) =>
+      request(app.getHttpServer()).get('/v1/agent/queue').set('Authorization', `Bearer ${token}`);
+
+    /** Consistent state: the row in PostgreSQL and the member in its queue. */
+    const enqueue = (id: string, over: Partial<StoredSession> = {}): StoredSession => {
+      const row: StoredSession = {
+        id,
+        tenantId: TENANT_A,
+        status: SessionStatus.QUEUED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(QUEUED_AT),
+        version: 2,
+        ...over,
+      };
+      sessionStore.seed(row);
+      queueStore.seed(row.tenantId, row.language, row.id, row.queuedAt.getTime());
+      return row;
+    };
+
+    /** A member in Redis whose session is not eligible, or does not exist. */
+    const seedStale = (id: string, status: SessionStatus | null, tenantId = TENANT_A): void => {
+      if (status !== null) {
+        sessionStore.seed({
+          id,
+          tenantId,
+          status,
+          language: 'en',
+          priority: 0,
+          queuedAt: new Date(QUEUED_AT),
+          version: 2,
+        });
+      }
+      queueStore.seed(TENANT_A, 'en', id, QUEUED_AT);
+    };
+
+    interface Row {
+      session_id: string;
+      language: string;
+      priority: number;
+      queued_at: string;
+      wait_seconds: number;
+    }
+
+    const rowsOf = (body: { data: { sessions: Row[] } }): Row[] => body.data.sessions;
+    const idsOf = (body: { data: { sessions: Row[] } }): string[] =>
+      rowsOf(body).map((row) => row.session_id);
+
+    it('returns the documented envelope and fields', async () => {
+      enqueue('session-1');
+
+      const response = await get(await loginAs());
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toEqual([
+        {
+          session_id: 'session-1',
+          language: 'en',
+          priority: 0,
+          queued_at: '2026-08-31T08:59:28.000Z',
+          wait_seconds: 32,
+        },
+      ]);
+    });
+
+    it('returns an empty list rather than a 404 when nothing is queued', async () => {
+      const response = await get(await loginAs());
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    // --- who may reach it -------------------------------------------------
+
+    it('rejects a request with no credential', async () => {
+      const response = await request(app.getHttpServer()).get('/v1/agent/queue');
+
+      expect(response.status).toBe(401);
+      expect(response.body.error.code).toBe(ErrorCode.UNAUTHENTICATED);
+    });
+
+    it('rejects a customer token', async () => {
+      const response = await get(customerToken(TENANT_A, 'session-1'));
+
+      expect(response.status).toBe(401);
+      expect(response.body.error.code).toBe(ErrorCode.UNAUTHENTICATED);
+    });
+
+    it('rejects an enterprise API key', async () => {
+      const response = await get(API_KEY_A);
+
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects the internal token', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/v1/agent/queue')
+        .set(INTERNAL_TOKEN_HEADER, TEST_AUTH_CONFIG.internalToken);
+
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects an agent-shaped token signed with the customer secret', async () => {
+      const forged = signJwt(
+        { act: AGENT_ACTOR_CLAIM, uid: AGENT_A1, tid: TENANT_A, role: 'AGENT' },
+        { secret: TEST_AUTH_CONFIG.customerTokenSecret, ttlSeconds: 3600 },
+      );
+
+      expect((await get(forged)).status).toBe(401);
+    });
+
+    it('refuses a user who holds a valid agent JWT but has no agent profile', async () => {
+      const admin = signJwt(
+        { act: AGENT_ACTOR_CLAIM, uid: 'admin-a', tid: TENANT_A, role: 'TENANT_ADMIN' },
+        { secret: TEST_AUTH_CONFIG.agentJwtSecret, ttlSeconds: 3600 },
+      );
+
+      const response = await get(admin);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe(ErrorCode.FORBIDDEN);
+    });
+
+    // --- identity comes from the token ------------------------------------
+
+    it('rejects a query string that names a different tenant', async () => {
+      enqueue('a-session');
+      const token = await loginAs();
+
+      const response = await request(app.getHttpServer())
+        .get(`/v1/agent/queue?tenant_id=${TENANT_B}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe(ErrorCode.FORBIDDEN);
+    });
+
+    it('ignores an agent_id in the query string', async () => {
+      enqueue('a-session');
+      const token = await loginAs();
+
+      const response = await request(app.getHttpServer())
+        .get(`/v1/agent/queue?agent_id=${AGENT_B1}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      // Answered for the authenticated agent, who is in tenant A.
+      expect(response.status).toBe(200);
+      expect(idsOf(response.body)).toEqual(['a-session']);
+    });
+
+    it('ignores a language in the query string', async () => {
+      enqueue('ta-session', { language: 'ta' });
+      const token = await loginAs();
+
+      const response = await request(app.getHttpServer())
+        .get('/v1/agent/queue?language=ta')
+        .set('Authorization', `Bearer ${token}`);
+
+      // agent.one works en and hi; a query parameter cannot add ta.
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    it('ignores a limit in the query string', async () => {
+      for (let i = 0; i < 25; i += 1) {
+        enqueue(`s-${String(i).padStart(2, '0')}`, {
+          queuedAt: new Date(QUEUED_AT + i * 1000),
+        });
+      }
+      const token = await loginAs();
+
+      const response = await request(app.getHttpServer())
+        .get('/v1/agent/queue?limit=100')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.body.data.sessions).toHaveLength(20);
+    });
+
+    // --- tenant isolation --------------------------------------------------
+
+    it('shows each agent only its own tenant queued sessions', async () => {
+      enqueue('a-session');
+      enqueue('b-session', { tenantId: TENANT_B });
+
+      const a = await get(await loginAs());
+      const b = await get(await loginAs('agent.one@other.local', 'other-bank'));
+
+      expect(idsOf(a.body)).toEqual(['a-session']);
+      expect(idsOf(b.body)).toEqual(['b-session']);
+    });
+
+    it('reads no queue key belonging to another tenant', async () => {
+      await get(await loginAs());
+
+      expect(queueStore.readKeys.length).toBeGreaterThan(0);
+      for (const key of queueStore.readKeys) {
+        expect(key.startsWith(`queue:${TENANT_A}:`)).toBe(true);
+        expect(key).not.toContain(TENANT_B);
+      }
+    });
+
+    it('does not leak another tenant session planted in this tenant key', async () => {
+      seedStale('planted', SessionStatus.QUEUED, TENANT_B);
+
+      const response = await get(await loginAs());
+
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    // --- language ----------------------------------------------------------
+
+    it('shows a multi-language agent every configured language', async () => {
+      enqueue('en-1', { language: 'en', queuedAt: new Date(QUEUED_AT) });
+      enqueue('hi-1', { language: 'hi', queuedAt: new Date(QUEUED_AT + 1000) });
+
+      expect(idsOf((await get(await loginAs())).body)).toEqual(['en-1', 'hi-1']);
+    });
+
+    it('shows a single-language agent nothing from another language', async () => {
+      enqueue('ta-1', { language: 'ta' });
+      enqueue('en-1', { language: 'en' });
+
+      // agent.two works only `ta`.
+      const response = await get(await loginAs('agent.two@demo.local'));
+
+      expect(idsOf(response.body)).toEqual(['ta-1']);
+    });
+
+    it('merges the language queues by enqueue time, not grouped by language', async () => {
+      enqueue('A', { language: 'en', queuedAt: new Date(QUEUED_AT) });
+      enqueue('B', { language: 'hi', queuedAt: new Date(QUEUED_AT + 2000) });
+      enqueue('C', { language: 'en', queuedAt: new Date(QUEUED_AT + 5000) });
+      enqueue('D', { language: 'hi', queuedAt: new Date(QUEUED_AT + 6000) });
+
+      expect(idsOf((await get(await loginAs())).body)).toEqual(['A', 'B', 'C', 'D']);
+    });
+
+    it('matches a session language stored in a different case', async () => {
+      enqueue('shouty', { language: 'EN' });
+
+      expect(idsOf((await get(await loginAs())).body)).toEqual(['shouty']);
+    });
+
+    it('does not treat en-IN as en', async () => {
+      enqueue('regional', { language: 'en-IN' });
+
+      expect((await get(await loginAs())).body.data.sessions).toEqual([]);
+    });
+
+    // --- PostgreSQL is the authority ---------------------------------------
+
+    it('excludes every non-QUEUED status even though Redis still holds the member', async () => {
+      const excluded = [
+        SessionStatus.CREATED,
+        SessionStatus.PREFLIGHT_FAILED,
+        SessionStatus.OFFERED,
+        SessionStatus.IN_CALL,
+        SessionStatus.APPROVED,
+        SessionStatus.REJECTED,
+        SessionStatus.ABORTED,
+        SessionStatus.DROPPED_QUEUED,
+        SessionStatus.DROPPED_IN_CALL,
+      ];
+      for (const [i, status] of excluded.entries()) seedStale(`s-${i}`, status);
+
+      const response = await get(await loginAs());
+
+      expect(response.body.data.sessions).toEqual([]);
+      // Still in Redis: removal belongs to the task that owns it.
+      expect(queueStore.sets.get(queueKey(TENANT_A, 'en'))?.size).toBe(excluded.length);
+    });
+
+    it('returns the live sessions around a stale member', async () => {
+      enqueue('live-1', { queuedAt: new Date(QUEUED_AT) });
+      seedStale('gone', SessionStatus.DROPPED_QUEUED);
+      enqueue('live-2', { queuedAt: new Date(QUEUED_AT + 2000) });
+
+      expect(idsOf((await get(await loginAs())).body)).toEqual(['live-1', 'live-2']);
+    });
+
+    it('does not return a member with no session row at all', async () => {
+      seedStale('ghost', null);
+
+      expect((await get(await loginAs())).body.data.sessions).toEqual([]);
+    });
+
+    it('does not return a session PostgreSQL has queued but Redis has lost', async () => {
+      // The documented limitation: no reconciliation happens on this GET.
+      sessionStore.seed({
+        id: 'orphan',
+        tenantId: TENANT_A,
+        status: SessionStatus.QUEUED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(QUEUED_AT),
+        version: 2,
+      });
+
+      expect((await get(await loginAs())).body.data.sessions).toEqual([]);
+    });
+
+    // --- derived values ----------------------------------------------------
+
+    it('derives wait_seconds from the server clock', async () => {
+      enqueue('waiting', { queuedAt: new Date(clockMs - 45_000) });
+
+      expect(rowsOf((await get(await loginAs())).body)[0]?.wait_seconds).toBe(45);
+    });
+
+    it('reports a larger wait once the clock advances, with no change to the request', async () => {
+      enqueue('waiting', { queuedAt: new Date(clockMs - 10_000) });
+      const token = await loginAs();
+
+      const first = await get(token);
+      clockMs += 7000;
+      const second = await get(token);
+
+      expect(rowsOf(first.body)[0]?.wait_seconds).toBe(10);
+      expect(rowsOf(second.body)[0]?.wait_seconds).toBe(17);
+    });
+
+    it('returns priority without ordering by it', async () => {
+      enqueue('older', { priority: 0, queuedAt: new Date(QUEUED_AT) });
+      enqueue('newer', { priority: 9, queuedAt: new Date(QUEUED_AT + 5000) });
+
+      const response = await get(await loginAs());
+
+      expect(idsOf(response.body)).toEqual(['older', 'newer']);
+      expect(rowsOf(response.body).map((row) => row.priority)).toEqual([0, 9]);
+    });
+
+    it('exposes no field beyond the five the contract defines', async () => {
+      enqueue('session-1');
+
+      const response = await get(await loginAs());
+
+      expect(Object.keys(response.body.data.sessions[0]).sort()).toEqual([
+        'language',
+        'priority',
+        'queued_at',
+        'session_id',
+        'wait_seconds',
+      ]);
+    });
+
+    // --- bounded -----------------------------------------------------------
+
+    it('returns at most twenty sessions however long the queue is', async () => {
+      for (let i = 0; i < 60; i += 1) {
+        enqueue(`s-${String(i).padStart(2, '0')}`, {
+          queuedAt: new Date(QUEUED_AT + i * 1000),
+        });
+      }
+
+      const response = await get(await loginAs());
+
+      expect(response.body.data.sessions).toHaveLength(20);
+      expect(idsOf(response.body)[0]).toBe('s-00');
+      expect(idsOf(response.body).at(-1)).toBe('s-19');
+    });
+
+    // --- read-only ---------------------------------------------------------
+
+    it('changes no session row, version, or status', async () => {
+      enqueue('one', { version: 4 });
+      enqueue('two', { version: 9, queuedAt: new Date(QUEUED_AT + 1000) });
+      const before = JSON.stringify([...sessionStore.rows.values()]);
+      const token = await loginAs();
+
+      await get(token);
+      await get(token);
+
+      expect(JSON.stringify([...sessionStore.rows.values()])).toBe(before);
+      // create/findById/update all increment this before throwing.
+      expect(sessionStore.writes).toBe(0);
+    });
+
+    it('changes no queue membership or score', async () => {
+      enqueue('one');
+      seedStale('stale-member', SessionStatus.ABORTED);
+      const snapshot = (): string =>
+        JSON.stringify([...queueStore.sets].map(([k, v]) => [k, [...v.entries()].sort()]));
+      const before = snapshot();
+
+      await get(await loginAs());
+
+      expect(snapshot()).toBe(before);
+    });
+
+    it('does not create a presence', async () => {
+      enqueue('one');
+      const token = await loginAs();
+
+      await get(token);
+
+      expect(presenceStore.keys.has(presenceKey(AGENT_A1))).toBe(false);
+    });
+
+    it('does not require the agent to be AVAILABLE', async () => {
+      enqueue('one');
+
+      // No availability call has been made, so there is no presence at all.
+      const response = await get(await loginAs());
+
+      expect(response.status).toBe(200);
+      expect(idsOf(response.body)).toEqual(['one']);
+    });
+
+    it('leaves an existing AVAILABLE presence exactly as it was', async () => {
+      enqueue('one');
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      const before = await presenceStore.read(AGENT_A1);
+
+      await get(token);
+
+      expect(await presenceStore.read(AGENT_A1)).toEqual(before);
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.AVAILABLE);
+    });
+
+    it('is idempotent across repeated reads', async () => {
+      enqueue('one', { queuedAt: new Date(QUEUED_AT) });
+      enqueue('two', { queuedAt: new Date(QUEUED_AT + 1000) });
+      const token = await loginAs();
+
+      const first = idsOf((await get(token)).body);
+      const second = idsOf((await get(token)).body);
+      const third = idsOf((await get(token)).body);
+
+      expect(first).toEqual(['one', 'two']);
+      expect(second).toEqual(first);
+      expect(third).toEqual(first);
+    });
+
+    // --- logging -----------------------------------------------------------
+
+    it('logs identifiers and counts, never a token, password, or session id', async () => {
+      enqueue('session-1');
+      const token = await loginAs();
+      logged = '';
+
+      await get(token);
+
+      expect(logged).toContain('agent.queue.viewed');
+      expect(logged).toContain(TENANT_A);
+      expect(logged).toContain(AGENT_A1);
+      expect(logged).toContain('candidate_count');
+      expect(logged).toContain('returned_count');
+      expect(logged).not.toContain(token);
+      expect(logged).not.toContain(PASSWORD);
+      expect(logged).not.toContain('session-1');
+    });
+  });
 
   describe('one agent cannot reach another', () => {
     it('keeps two agents of one tenant separate', async () => {

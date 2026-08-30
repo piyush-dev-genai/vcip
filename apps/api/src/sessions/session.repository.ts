@@ -22,8 +22,11 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import type { SessionEventType, SessionStatus } from '@vcip/shared';
-import { and, eq, sql } from 'drizzle-orm';
+import type { SessionEventType } from '@vcip/shared';
+// A value import: T17's queued-session read filters on the status literal in
+// SQL, so the enum has to survive compilation rather than be erased.
+import { SessionStatus } from '@vcip/shared';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { sessions } from '../../db/schema.js';
 import { InjectDatabase } from '../common/db/db.tokens.js';
@@ -145,6 +148,22 @@ export interface GuardedUpdate {
   readonly event: SessionEventInput;
 }
 
+/**
+ * A queued session, as the agent queue view needs it.
+ *
+ * A deliberately narrow projection, and the narrowness is the safety property:
+ * `external_ref`, consent, geo, IP country, and the verdict never enter the
+ * process at all, so `GET /v1/agent/queue` cannot leak customer PII by
+ * forgetting to omit a field. Adding a column here is a decision, not a default.
+ */
+export interface QueuedSessionRow {
+  readonly id: string;
+  readonly language: string;
+  readonly priority: number;
+  /** Never null: the query requires it, because it is the ordering key. */
+  readonly queuedAt: Date;
+}
+
 export interface SessionRepository {
   /** Insert the session and its `SESSION_CREATED` event in one transaction. */
   create(input: CreateSessionInput): Promise<SessionRow>;
@@ -165,6 +184,21 @@ export interface SessionRepository {
    * session moved, and the caller lost the race.
    */
   update(command: GuardedUpdate): Promise<SessionRow | null>;
+
+  /**
+   * The subset of `sessionIds` that this tenant currently has `QUEUED`.
+   *
+   * One statement for the whole candidate set — the alternative, a lookup per
+   * Redis member, is an N+1 on a request path. The tenant predicate and the
+   * status predicate are both in the WHERE clause rather than applied to the
+   * result, so a stale Redis member or another tenant's id cannot come back at
+   * all; there is no row to forget to filter.
+   *
+   * Order is not specified. Redis owns the ordering, and the caller re-applies
+   * it — a database `ORDER BY` here would quietly become a second answer to a
+   * question the queue projection already answers.
+   */
+  findQueued(tenantId: string, sessionIds: readonly string[]): Promise<readonly QueuedSessionRow[]>;
 }
 
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
@@ -264,6 +298,45 @@ export class DrizzleSessionRepository implements SessionRepository {
 
     const row = rows[0];
     return row === undefined ? null : toRow(row);
+  }
+
+  async findQueued(
+    tenantId: string,
+    sessionIds: readonly string[],
+  ): Promise<readonly QueuedSessionRow[]> {
+    // No ids means no query. `inArray` with an empty list is a SQL degenerate
+    // case worth never generating.
+    if (sessionIds.length === 0) return [];
+
+    const rows = await this.db
+      .select({
+        id: sessions.id,
+        language: sessions.language,
+        priority: sessions.priority,
+        queuedAt: sessions.queuedAt,
+      })
+      .from(sessions)
+      .where(
+        and(
+          // Tenant first, and in SQL: invariant I8 holds because the row is
+          // never fetched, not because a later check rejects it.
+          eq(sessions.tenantId, tenantId),
+          // A positive test on one status. Every other status — OFFERED,
+          // DROPPED_QUEUED, and the seven others — is excluded by not being
+          // named, so a status added later cannot leak in by omission.
+          eq(sessions.status, SessionStatus.QUEUED),
+          inArray(sessions.id, [...sessionIds]),
+          isNotNull(sessions.queuedAt),
+        ),
+      );
+
+    return rows.map((row) => ({
+      id: row.id,
+      language: row.language,
+      priority: row.priority,
+      /* c8 ignore next -- isNotNull already proved this */
+      queuedAt: row.queuedAt ?? new Date(0),
+    }));
   }
 
   async update(command: GuardedUpdate): Promise<SessionRow | null> {

@@ -166,21 +166,28 @@ describe('every request goes through the API client', () => {
     expect(offenders(/\bfetch\s*\(/)).toEqual(['lib/api.ts']);
   });
 
-  it('names the three T16 routes and no others', () => {
+  it('names the four routes T16 and T17 define, and no others', () => {
     const routes = new Set<string>();
     for (const file of sources) {
       for (const match of file.text.matchAll(/'\/(login|availability|heartbeat|[a-z-]+)'/g)) {
         routes.add(match[0]);
       }
     }
-    expect([...routes].sort()).toEqual(["'/availability'", "'/heartbeat'", "'/login'"]);
+    expect([...routes].sort()).toEqual(["'/availability'", "'/heartbeat'", "'/login'", "'/queue'"]);
+  });
+
+  it('reaches the queue with a GET and sends it no body', () => {
+    const client = sources.find((file) => file.path === 'lib/api.ts');
+    expect(client?.text).toMatch(/method: 'GET'/);
+    // The one GET in the app is the queue read, so nothing that mutates can
+    // be smuggled onto the read verb.
+    expect([...(client?.text.matchAll(/method: '(GET|POST)'/g) ?? [])]).toHaveLength(1);
   });
 
   it('calls none of the endpoints later tasks add', () => {
-    // T17's queue, T18's claim, T19's accept. Scope, asserted rather than
-    // promised.
+    // T18's claim, T19's accept. Scope, asserted rather than promised. The
+    // queue is no longer on this list: T17 owns it.
     for (const pattern of [
-      /\/queue\b/,
       /\/claim\b/,
       /\/accept\b/,
       /\/verdict\b/,
@@ -241,6 +248,28 @@ describe('presence rules live where they can be checked', () => {
     const others = sources.filter((file) => file.path !== 'lib/api.ts');
     expect(offenders(/\bagent_id\b|\buser_id\b/, others)).toEqual([]);
     expect(offenders(/\btenant_id\b/, sources)).toEqual([]);
+  });
+
+  it('has no claim, accept, or assignment control', () => {
+    // T17's queue is read-only. Not "the button is disabled" - there is no
+    // button, no handler, and no word for one anywhere in the app. The
+    // lookahead spares the Accept request header, which is not an action,
+    // and 'offer' is absent because T16 already tells an unavailable agent
+    // they will not be offered work - prose about the server, not a control.
+    for (const pattern of [/\bclaim/i, /\baccept\b(?!:)/i, /\bassign/i]) {
+      expect(offenders(pattern)).toEqual([]);
+    }
+  });
+
+  it('does not re-derive the queue order or the wait in the browser', () => {
+    // The API returns a merged FIFO list and a server-derived wait. Sorting
+    // or ticking a timer here would put a second, disagreeing answer on the
+    // screen.
+    const queueSide = sources.filter(
+      (file) => file.path === 'lib/queue.ts' || file.path === 'components/QueuePanel.tsx',
+    );
+    expect(offenders(/\.sort\(|\.filter\(/, queueSide)).toEqual([]);
+    expect(offenders(/queued_at/, queueSide)).toEqual([]);
   });
 
   it('hard-codes no TTL of its own', () => {

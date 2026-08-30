@@ -1,3 +1,5 @@
+export * from './agent-queue.rules.js';
+export * from './agent-queue.service.js';
 export * from './agent.repository.js';
 export * from './agents.controller.js';
 export * from './agents.module.js';

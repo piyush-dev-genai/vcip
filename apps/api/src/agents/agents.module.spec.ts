@@ -8,7 +8,10 @@
  *
  * `PresenceService` is the one at risk here: its fourth constructor argument is
  * an optional clock with no injection token, which is exactly the shape that
- * broke `StaticGeoProvider` in T12.
+ * broke `StaticGeoProvider` in T12. `AgentQueueService` (T17) has the same
+ * shape and is resolved for the same reason — and it additionally proves that
+ * pulling `QueueModule` and `SessionsModule` into this module's imports leaves
+ * a graph that still boots.
  */
 
 import { Global, Module } from '@nestjs/common';
@@ -22,6 +25,7 @@ import { DATABASE } from '../common/db/db.tokens.js';
 import { LoggingModule } from '../common/logging/logging.module.js';
 import { REDIS } from '../common/redis/redis.tokens.js';
 import { AGENT_REPOSITORY } from './agent.repository.js';
+import { AgentQueueService } from './agent-queue.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsModule } from './agents.module.js';
 import { AgentsService } from './agents.service.js';
@@ -83,6 +87,12 @@ describe('AgentsModule resolves through the container', () => {
     // Resolution alone was not enough in T12: call something that uses the
     // argument Nest could not have supplied.
     expect(typeof service.markBusy).toBe('function');
+  });
+
+  it('resolves AgentQueueService despite its optional clock argument', () => {
+    const service = moduleRef.get(AgentQueueService, { strict: false });
+    expect(service).toBeInstanceOf(AgentQueueService);
+    expect(typeof service.view).toBe('function');
   });
 
   it('resolves both repositories behind their tokens', () => {

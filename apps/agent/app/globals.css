@@ -235,3 +235,65 @@ ul.plain {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/*
+ * The queue list (T17).
+ *
+ * A table would be the semantic choice for four columns, but the row is a
+ * single scannable line rather than a grid an agent compares down — and a list
+ * keeps the markup small enough that adding a control to it would be an
+ * obvious change rather than a quiet one. There is no cell here for a button.
+ */
+
+.queue-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.queue-head h2 {
+  margin: 0;
+}
+
+.queue {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.queue-row {
+  display: grid;
+  grid-template-columns: 2rem 1fr auto auto;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.queue-rank {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.queue-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.queue-lang {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+.queue-wait {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  min-width: 4rem;
+  text-align: right;
+}

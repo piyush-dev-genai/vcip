@@ -53,6 +53,20 @@ export interface AvailabilityResult {
   readonly status: 'AVAILABLE' | 'UNAVAILABLE' | 'BUSY';
 }
 
+/** One row of `GET /v1/agent/queue`. Exactly the five fields §16 defines. */
+export interface QueuedSession {
+  readonly session_id: string;
+  readonly language: string;
+  readonly priority: number;
+  readonly queued_at: string;
+  readonly wait_seconds: number;
+}
+
+/** `GET /v1/agent/queue`. */
+export interface QueueResult {
+  readonly sessions: readonly QueuedSession[];
+}
+
 /** `POST /v1/agent/heartbeat`. */
 export interface HeartbeatResult {
   readonly agent_id: string;
@@ -64,6 +78,14 @@ export interface AgentApi {
   login(body: AgentLoginRequest): Promise<LoginResult>;
   setAvailability(body: AgentAvailabilityRequest): Promise<AvailabilityResult>;
   heartbeat(): Promise<HeartbeatResult>;
+  /**
+   * The queued sessions this agent could work.
+   *
+   * Takes no arguments, and that is the contract: the tenant, the agent, the
+   * languages, and the bound are all the server's. There is no parameter here
+   * through which a portal could widen what it sees.
+   */
+  queue(): Promise<QueueResult>;
 }
 
 /** The success envelope: every 2xx body is `{ "data": ... }`. */
@@ -90,12 +112,13 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
 
   async function request<T>(
     url: string,
-    init: { body: unknown; authenticated: boolean },
+    init: { method?: 'GET' | 'POST'; body?: unknown; authenticated: boolean },
   ): Promise<T> {
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    };
+    const method = init.method ?? 'POST';
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    // A GET has no body, so it declares no content type. Sending one would add
+    // nothing and would make the preflight ask for a header it does not need.
+    if (method === 'POST') headers['Content-Type'] = 'application/json';
 
     if (init.authenticated) {
       const token = deps.token();
@@ -107,9 +130,9 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
     let response: Response;
     try {
       response = await doFetch(url, {
-        method: 'POST',
+        method,
         headers,
-        body: JSON.stringify(init.body),
+        ...(method === 'POST' ? { body: JSON.stringify(init.body) } : {}),
       });
     } catch {
       // Deliberately not re-thrown with the original message: a fetch failure
@@ -174,6 +197,15 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
       const valid = agentHeartbeatSchema.parse({});
       return request<HeartbeatResult>(buildUrl(deps.baseUrl, '/heartbeat'), {
         body: valid,
+        authenticated: true,
+      });
+    },
+
+    async queue() {
+      // No schema to parse: the request has no body and no query string, so
+      // there is nothing a client could get wrong and nothing to validate.
+      return request<QueueResult>(buildUrl(deps.baseUrl, '/queue'), {
+        method: 'GET',
         authenticated: true,
       });
     },

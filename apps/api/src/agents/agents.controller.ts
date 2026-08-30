@@ -20,7 +20,7 @@
  * and there is no parameter through which that could be overridden.
  */
 
-import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import type { AgentAvailabilityRequest, AgentLoginRequest } from '@vcip/shared';
 import { agentAvailabilitySchema, agentHeartbeatSchema, agentLoginSchema } from '@vcip/shared';
 import { AgentJwtGuard } from '../common/auth/agent-jwt.guard.js';
@@ -30,6 +30,9 @@ import { TenantGuard } from '../common/auth/tenant.guard.js';
 import type { ApiData } from '../common/http/envelope.js';
 import { data } from '../common/http/envelope.js';
 import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
+import type { AgentQueueResult } from './agent-queue.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AgentQueueService } from './agent-queue.service.js';
 import type { AgentLoginResult } from './agents.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentsService } from './agents.service.js';
@@ -55,6 +58,7 @@ export class AgentsController {
   constructor(
     private readonly agents: AgentsService,
     private readonly presence: PresenceService,
+    private readonly queue: AgentQueueService,
   ) {}
 
   /**
@@ -103,5 +107,23 @@ export class AgentsController {
     @Body(new ZodValidationPipe(agentHeartbeatSchema)) _body: unknown,
   ): Promise<ApiData<HeartbeatResult>> {
     return data(await this.presence.heartbeat(asAgent(actor)));
+  }
+
+  /**
+   * The queued sessions this agent could work.
+   *
+   * A GET, and it behaves like one: no body, no query parameters, no
+   * `Idempotency-Key`, and no write of any kind. The bound on the result is a
+   * server constant, so there is no page size for a client to argue with and no
+   * parameter through which one could ask for the whole queue.
+   *
+   * `TenantGuard` still runs, and it inspects the query string as well as the
+   * body — so a `?tenant_id=` that disagrees with the token is a 403 rather
+   * than something quietly ignored.
+   */
+  @Get('queue')
+  @UseGuards(AgentJwtGuard, TenantGuard)
+  async queueView(@Auth() actor: Actor): Promise<ApiData<AgentQueueResult>> {
+    return data(await this.queue.view(asAgent(actor)));
   }
 }

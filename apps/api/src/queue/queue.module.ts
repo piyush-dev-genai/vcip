@@ -14,9 +14,16 @@ import { QueueService } from './queue.service.js';
  *
  * The Redis client itself comes from T11's global `RedisModule` — one client
  * for the application, as D2 requires.
+ *
+ * `QUEUE_REPOSITORY` is exported alongside the service for T17's agent queue
+ * view, which reads the head of several queues and merges them. That is a
+ * port-level read with no session row to hand `QueueService`, and it is the
+ * same shape as `SessionsModule` exporting `SESSION_REPOSITORY`. Exporting the
+ * token does not widen what the adapter can do: there is still one ZSET
+ * implementation and one Redis client.
  */
 @Module({
   providers: [{ provide: QUEUE_REPOSITORY, useClass: RedisQueueRepository }, QueueService],
-  exports: [QueueService],
+  exports: [QueueService, QUEUE_REPOSITORY],
 })
 export class QueueModule {}

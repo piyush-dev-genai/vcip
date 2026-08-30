@@ -15,7 +15,12 @@ import { SessionStatus } from '@vcip/shared';
 import { createLogger } from '../common/logging/logger.js';
 import type { SessionRow } from '../sessions/session.repository.js';
 import { queueKey } from './queue.keys.js';
-import type { QueueEntry, QueueMember, QueueRepository } from './queue.repository.js';
+import type {
+  QueueCandidate,
+  QueueEntry,
+  QueueMember,
+  QueueRepository,
+} from './queue.repository.js';
 import { QueueService } from './queue.service.js';
 
 const TENANT_A = '00000000-0000-4000-8000-00000000000a';
@@ -58,6 +63,18 @@ class FakeQueueRepository implements QueueRepository {
       (a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
     );
     return ordered.findIndex(([id]) => id === member.sessionId);
+  }
+
+  async range(tenantId: string, language: string, limit: number): Promise<QueueCandidate[]> {
+    await Promise.resolve();
+    if (this.failure !== null) throw this.failure;
+    if (limit <= 0) return [];
+    const set = this.sets.get(queueKey(tenantId, language));
+    if (set === undefined) return [];
+    return [...set.entries()]
+      .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, limit)
+      .map(([sessionId, score]) => ({ sessionId, score }));
   }
 
   scoreOf(tenantId: string, language: string, sessionId: string): number | undefined {

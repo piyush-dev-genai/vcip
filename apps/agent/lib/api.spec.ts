@@ -217,3 +217,81 @@ describe('failures', () => {
     await expect(api.heartbeat()).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe('queue', () => {
+  const QUEUED = {
+    session_id: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
+    language: 'en',
+    priority: 0,
+    queued_at: '2026-08-31T10:00:00.000Z',
+    wait_seconds: 32,
+  };
+
+  it('reads the documented route with a GET', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [QUEUED] }));
+
+    const result = await api.queue();
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agent/queue`);
+    expect(calls[0]?.init?.method).toBe('GET');
+    expect(result.sessions).toEqual([QUEUED]);
+  });
+
+  it('sends no body and no content type', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [] }));
+
+    await api.queue();
+
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(headersOf(calls[0])['Content-Type']).toBeUndefined();
+  });
+
+  it('sends the bearer token as a header', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [] }));
+
+    await api.queue();
+
+    expect(headersOf(calls[0]).Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('never puts the token or any filter in the URL', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [] }));
+
+    await api.queue();
+
+    const url = calls[0]?.url ?? '';
+    expect(url).not.toContain('?');
+    expect(url).not.toContain(TOKEN);
+    expect(url).not.toContain('tenant');
+    expect(url).not.toContain('agent_id');
+    expect(url).not.toContain('limit');
+  });
+
+  it('takes no argument through which a caller could widen the result', () => {
+    const { api } = harness(() => ok({ sessions: [] }));
+
+    expect(api.queue).toHaveLength(0);
+  });
+
+  it('returns an empty list without inventing sessions', async () => {
+    const { api } = harness(() => ok({ sessions: [] }));
+
+    expect((await api.queue()).sessions).toEqual([]);
+  });
+
+  it('reports a 401 as a re-authentication error rather than an empty queue', async () => {
+    const { api } = harness(() =>
+      json(401, { error: { code: 'UNAUTHENTICATED', message: 'no', request_id: 'r-1' } }),
+    );
+
+    await expect(api.queue()).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' });
+  });
+
+  it('reports a 403 rather than an empty queue', async () => {
+    const { api } = harness(() =>
+      json(403, { error: { code: 'FORBIDDEN', message: 'no', request_id: 'r-2' } }),
+    );
+
+    await expect(api.queue()).rejects.toMatchObject({ status: 403, code: 'FORBIDDEN' });
+  });
+});

@@ -1536,73 +1536,123 @@ client that could read it would start making decisions with it.
 
 
 
-\# 16. Agent Queue
+\# 16. Agent Queue [UPDATED]
 
-
+The queued sessions an agent could work. A read: it assigns nothing, offers
+nothing, and changes no session, no queue, and no presence. Claiming is
+section 17.
 
 \### Endpoint
 
-
-
 ```http
-
 GET /v1/agent/queue
-
 ```
 
-
+No request body, no query parameters. The tenant, the agent, the eligible
+languages, and the result bound are all derived by the server. A `tenant_id`
+in the query string that disagrees with the token is rejected with `403
+FORBIDDEN`; an `agent_id`, `language`, or `limit` is ignored.
 
 \### Authentication
 
+Agent JWT. A customer token, an enterprise API key, and the internal token are
+each rejected with `401 UNAUTHENTICATED`.
 
+A user who holds a valid agent JWT but has no `agent_profiles` row - a
+`TENANT_ADMIN`, for instance - is rejected with `403 FORBIDDEN` rather than
+given an empty list, because an empty list reads as "no customers waiting".
 
-Agent JWT.
+\### Eligibility
 
+A session appears when **all** of the following hold:
 
+- `sessions.tenant_id` equals the tenant in the JWT (invariant I8),
+- `sessions.status` is exactly `QUEUED`,
+- `sessions.language` is one of the calling agent&#x27;s `agent_profiles.languages`,
+- and the session is currently a member of its queue in Redis.
+
+Language comparison is case-insensitive on both sides: neither
+`createSessionSchema` nor `agent_profiles.languages` normalises on write, and
+the queue key is lower-cased. `en` and `en-IN` remain **different** queues (R13
+shards by the language tag as given); an agent configured for `en` does not see
+`en-IN`.
+
+Presence is not a precondition. An agent may read the queue while `UNAVAILABLE`
+- deciding whether to become available is exactly when they want to look.
+
+\### Ordering and bounds
+
+PostgreSQL is authoritative for whether a session is queued; Redis provides the
+candidate set and the order (D1/D2).
+
+For each of the agent&#x27;s languages the API reads the head of
+`queue:{tenant_id}:{language}` - a sorted set scored by `queued_at` in
+milliseconds - then merges the lists in application code. The merged list is
+FIFO on `queued_at` across languages, never grouped by language; equal scores
+break on `session_id`, which is the tiebreak Redis itself applies within one
+queue.
+
+At most **20** sessions are returned, and at most 20 candidates are read from
+each language queue. The bound is a server constant; there is no page size and
+no cursor.
+
+`priority` is reported but does **not** order the list. MVP ordering is FIFO on
+`queued_at` alone.
+
+No queue position is returned. A session&#x27;s rank within one language queue is
+not its position in a merged multi-language list, and reporting the former as
+the latter would be reporting a wrong number.
 
 \### Response
 
-
-
 ```json
-
 {
-
-&#x20; "data": {
-
-&#x20;   "sessions": \[
-
-&#x20;     {
-
-&#x20;       "session\_id": "session-1",
-
-&#x20;       "language": "en",
-
-&#x20;       "priority": 1,
-
-&#x20;       "queued\_at": "2026-08-27T10:30:00Z",
-
-&#x20;       "wait\_seconds": 32
-
-&#x20;     }
-
-&#x20;   ]
-
-&#x20; }
-
+  "data": {
+    "sessions": [
+      {
+        "session_id": "session-1",
+        "language": "en",
+        "priority": 1,
+        "queued_at": "2026-08-27T10:30:00Z",
+        "wait_seconds": 32
+      }
+    ]
+  }
 }
-
 ```
 
+Exactly these five fields. No `external_ref`, no customer identifier, no
+consent, geo, or IP data, and no queue position - the response must not expose
+unnecessary customer PII.
 
+`wait_seconds` is derived from the server clock as `max(0, now - queued_at)`,
+floored to whole seconds. It is stored nowhere and never supplied by a client,
+so two calls a second apart legitimately return different values.
 
-The response must not expose unnecessary customer PII.
+An empty queue is `{"data": {"sessions": []}}` with status `200`, not a `404`.
 
+\### Stale queue members
 
+A session that leaves `QUEUED` may remain in the Redis sorted set until a later
+task removes it. Such a member is never returned: every candidate id is
+confirmed against PostgreSQL in one bounded query before it reaches the
+response, and a member with no row, a row in another tenant, or a row in any
+status but `QUEUED` is dropped. This endpoint does not remove it either - it
+writes nothing.
+
+The converse gap is accepted and visible: a session that is `QUEUED` in
+PostgreSQL but missing from Redis does **not** appear here. Section 15&#x27;s lazy
+reconciliation repairs that on the customer&#x27;s next status read, because
+repairing it here would mean performing a Redis write on a `GET`.
+
+\### Side effects
+
+None. This endpoint does not claim, offer, or assign a session; does not set or
+clear `BUSY`; does not change a session&#x27;s `version` or status; does not append
+a `session_events` row; does not create a billing entry; and does not add,
+remove, or re-score a queue member.
 
 \---
-
-
 
 \# 17. Claim and Accept Session [UPDATED]
 

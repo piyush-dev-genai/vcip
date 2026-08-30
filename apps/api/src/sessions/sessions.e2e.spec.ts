@@ -49,6 +49,7 @@ import { TenantsService } from '../tenants/tenants.service.js';
 import type {
   CreateSessionInput,
   GuardedUpdate,
+  QueuedSessionRow,
   SessionRepository,
   SessionRow,
 } from './session.repository.js';
@@ -170,6 +171,35 @@ class InMemorySessionRepository implements SessionRepository {
 
   private hop(): Promise<void> {
     return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  /**
+   * T17's bounded candidate read.
+   *
+   * Unused by the customer routes this file exercises, but part of the port —
+   * and it applies the same tenant and status predicates the SQL does, so the
+   * fake cannot be more permissive than the thing it stands in for.
+   */
+  async findQueued(
+    tenantId: string,
+    sessionIds: readonly string[],
+  ): Promise<readonly QueuedSessionRow[]> {
+    await this.hop();
+    const wanted = new Set(sessionIds);
+    return [...this.rows.values()]
+      .filter(
+        (row) =>
+          wanted.has(row.id) &&
+          row.tenantId === tenantId &&
+          row.status === SessionStatus.QUEUED &&
+          row.queuedAt !== null,
+      )
+      .map((row) => ({
+        id: row.id,
+        language: row.language,
+        priority: 0,
+        queuedAt: row.queuedAt as Date,
+      }));
   }
 
   async create(input: CreateSessionInput): Promise<SessionRow> {

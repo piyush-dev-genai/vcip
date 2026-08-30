@@ -36,6 +36,21 @@ export interface QueueEntry extends QueueMember {
   readonly score: number;
 }
 
+/**
+ * One member of a queue, as a bounded read returns it.
+ *
+ * The score travels with the member because it is the ordering key, and a
+ * multi-language agent's merged view has to sort across queues in application
+ * code (R13). Re-deriving it from PostgreSQL would work only because T15
+ * guarantees `score === queued_at`; carrying it makes the ordering visibly
+ * Redis's, which is what it is.
+ */
+export interface QueueCandidate {
+  readonly sessionId: string;
+  /** `sessions.queued_at` in milliseconds. */
+  readonly score: number;
+}
+
 export interface QueueRepository {
   /**
    * Add a session to its queue at an explicit score.
@@ -53,6 +68,20 @@ export interface QueueRepository {
 
   /** Zero-based rank within the queue, or null when the session is absent. */
   rank(member: QueueMember): Promise<number | null>;
+
+  /**
+   * The oldest `limit` members of one queue, with their scores.
+   *
+   * Bounded at the call site and never unbounded: T17's agent view reads the
+   * head of each of an agent's language queues, and a `ZRANGE 0 -1` on a
+   * production queue would be a full scan on a request path.
+   *
+   * Membership is not eligibility. What comes back is what Redis currently
+   * believes; T15 permits a member to outlive the status that put it there, so
+   * every caller must confirm each id against PostgreSQL before treating it as
+   * a queued session.
+   */
+  range(tenantId: string, language: string, limit: number): Promise<readonly QueueCandidate[]>;
 }
 
 export const QUEUE_REPOSITORY = Symbol('QUEUE_REPOSITORY');
@@ -65,6 +94,38 @@ export class RedisQueueRepository implements QueueRepository {
 
   async add(entry: QueueEntry): Promise<void> {
     await this.redis.zadd(queueKey(entry.tenantId, entry.language), entry.score, entry.sessionId);
+  }
+
+  async range(
+    tenantId: string,
+    language: string,
+    limit: number,
+  ): Promise<readonly QueueCandidate[]> {
+    // A non-positive limit reads nothing rather than becoming `ZRANGE 0 -1`,
+    // which is what a naive `limit - 1` would produce for a limit of zero.
+    if (limit <= 0) return [];
+
+    // Ascending by score, so index 0 is the oldest `queued_at` — FIFO. Equal
+    // scores fall back to lexical member order, which is deterministic and is
+    // the same tiebreak the merged view applies across queues.
+    // `stop` is stringified because ioredis types it as `string | Buffer` on
+    // the WITHSCORES overload, and a number silently selects a different one.
+    const flat = await this.redis.zrange(
+      queueKey(tenantId, language),
+      0,
+      String(limit - 1),
+      'WITHSCORES',
+    );
+
+    const candidates: QueueCandidate[] = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) {
+      const sessionId = flat[i];
+      const score = Number(flat[i + 1]);
+      /* c8 ignore next -- redis returns well-formed pairs; a guard, not a path */
+      if (sessionId === undefined || !Number.isFinite(score)) continue;
+      candidates.push({ sessionId, score });
+    }
+    return candidates;
   }
 
   async rank(member: QueueMember): Promise<number | null> {
