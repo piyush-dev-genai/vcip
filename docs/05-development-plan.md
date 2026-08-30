@@ -261,7 +261,7 @@ gate and report.
 | T11 | 1 | Idempotency interceptor (Redis, 24h) | done |
 | T12 | 1 | `sessions`: create, consent, preflight with server-side thresholds, location, get, abort | done |
 | T13 | 1 | `session_events` append-only writer | done |
-| T14 | 1 | Customer UI screens 1-4 | todo |
+| T14 | 1 | Customer UI screens 1-4 | done |
 | T15 | 2 | Redis ZSET queue, position, post-commit enqueue with retry | todo |
 | T16 | 2 | Agent login, availability, heartbeat, presence TTL, internal BUSY | todo |
 | T17 | 2 | `GET /v1/agent/queue` | todo |
