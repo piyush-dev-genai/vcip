@@ -1658,22 +1658,49 @@ remove, or re-score a queue member.
 
 The MVP uses pull-claim with an explicit `OFFERED` state. See D4 and D5.
 
-\## 17.1 Claim Session
+\## 17.1 Claim Session [IMPLEMENTED]
 
 ```http
 POST /v1/agent/sessions/{session_id}/claim
 ```
 
 Authentication: Agent JWT.
-Headers: `Idempotency-Key: <unique-key>`
+Headers: `Idempotency-Key: <unique-key>` (required, D13).
+Request body: empty. The schema is a strict empty object, so a body naming an
+`agent_id`, a `tenant_id`, an `offer_expires_at`, or a `status` is a
+`400`, not a field the server has to remember to ignore.
+
+The tenant and the agent come from the JWT. The session id is the only value
+the caller chooses.
 
 ### Preconditions
 
 ```text
 Session = QUEUED
-Agent   = AVAILABLE
-Agent is eligible for session (tenant, language, max_concurrent)
+Agent   = AVAILABLE (live Redis presence)
+Agent speaks the session language
+Agent is below max_concurrent
 ```
+
+Each is checked before the write, and none of them is the guard. Two agents can
+satisfy every precondition at the same instant; the conditional UPDATE below is
+what makes exactly one of them win.
+
+**Language.** Normalised on both sides — trimmed and lower-cased — so a profile
+storing `EN` matches a session storing `en`. Regional
+variants remain distinct: `en-IN` is not `en` (R13).
+
+**Presence.** An eligibility rule, not a lock. Presence lives in Redis, which is
+never authoritative for business state (D1, D2) and whose key may expire a
+moment after the check passes. What it prevents is an agent who has closed their
+laptop silently taking a customer off the queue.
+
+**Capacity.** `agent_profiles.max_concurrent`, counted in PostgreSQL
+over both halves of "holding work": sessions `OFFERED` to this agent
+(`offered_to_agent_id`) and sessions `IN_CALL` with this
+agent (`agent_id`). Each id is paired with its status, so a stale
+`offered_to_agent_id` on a session that has moved on consumes no
+capacity.
 
 ### State Transition
 
@@ -1695,6 +1722,42 @@ UPDATE sessions
    AND status = 'QUEUED';
 ```
 
+Three predicates and no fourth. Not the caller's observed `version`:
+the session being queued is the entire precondition, and a version predicate
+would lose a legitimate claim to any unrelated write that had bumped it.
+
+`agent_id` is **not** set here. A claim is an offer, not an
+assignment; section 17.2 sets it on accept.
+
+The update and its `session_events` row commit or roll back together,
+so a lost claim leaves no trace of an offer that never happened.
+
+### Serialising one agent's own claims
+
+The capacity count runs in the same transaction as the update, immediately after
+a row lock on the claiming agent:
+
+```sql
+SELECT id FROM users
+ WHERE id = :agent_id AND tenant_id = :tenant_id
+   FOR UPDATE;
+```
+
+Without it the count is a time-of-check/time-of-use hole. Under READ COMMITTED
+each statement takes its own snapshot, two claims by one agent touch *different*
+session rows so they never block each other, and neither sees the other's
+uncommitted `OFFERED` — both would count zero and both would commit.
+The lock costs nothing to anyone else: two agents racing for one session lock
+different rows and are still decided by the conditional UPDATE, and an agent
+only ever locks their own row, so no cycle is possible.
+
+### Session event
+
+One row, using the canonical vocabulary: `SESSION_ASSIGNED`, actor
+type `AGENT`, actor id the claiming agent. The payload carries the
+edge (`from`, `to`), the agent id, and the offer timeout. No new event
+name is introduced for the claim.
+
 ### Response
 
 ```json
@@ -1707,6 +1770,26 @@ UPDATE sessions
   }
 }
 ```
+
+Exactly these four fields. No `external_ref`, no customer identifier,
+no room name, and no queue internals: the claim answers "is this mine, and until
+when?", and the session's own routes answer everything else.
+
+`offer_expires_at` is
+`offered_at + tenants.offer_timeout_seconds`, computed by the server.
+Section 17.3 sweeps against the same rule.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `VALIDATION_ERROR` | No `Idempotency-Key`, a non-UUID session id, or any body field |
+| `401` | `UNAUTHENTICATED` | No agent JWT. A customer token or an API key is also a `401` |
+| `403` | `FORBIDDEN` | The user has no agent profile, or does not speak the session's language |
+| `404` | `NOT_FOUND` | No such session **or** another tenant's session — deliberately indistinguishable (I8) |
+| `409` | `SESSION_ALREADY_ASSIGNED` | Another agent holds the offer or the call, or won the race |
+| `409` | `SESSION_INVALID_STATE` | The session is not waiting in the queue — never queued, or already ended |
+| `409` | `CONFLICT` | The agent is not live and `AVAILABLE`, or is at `max_concurrent` |
 
 ### Concurrent Claim
 
@@ -1722,6 +1805,28 @@ UPDATE sessions
   }
 }
 ```
+
+### Side effects
+
+On success, and in this order: the session moves to `OFFERED` in
+PostgreSQL with its `SESSION_ASSIGNED` event, and then the agent's
+Redis presence is set to `BUSY`.
+
+The Redis write is **not** part of the transaction, and a failure of it does not
+fail the claim. The offer is already committed, PostgreSQL is authoritative
+(D1), and the consequence is bounded and stated: an agent whose `BUSY`
+write failed looks free for up to the presence TTL and may be offered a second
+session — which `max_concurrent` in PostgreSQL then refuses. That is
+precisely why the authority for concurrency is in the database and not in the
+presence key.
+
+What a claim does **not** do: it does not set `agent_id`, does not
+create a LiveKit room, does not write a billing entry, and does not touch the
+queue projection. The Redis queue member and its score are left exactly as they
+were, so section 17.3 can return an expired offer to its original position
+rather than reconstructing one. The claimed session disappears from
+`GET /v1/agent/queue` on the next read because PostgreSQL no longer
+says `QUEUED`, not because anything was removed from Redis.
 
 \---
 

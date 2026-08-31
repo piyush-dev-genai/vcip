@@ -42,6 +42,17 @@ export interface TenantConfig {
 
   /** GPS accuracy ceiling in metres, for the location gate. */
   readonly gpsMaxAccuracyM: number;
+
+  /**
+   * How long an agent's offer stays live before the session returns to the
+   * queue (D4). T18 reports the resulting `offer_expires_at`; T20 enforces it.
+   *
+   * Tenant configuration rather than a server constant, because the column is
+   * per-tenant and `CHECK (offer_timeout_seconds > 0)` already guarantees a
+   * usable value — so there is no default to fall back to, and inventing one
+   * here would let a misconfigured tenant silently get someone else's policy.
+   */
+  readonly offerTimeoutSeconds: number;
 }
 
 export interface TenantConfigStore {
@@ -81,6 +92,7 @@ export class DrizzleTenantConfigStore implements TenantConfigStore {
         minLightingScore: tenants.minLightingScore,
         minStabilityScore: tenants.minStabilityScore,
         gpsMaxAccuracyM: tenants.gpsMaxAccuracyM,
+        offerTimeoutSeconds: tenants.offerTimeoutSeconds,
       })
       .from(tenants)
       .where(eq(tenants.id, tenantId))
@@ -99,6 +111,7 @@ export class DrizzleTenantConfigStore implements TenantConfigStore {
       minLightingScore: toNumber(row.minLightingScore),
       minStabilityScore: toNumber(row.minStabilityScore),
       gpsMaxAccuracyM: toNumber(row.gpsMaxAccuracyM),
+      offerTimeoutSeconds: toNumber(row.offerTimeoutSeconds),
     };
   }
 

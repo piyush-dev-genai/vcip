@@ -48,6 +48,8 @@ import { TENANT_CONFIG_STORE } from '../tenants/tenant-config.store.js';
 import { TenantsService } from '../tenants/tenants.service.js';
 import type {
   CreateSessionInput,
+  ClaimCommand,
+  SessionClaimOutcome,
   GuardedUpdate,
   QueuedSessionRow,
   SessionRepository,
@@ -118,6 +120,7 @@ const defaultConfig = (tenantId: string): TenantConfig => ({
   minLightingScore: 30,
   minStabilityScore: 30,
   gpsMaxAccuracyM: 100,
+  offerTimeoutSeconds: 30,
 });
 
 class FakeTenantConfigStore implements TenantConfigStore {
@@ -283,6 +286,13 @@ class InMemorySessionRepository implements SessionRepository {
       payload: command.event.payload,
     });
     return updated;
+  }
+
+  claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
+    // T18's agent claim. No customer route may reach it, and this suite covers
+    // only customer routes — so a call here is a wiring defect, not a case to
+    // emulate.
+    throw new Error('the customer lifecycle must not claim sessions');
   }
 
   /** Test-only: make the next guarded update lose its race, as a concurrent

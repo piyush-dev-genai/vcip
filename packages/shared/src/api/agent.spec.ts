@@ -5,6 +5,7 @@ import {
   agentAvailabilitySchema,
   agentHeartbeatSchema,
   agentLoginSchema,
+  agentClaimSchema,
 } from './agent.js';
 
 /**
@@ -119,5 +120,38 @@ describe('agentHeartbeatSchema', () => {
     ]) {
       expect(agentHeartbeatSchema.safeParse(body).success).toBe(false);
     }
+  });
+});
+
+describe('agentClaimSchema', () => {
+  it('accepts an empty body', () => {
+    expect(agentClaimSchema.parse({})).toEqual({});
+  });
+
+  it('rejects every field a caller might try to assert', () => {
+    for (const body of [
+      // The agent and the tenant come from the JWT.
+      { agent_id: '00000000-0000-4000-8000-000000000001' },
+      { offered_to_agent_id: '00000000-0000-4000-8000-000000000001' },
+      { tenant_id: '00000000-0000-4000-8000-00000000000a' },
+      // The session comes from the path.
+      { session_id: '00000000-0000-4000-8000-00000000e001' },
+      // The offer window is tenant configuration, not a request field.
+      { offer_expires_at: '2099-01-01T00:00:00.000Z' },
+      { offer_timeout_seconds: 86400 },
+      // Nor may a claim assert its own outcome.
+      { status: 'OFFERED' },
+      { language: 'en' },
+      { priority: 99 },
+      { force: true },
+    ]) {
+      expect(agentClaimSchema.safeParse(body).success).toBe(false);
+    }
+  });
+
+  it('is the same shape as the heartbeat: no fields at all', () => {
+    // Both are empty strictObjects, and both are that way on purpose. If one
+    // ever grows a field, this is the test that says so out loud.
+    expect(Object.keys(agentClaimSchema.shape)).toEqual([]);
   });
 });

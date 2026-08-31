@@ -26,9 +26,9 @@ import type { SessionEventType } from '@vcip/shared';
 // A value import: T17's queued-session read filters on the status literal in
 // SQL, so the enum has to survive compilation rather than be erased.
 import { SessionStatus } from '@vcip/shared';
-import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import { sessions } from '../../db/schema.js';
+import { sessions, users } from '../../db/schema.js';
 import { InjectDatabase } from '../common/db/db.tokens.js';
 import type { EventActorType, EventPayload, SessionEventWriter } from '../common/events/index.js';
 import { InjectSessionEventWriter } from '../common/events/index.js';
@@ -164,6 +164,64 @@ export interface QueuedSessionRow {
   readonly queuedAt: Date;
 }
 
+/**
+ * An agent's claim on one queued session (T18).
+ *
+ * Separate from `GuardedUpdate` on purpose, and the separation is the safety
+ * property. `SessionMutation` has no `offered_to_agent_id` and no `agent_id`,
+ * which is what makes assignment unreachable from the customer lifecycle; the
+ * fix for "T18 needs to write those columns" is a second, narrower command that
+ * writes only those columns, not a wider mutation type that every customer
+ * route then shares.
+ *
+ * Note what the caller does **not** supply: no status, no version, no queue
+ * position. The target status is fixed by this command's meaning, and the guard
+ * is `status = 'QUEUED'` exactly as D5 writes it — not the caller's observed
+ * version. A version predicate here would turn "someone touched this row" into
+ * a lost claim even when the session is still queued and free.
+ */
+export interface ClaimCommand {
+  readonly sessionId: string;
+  /** From the verified JWT. In the WHERE clause, not merely checked (I8). */
+  readonly tenantId: string;
+  /** From the verified JWT. There is no request field that could name another. */
+  readonly agentId: string;
+  /** `agent_profiles.max_concurrent`, read within this tenant. */
+  readonly maxConcurrent: number;
+  /** The server's clock. `offered_at` is never client-supplied. */
+  readonly offeredAt: Date;
+  readonly event: SessionEventInput;
+}
+
+/** The columns a successful claim reports back. Nothing about the customer. */
+export interface ClaimedSessionRow {
+  readonly id: string;
+  readonly status: SessionStatus;
+  readonly offeredToAgentId: string;
+  readonly offeredAt: Date;
+  readonly version: number;
+}
+
+/**
+ * Why a claim ended the way it did.
+ *
+ * Three outcomes rather than a nullable row, because the two failures are
+ * genuinely different answers and the caller maps them to different responses:
+ * `LOST` is 409 `SESSION_ALREADY_ASSIGNED` (someone else won, or the session
+ * left `QUEUED`), while `AT_CAPACITY` is this agent already holding as much
+ * work as their profile allows. Collapsing them would report the agent's own
+ * limit as another agent's victory.
+ *
+ * Prefixed `Session` because T11's idempotency store already exports a
+ * `ClaimOutcome` for claiming a replay key. Two unrelated claims in one
+ * codebase is enough; two types with the same name would be a trap for
+ * whichever import a future reader autocompletes.
+ */
+export type SessionClaimOutcome =
+  | { readonly kind: 'CLAIMED'; readonly session: ClaimedSessionRow }
+  | { readonly kind: 'LOST' }
+  | { readonly kind: 'AT_CAPACITY'; readonly active: number };
+
 export interface SessionRepository {
   /** Insert the session and its `SESSION_CREATED` event in one transaction. */
   create(input: CreateSessionInput): Promise<SessionRow>;
@@ -199,6 +257,19 @@ export interface SessionRepository {
    * question the queue projection already answers.
    */
   findQueued(tenantId: string, sessionIds: readonly string[]): Promise<readonly QueuedSessionRow[]>;
+
+  /**
+   * Claim a queued session for an agent: `QUEUED -> OFFERED` (D4, D5).
+   *
+   * The whole operation is one transaction, and the order inside it matters:
+   * the agent is serialised first, then counted, then the session is taken.
+   * See the implementation for why the count alone would not hold.
+   *
+   * This is the single-winner guard for the offer. Redis `BUSY` is not — a
+   * presence key can expire mid-claim, and D1 makes PostgreSQL authoritative
+   * for business state regardless.
+   */
+  claim(command: ClaimCommand): Promise<SessionClaimOutcome>;
 }
 
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
@@ -381,6 +452,121 @@ export class DrizzleSessionRepository implements SessionRepository {
       );
 
       return toRow(row);
+    });
+  }
+
+  async claim(command: ClaimCommand): Promise<SessionClaimOutcome> {
+    return this.db.transaction(async (tx) => {
+      // 1. Serialise this agent against their own concurrent claims.
+      //
+      // Without this the capacity check below is a time-of-check/time-of-use
+      // hole, and not a theoretical one: READ COMMITTED gives each statement a
+      // fresh snapshot, two claims for the same agent touch *different*
+      // session rows so they never block each other, and neither sees the
+      // other's uncommitted OFFERED. Both would count zero and both would
+      // commit. Locking the agent's own `users` row makes concurrent claims by
+      // one agent take turns, and costs nothing to anyone else: two agents
+      // racing for one session lock different rows here and are still decided
+      // by the conditional UPDATE.
+      //
+      // No deadlock is possible from this ordering — an agent locks exactly one
+      // row, always their own, before touching any session.
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, command.agentId), eq(users.tenantId, command.tenantId)))
+        .for('update');
+
+      // 2. Count what this agent is already holding (R5).
+      //
+      // Both halves of "holding": an offer they have not accepted yet, keyed by
+      // `offered_to_agent_id`, and a call in progress, keyed by `agent_id`.
+      // Each is paired with its status, so a stale `offered_to_agent_id` left
+      // on a session that has since moved on cannot consume capacity.
+      const [counted] = await tx
+        .select({ active: sql<string>`count(*)` })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.tenantId, command.tenantId),
+            or(
+              and(
+                eq(sessions.status, SessionStatus.OFFERED),
+                eq(sessions.offeredToAgentId, command.agentId),
+              ),
+              and(
+                eq(sessions.status, SessionStatus.IN_CALL),
+                eq(sessions.agentId, command.agentId),
+              ),
+            ),
+          ),
+        );
+
+      const active = Number(counted?.active ?? 0);
+      if (active >= command.maxConcurrent) {
+        // Nothing was written, and the rollback releases the agent lock.
+        return { kind: 'AT_CAPACITY', active } as const;
+      }
+
+      // 3. The claim itself, exactly as D5 specifies it.
+      //
+      // Three predicates and no fourth: id, tenant, and `status = 'QUEUED'`.
+      // Not the caller's observed version — the session being queued is the
+      // whole precondition, and a version predicate would lose a legitimate
+      // claim to any unrelated write that had bumped it.
+      const claimed = await tx
+        .update(sessions)
+        .set({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: command.agentId,
+          offeredAt: command.offeredAt,
+          version: sql`${sessions.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(sessions.id, command.sessionId),
+            eq(sessions.tenantId, command.tenantId),
+            eq(sessions.status, SessionStatus.QUEUED),
+          ),
+        )
+        .returning({
+          id: sessions.id,
+          status: sessions.status,
+          offeredToAgentId: sessions.offeredToAgentId,
+          offeredAt: sessions.offeredAt,
+          version: sessions.version,
+        });
+
+      const row = claimed[0];
+      // Zero rows: another agent won, or the session left the queue between
+      // the read and the write. Roll back, so no event records an offer that
+      // did not happen.
+      if (row === undefined) return { kind: 'LOST' } as const;
+
+      await this.events.append(
+        {
+          tenantId: command.tenantId,
+          sessionId: command.sessionId,
+          eventType: command.event.type,
+          actorType: command.event.actorType,
+          actorId: command.event.actorId,
+          payload: command.event.payload,
+        },
+        tx,
+      );
+
+      return {
+        kind: 'CLAIMED',
+        session: {
+          id: row.id,
+          status: row.status as SessionStatus,
+          /* c8 ignore next 2 -- both were just set by this statement */
+          offeredToAgentId: row.offeredToAgentId ?? command.agentId,
+          offeredAt: row.offeredAt ?? command.offeredAt,
+          version: row.version,
+        },
+      } as const;
     });
   }
 }

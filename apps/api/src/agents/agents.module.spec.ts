@@ -12,6 +12,12 @@
  * shape and is resolved for the same reason — and it additionally proves that
  * pulling `QueueModule` and `SessionsModule` into this module's imports leaves
  * a graph that still boots.
+ *
+ * `AgentClaimService` (T18) is the third of that shape, and it carries the most
+ * dependencies of any provider here — two repository tokens, two services, the
+ * tenant scope, the logger, and an optional clock. It also proves that adding
+ * `IdempotencyModule` and `TenantsModule` to the imports did not break the
+ * graph.
  */
 
 import { Global, Module } from '@nestjs/common';
@@ -25,6 +31,7 @@ import { DATABASE } from '../common/db/db.tokens.js';
 import { LoggingModule } from '../common/logging/logging.module.js';
 import { REDIS } from '../common/redis/redis.tokens.js';
 import { AGENT_REPOSITORY } from './agent.repository.js';
+import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsModule } from './agents.module.js';
@@ -93,6 +100,18 @@ describe('AgentsModule resolves through the container', () => {
     const service = moduleRef.get(AgentQueueService, { strict: false });
     expect(service).toBeInstanceOf(AgentQueueService);
     expect(typeof service.view).toBe('function');
+  });
+
+  it('resolves AgentClaimService despite its optional clock argument', () => {
+    const service = moduleRef.get(AgentClaimService, { strict: false });
+    expect(service).toBeInstanceOf(AgentClaimService);
+    expect(typeof service.claim).toBe('function');
+  });
+
+  it('exposes the claim route on the controller', () => {
+    // A method, not a route table: this suite resolves the graph rather than
+    // serving requests, and the HTTP suite asserts the path and the guards.
+    expect(typeof moduleRef.get(AgentsController, { strict: false }).claimSession).toBe('function');
   });
 
   it('resolves both repositories behind their tokens', () => {

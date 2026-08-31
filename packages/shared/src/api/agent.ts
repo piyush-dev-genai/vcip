@@ -107,3 +107,23 @@ export type AgentAvailabilityRequest = z.infer<typeof agentAvailabilitySchema>;
 export const agentHeartbeatSchema = z.strictObject({});
 
 export type AgentHeartbeatRequest = z.infer<typeof agentHeartbeatSchema>;
+
+// ----------------------------------------------------------------- claim
+
+/**
+ * `POST /v1/agent/sessions/{session_id}/claim` — no fields at all.
+ *
+ * Everything the claim needs is already established: the session is in the
+ * path, and the agent and the tenant come from the verified JWT. An empty
+ * `strictObject` is what makes that structural — a body carrying `agent_id`,
+ * `tenant_id`, `language`, or a `priority` the caller would like applied is a
+ * 400, not a field the server has to remember not to read.
+ *
+ * Note what is absent from the *response* contract too (§17.1): no
+ * `external_ref`, no customer identifier, no queue internals. Claiming tells an
+ * agent that the offer is theirs and when it lapses; the session itself is
+ * fetched through the routes that already exist.
+ */
+export const agentClaimSchema = z.strictObject({});
+
+export type AgentClaimRequest = z.infer<typeof agentClaimSchema>;

@@ -1,7 +1,7 @@
 /**
- * Agent routes (T16).
+ * Agent routes (T16, T17, T18).
  *
- * Three endpoints, and the guard list is the interesting part of each.
+ * The guard list is the interesting part of each.
  *
  * `login` carries no guard because there is no credential yet — it is the route
  * that mints one. It therefore also carries no `TenantGuard`: there is no
@@ -17,19 +17,41 @@
  * legitimate caller.
  *
  * No route in this file takes an agent id. The agent is whoever the JWT says,
- * and there is no parameter through which that could be overridden.
+ * and there is no parameter through which that could be overridden. The claim
+ * route takes a session id and nothing else — the one thing the caller is
+ * entitled to choose.
  */
 
-import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import type { AgentAvailabilityRequest, AgentLoginRequest } from '@vcip/shared';
-import { agentAvailabilitySchema, agentHeartbeatSchema, agentLoginSchema } from '@vcip/shared';
+import {
+  agentAvailabilitySchema,
+  agentClaimSchema,
+  agentHeartbeatSchema,
+  agentLoginSchema,
+} from '@vcip/shared';
 import { AgentJwtGuard } from '../common/auth/agent-jwt.guard.js';
 import { Auth } from '../common/auth/auth.decorators.js';
 import type { Actor, AgentActor } from '../common/auth/auth-context.js';
 import { TenantGuard } from '../common/auth/tenant.guard.js';
 import type { ApiData } from '../common/http/envelope.js';
 import { data } from '../common/http/envelope.js';
+import { Idempotent } from '../common/idempotency/idempotency.decorator.js';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor.js';
 import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
+import type { ClaimResult } from './agent-claim.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AgentClaimService } from './agent-claim.service.js';
 import type { AgentQueueResult } from './agent-queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentQueueService } from './agent-queue.service.js';
@@ -59,6 +81,7 @@ export class AgentsController {
     private readonly agents: AgentsService,
     private readonly presence: PresenceService,
     private readonly queue: AgentQueueService,
+    private readonly claims: AgentClaimService,
   ) {}
 
   /**
@@ -125,5 +148,32 @@ export class AgentsController {
   @UseGuards(AgentJwtGuard, TenantGuard)
   async queueView(@Auth() actor: Actor): Promise<ApiData<AgentQueueResult>> {
     return data(await this.queue.view(asAgent(actor)));
+  }
+
+  /**
+   * Claim a queued session: `QUEUED -> OFFERED` (T18).
+   *
+   * 200, not 201: no resource is created. The session already existed and this
+   * moved it, which is also why `Idempotency-Key` is required — a retried claim
+   * must not consume a second session, and D13's record is what makes the
+   * replay return the original answer instead of a 409 against the agent's own
+   * first attempt.
+   *
+   * The body is parsed as an empty `strictObject`, so a request trying to name
+   * an `agent_id`, a `tenant_id`, or an offer expiry of its own is a 400. The
+   * session id is the only thing the caller chooses, and `TenantGuard` still
+   * rejects a `?tenant_id=` that disagrees with the token.
+   */
+  @Post('sessions/:id/claim')
+  @HttpCode(200)
+  @UseGuards(AgentJwtGuard, TenantGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent('POST /v1/agent/sessions/{id}/claim')
+  async claimSession(
+    @Auth() actor: Actor,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body(new ZodValidationPipe(agentClaimSchema)) _body: unknown,
+  ): Promise<ApiData<ClaimResult>> {
+    return data(await this.claims.claim(asAgent(actor), id));
   }
 }

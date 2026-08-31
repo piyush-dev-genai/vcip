@@ -66,6 +66,7 @@ const PUBLIC_SURFACE: readonly string[] = [
   'LOCATION_CHECKS',
   'agentLoginSchema',
   'agentAvailabilitySchema',
+  'agentClaimSchema',
   'agentHeartbeatSchema',
   'AGENT_AVAILABILITY_VALUES',
 ];

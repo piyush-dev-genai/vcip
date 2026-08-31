@@ -1,3 +1,5 @@
+export * from './agent-claim.rules.js';
+export * from './agent-claim.service.js';
 export * from './agent-queue.rules.js';
 export * from './agent-queue.service.js';
 export * from './agent.repository.js';

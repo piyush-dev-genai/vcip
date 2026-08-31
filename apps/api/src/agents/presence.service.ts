@@ -25,7 +25,9 @@
  *     fact, and every future reader would have to handle both.
  *
  * `BUSY` appears in this file only as `markBusy`/`markAvailable`, which no HTTP
- * route reaches. T18's claim and T19's accept are the intended callers.
+ * route reaches directly. T18's claim is now the first caller of `markBusy`,
+ * after PostgreSQL has committed the offer — never as the thing that decides
+ * it. `markAvailable` still has no caller; T19 and T20 own the clearing.
  */
 
 import { ForbiddenException, Inject, Injectable, Optional } from '@nestjs/common';
@@ -162,6 +164,24 @@ export class PresenceService {
     // `BUSY` if T18 has claimed for this agent. The heartbeat did not choose
     // it and cannot change it.
     return { agent_id: actor.userId, status: touched.status, last_seen: touched.lastSeen };
+  }
+
+  /**
+   * The agent's live presence status, or null when there is none.
+   *
+   * A read, and only a read: it does not refresh the TTL, so asking whether an
+   * agent is live cannot keep them alive. T18's claim uses it as an eligibility
+   * pre-check.
+   *
+   * The tenant on the stored presence is compared with the tenant on the
+   * credential, and a mismatch reads as absent. That should be unreachable —
+   * both are written from the same JWT — but presence is keyed by agent id
+   * alone, so this is the one place the pairing can be checked at all (I8).
+   */
+  async liveStatus(actor: AgentActor): Promise<AgentPresence | null> {
+    const record = await this.presence.read(actor.userId);
+    if (record === null || record.tenantId !== actor.tenantId) return null;
+    return record.status;
   }
 
   /**
