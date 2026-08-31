@@ -42,6 +42,21 @@ export const SessionEventType = {
   /**
    * Added beyond §15's catalogue.
    *
+   * An offer that lapses returns the session to `QUEUED` (D4, §17.3), which is
+   * a status the session has already held. Recording that with
+   * `SESSION_QUEUED` would make the audit trail unable to distinguish "the
+   * customer joined the queue" from "an agent was offered this and let it
+   * lapse" — exactly the distinction that explains why a customer waited
+   * twice, and exactly what R15 and the billing table care about when asking
+   * whether a wait was the product's fault.
+   *
+   * It is also not a terminal outcome and produces no billing row.
+   */
+  OFFER_EXPIRED: 'OFFER_EXPIRED',
+
+  /**
+   * Added beyond §15's catalogue.
+   *
    * Covers customer-initiated termination on both paths — `QUEUED`/`OFFERED ->
    * DROPPED_QUEUED` and `IN_CALL -> ABORTED`. One name with the `from`/`to`
    * statuses in the payload, rather than one name per edge: the payload already

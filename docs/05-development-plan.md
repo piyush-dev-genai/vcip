@@ -266,11 +266,11 @@ gate and report.
 | T16 | 2 | Agent login, availability, heartbeat, presence TTL, internal BUSY | done |
 | T17 | 2 | `GET /v1/agent/queue` | done |
 | T18 | 2 | Claim `QUEUED -> OFFERED` (conditional update) | done |
-| T19 | 2 | Accept `OFFERED -> IN_CALL` (conditional update, offer not expired) | todo |
-| T20 | 2 | Offer-expiry sweeper `OFFERED -> QUEUED`, preserving queue score | todo |
+| T19 | 2 | Accept `OFFERED -> IN_CALL` (conditional update, offer not expired) | done |
+| T20 | 2 | Offer-expiry sweeper `OFFERED -> QUEUED`, preserving queue score | done |
 | T21 | 2 | Agent portal shell + queue view | todo |
-| T22 | 2 | (!) Two concurrent claims -> one 200, one 409 | todo |
-| T23 | 2 | (!) Offer timeout -> back to QUEUED, unbilled | todo |
+| T22 | 2 | (!) Two concurrent claims -> one 200, one 409 | done |
+| T23 | 2 | (!) Offer timeout -> back to QUEUED, unbilled | done |
 | T24 | 3 | `room_name` at creation; media-token endpoints, both paths | todo |
 | T25 | 3 | Customer + agent join LiveKit, role-scoped publish/subscribe | todo |
 | T26 | 3 | `POST /internal/livekit/webhook` -> agent.joined, timestamps, DROPPED_IN_CALL, AGENT_DISCONNECTED | todo |

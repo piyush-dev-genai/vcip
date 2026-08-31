@@ -50,6 +50,8 @@ import type {
   CreateSessionInput,
   ClaimableSessionRow,
   ClaimCommand,
+  ExpiredOfferRow,
+  SessionAcceptOutcome,
   SessionClaimOutcome,
   GuardedUpdate,
   QueuedSessionRow,
@@ -291,6 +293,14 @@ class InMemorySessionRepository implements SessionRepository {
 
   findClaimable(): Promise<ClaimableSessionRow | null> {
     throw new Error('the customer lifecycle must not read the claim projection');
+  }
+
+  accept(): Promise<SessionAcceptOutcome> {
+    throw new Error('the customer lifecycle must not accept sessions');
+  }
+
+  expireOffers(): Promise<readonly ExpiredOfferRow[]> {
+    throw new Error('the customer lifecycle must not sweep offers');
   }
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {

@@ -30,6 +30,8 @@ import type {
   CreateSessionInput,
   ClaimableSessionRow,
   ClaimCommand,
+  ExpiredOfferRow,
+  SessionAcceptOutcome,
   SessionClaimOutcome,
   GuardedUpdate,
   QueuedSessionRow,
@@ -179,6 +181,14 @@ class FakeSessionRepository implements SessionRepository {
 
   findClaimable(): Promise<ClaimableSessionRow | null> {
     throw new Error('the queue view must not read sessions one at a time');
+  }
+
+  accept(): Promise<SessionAcceptOutcome> {
+    throw new Error('the queue view must not accept sessions');
+  }
+
+  expireOffers(): Promise<readonly ExpiredOfferRow[]> {
+    throw new Error('the queue view must not sweep offers');
   }
 }
 

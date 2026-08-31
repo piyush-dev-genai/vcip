@@ -26,7 +26,7 @@ import type { SessionEventType } from '@vcip/shared';
 // A value import: T17's queued-session read filters on the status literal in
 // SQL, so the enum has to survive compilation rather than be erased.
 import { SessionStatus } from '@vcip/shared';
-import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { sessions, users } from '../../db/schema.js';
 import { InjectDatabase } from '../common/db/db.tokens.js';
@@ -184,6 +184,7 @@ export interface ClaimableSessionRow {
   readonly language: string;
   readonly offeredToAgentId: string | null;
   readonly offeredAt: Date | null;
+  readonly offerExpiresAt: Date | null;
 }
 
 /**
@@ -212,6 +213,17 @@ export interface ClaimCommand {
   readonly maxConcurrent: number;
   /** The server's clock. `offered_at` is never client-supplied. */
   readonly offeredAt: Date;
+  /**
+   * `offered_at + tenants.offer_timeout_seconds`, computed once by the caller.
+   *
+   * Stored, not derived on read. The column carries a partial index —
+   * `idx_sessions_offer_expiry ON (offer_expires_at) WHERE status = 'OFFERED'`
+   * — that exists for the expiry sweeper, and a sweeper querying a column
+   * nothing writes matches nothing and reports success. Deriving the value in
+   * two places would also let the answer an agent was given drift from the
+   * answer the sweeper acts on.
+   */
+  readonly offerExpiresAt: Date;
   readonly event: SessionEventInput;
 }
 
@@ -221,6 +233,8 @@ export interface ClaimedSessionRow {
   readonly status: SessionStatus;
   readonly offeredToAgentId: string;
   readonly offeredAt: Date;
+  /** Read back from the row, so the response reports what was committed. */
+  readonly offerExpiresAt: Date;
   readonly version: number;
 }
 
@@ -243,6 +257,76 @@ export type SessionClaimOutcome =
   | { readonly kind: 'CLAIMED'; readonly session: ClaimedSessionRow }
   | { readonly kind: 'LOST' }
   | { readonly kind: 'AT_CAPACITY'; readonly active: number };
+
+/**
+ * An agent taking up the offer they hold (T19): `OFFERED -> IN_CALL`.
+ *
+ * A third narrow command rather than a wider shared one, for the reason
+ * `ClaimCommand` gives: this writes `agent_id` and `connected_at`, and neither
+ * belongs anywhere the customer lifecycle can reach.
+ *
+ * `now` is the server clock, and it does two jobs — it becomes `connected_at`,
+ * and it is the instant the offer's expiry is measured against. Passing one
+ * value for both means an accept cannot be judged late by a clock different
+ * from the one that timestamps it.
+ */
+export interface AcceptCommand {
+  readonly sessionId: string;
+  /** From the verified JWT. In the WHERE clause, not merely checked (I8). */
+  readonly tenantId: string;
+  /** From the verified JWT, and matched against `offered_to_agent_id` in SQL. */
+  readonly agentId: string;
+  readonly now: Date;
+  readonly event: SessionEventInput;
+}
+
+/** The columns a successful accept reports back. */
+export interface AcceptedSessionRow {
+  readonly id: string;
+  readonly status: SessionStatus;
+  readonly agentId: string;
+  readonly connectedAt: Date;
+  readonly roomName: string | null;
+  readonly version: number;
+}
+
+/**
+ * Why an accept ended the way it did.
+ *
+ * `LOST` is every way the guarded UPDATE can match nothing: the offer went to
+ * someone else, the session left `OFFERED`, or the offer had already lapsed.
+ * The service distinguishes those from the row it read, so this type does not
+ * have to guess which one happened from an empty result.
+ */
+export type SessionAcceptOutcome =
+  { readonly kind: 'ACCEPTED'; readonly session: AcceptedSessionRow } | { readonly kind: 'LOST' };
+
+/**
+ * One offer the sweeper returned to the queue.
+ *
+ * `agentId` is who held it — reported so the sweeper can free that agent's
+ * presence. It is the value `offered_to_agent_id` had *before* the update
+ * cleared it, which is why it has to come back from the statement rather than
+ * be read afterwards.
+ */
+/**
+ * What one sweep pass is asked to do.
+ *
+ * `eventType` is a parameter rather than a constant in here so the choice of
+ * name stays visible at the call site, where the reasoning for it lives. The
+ * payload is derived entirely from the row, so the repository builds it.
+ */
+export interface ExpireOffersCommand {
+  readonly now: Date;
+  readonly limit: number;
+  readonly eventType: SessionEventType;
+}
+
+export interface ExpiredOfferRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly agentId: string | null;
+}
 
 export interface SessionRepository {
   /** Insert the session and its `SESSION_CREATED` event in one transaction. */
@@ -302,6 +386,28 @@ export interface SessionRepository {
    * session by id.
    */
   findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null>;
+
+  /**
+   * Take up an offer: `OFFERED -> IN_CALL` (T19, §17.2).
+   *
+   * Single-winner in the same way the claim is, and against a wider field: the
+   * other contender is not another agent but the expiry sweeper, which is
+   * trying to move the same row back to `QUEUED`.
+   */
+  accept(command: AcceptCommand): Promise<SessionAcceptOutcome>;
+
+  /**
+   * Return lapsed offers to the queue: `OFFERED -> QUEUED` (T20, §17.3).
+   *
+   * Cross-tenant, and the one read in this file that is. A sweeper exists to
+   * find work nobody is asking for, so there is no authenticated tenant to
+   * scope it by — it runs as the system, not on behalf of a caller, which is
+   * why it is unreachable from any route.
+   *
+   * Bounded by `limit`, so one pass is proportional to the batch rather than to
+   * however many offers lapsed while the process was down.
+   */
+  expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]>;
 }
 
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
@@ -496,6 +602,7 @@ export class DrizzleSessionRepository implements SessionRepository {
         language: sessions.language,
         offeredToAgentId: sessions.offeredToAgentId,
         offeredAt: sessions.offeredAt,
+        offerExpiresAt: sessions.offerExpiresAt,
       })
       .from(sessions)
       // Both predicates in the WHERE clause: a foreign id yields no row rather
@@ -506,6 +613,171 @@ export class DrizzleSessionRepository implements SessionRepository {
     const row = rows[0];
     if (row === undefined) return null;
     return { ...row, status: row.status as SessionStatus };
+  }
+
+  async expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {
+    if (command.limit <= 0) return [];
+
+    return this.db.transaction(async (tx) => {
+      // `RETURNING` is what makes this safe to run from several API instances
+      // at once: each row is taken by exactly one UPDATE, so a second sweeper
+      // sees it already `QUEUED` and gets nothing back for it. No advisory
+      // lock and no leader election.
+      //
+      // The subquery bounds the batch — `UPDATE ... LIMIT` is not valid
+      // PostgreSQL — and `FOR UPDATE SKIP LOCKED` means two concurrent sweepers
+      // take disjoint batches rather than contending for the same rows.
+      //
+      // `<=` against the same instant the accept compares with `>`: exactly one
+      // of the two can match a given row at a given clock reading, so an offer
+      // is never both acceptable and expired.
+      // A CTE, and the reason is `RETURNING`: it reports the row as it now is,
+      // so `RETURNING offered_to_agent_id` on a statement that just set that
+      // column to NULL returns NULL for every row. The agent who let the offer
+      // lapse would be unreachable, and nothing would ever clear their `BUSY` —
+      // the exact bug this sweeper exists to prevent. `due` captures the agent
+      // before the update runs, and the final SELECT joins the two so only rows
+      // this pass actually took are reported.
+      //
+      // `FOR UPDATE SKIP LOCKED` in `due` is what lets two sweepers take
+      // disjoint batches instead of contending, and the ISO string with an
+      // explicit cast is because drizzle's raw template hands parameters to the
+      // driver without the column context its query builder has — a Date
+      // arrives unserialisable.
+      const rows = await tx.execute<{
+        id: string;
+        tenant_id: string;
+        agent_id: string | null;
+      }>(sql`
+        WITH due AS (
+          SELECT id, tenant_id, offered_to_agent_id
+            FROM sessions
+           WHERE status = ${SessionStatus.OFFERED}::text
+             AND offer_expires_at <= ${command.now.toISOString()}::timestamptz
+           ORDER BY offer_expires_at
+           LIMIT ${command.limit}::int
+             FOR UPDATE SKIP LOCKED
+        ), swept AS (
+          UPDATE sessions s
+             SET status = ${SessionStatus.QUEUED}::text,
+                 offered_to_agent_id = NULL,
+                 offered_at = NULL,
+                 offer_expires_at = NULL,
+                 version = s.version + 1,
+                 updated_at = now()
+            FROM due
+           WHERE s.id = due.id
+          RETURNING s.id
+        )
+        SELECT due.id, due.tenant_id, due.offered_to_agent_id AS agent_id
+          FROM due JOIN swept ON swept.id = due.id
+      `);
+
+      const expired = rows.map((row) => ({
+        id: String(row.id),
+        tenantId: String(row.tenant_id),
+        agentId: row.agent_id === null ? null : String(row.agent_id),
+      }));
+
+      // One event per swept row, in the same transaction as the sweep. A
+      // session that silently reappeared in the queue with nothing explaining
+      // why would be exactly the lie the append-only log exists to prevent.
+      for (const row of expired) {
+        await this.events.append(
+          {
+            tenantId: row.tenantId,
+            sessionId: row.id,
+            eventType: command.eventType,
+            // The sweeper acts as the system: no agent asked for this, and the
+            // agent named below is the one who let it lapse, not the actor.
+            actorType: 'SYSTEM',
+            actorId: null,
+            payload: {
+              from: SessionStatus.OFFERED,
+              to: SessionStatus.QUEUED,
+              agent_id: row.agentId,
+            },
+          },
+          tx,
+        );
+      }
+
+      return expired;
+    });
+  }
+
+  async accept(command: AcceptCommand): Promise<SessionAcceptOutcome> {
+    return this.db.transaction(async (tx) => {
+      const accepted = await tx
+        .update(sessions)
+        .set({
+          status: SessionStatus.IN_CALL,
+          agentId: command.agentId,
+          // "Accepted at". The moment media actually starts is the LiveKit
+          // join webhook's to record (T26); §17.2 puts this here.
+          connectedAt: command.now,
+          version: sql`${sessions.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(sessions.id, command.sessionId),
+            eq(sessions.tenantId, command.tenantId),
+            eq(sessions.status, SessionStatus.OFFERED),
+            // The offer is this agent's. In SQL, so a second agent holding a
+            // stale response cannot take a session offered to someone else
+            // however the service was reached.
+            eq(sessions.offeredToAgentId, command.agentId),
+            // And it has not lapsed. Strictly greater, so an offer expiring on
+            // this exact millisecond is already gone — the sweeper's predicate
+            // is `<=` on the same column and the same clock, so exactly one of
+            // the two can match and the boundary belongs to neither twice.
+            gt(sessions.offerExpiresAt, command.now),
+          ),
+        )
+        .returning({
+          id: sessions.id,
+          status: sessions.status,
+          agentId: sessions.agentId,
+          connectedAt: sessions.connectedAt,
+          roomName: sessions.roomName,
+          version: sessions.version,
+        });
+
+      const row = accepted[0];
+      // Zero rows: the sweeper won, another agent's offer, already accepted, or
+      // expired. Roll back rather than record an accept that did not happen.
+      if (row === undefined) return { kind: 'LOST' } as const;
+
+      // The offer columns are deliberately left as they were. They become
+      // history on an `IN_CALL` row — who was offered this, and when — and the
+      // sweeper cannot see the row any more because its predicate requires
+      // `status = 'OFFERED'`.
+      await this.events.append(
+        {
+          tenantId: command.tenantId,
+          sessionId: command.sessionId,
+          eventType: command.event.type,
+          actorType: command.event.actorType,
+          actorId: command.event.actorId,
+          payload: command.event.payload,
+        },
+        tx,
+      );
+
+      return {
+        kind: 'ACCEPTED',
+        session: {
+          id: row.id,
+          status: row.status as SessionStatus,
+          /* c8 ignore next 2 -- both were just set by this statement */
+          agentId: row.agentId ?? command.agentId,
+          connectedAt: row.connectedAt ?? command.now,
+          roomName: row.roomName,
+          version: row.version,
+        },
+      } as const;
+    });
   }
 
   async claim(command: ClaimCommand): Promise<SessionClaimOutcome> {
@@ -573,6 +845,7 @@ export class DrizzleSessionRepository implements SessionRepository {
           status: SessionStatus.OFFERED,
           offeredToAgentId: command.agentId,
           offeredAt: command.offeredAt,
+          offerExpiresAt: command.offerExpiresAt,
           version: sql`${sessions.version} + 1`,
           updatedAt: new Date(),
         })
@@ -588,6 +861,7 @@ export class DrizzleSessionRepository implements SessionRepository {
           status: sessions.status,
           offeredToAgentId: sessions.offeredToAgentId,
           offeredAt: sessions.offeredAt,
+          offerExpiresAt: sessions.offerExpiresAt,
           version: sessions.version,
         });
 
@@ -614,9 +888,10 @@ export class DrizzleSessionRepository implements SessionRepository {
         session: {
           id: row.id,
           status: row.status as SessionStatus,
-          /* c8 ignore next 2 -- both were just set by this statement */
+          /* c8 ignore next 3 -- all three were just set by this statement */
           offeredToAgentId: row.offeredToAgentId ?? command.agentId,
           offeredAt: row.offeredAt ?? command.offeredAt,
+          offerExpiresAt: row.offerExpiresAt ?? command.offerExpiresAt,
           version: row.version,
         },
       } as const;

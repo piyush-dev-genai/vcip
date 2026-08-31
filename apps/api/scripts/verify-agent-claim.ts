@@ -556,7 +556,7 @@ async function main(): Promise<void> {
         check(
           Object.keys(projected ?? {})
             .sort()
-            .join(',') === 'id,language,offeredAt,offeredToAgentId,status,tenantId',
+            .join(',') === 'id,language,offerExpiresAt,offeredAt,offeredToAgentId,status,tenantId',
           'and nothing else — no external_ref, consent, geo, or ip_country',
         );
 
@@ -712,6 +712,16 @@ async function main(): Promise<void> {
     // The property a plain count cannot provide: under READ COMMITTED the two
     // statements below take different snapshots and touch different session
     // rows, so nothing but the agent row lock stops both from committing.
+    // The contested race above may have gone to AGENT_TWO, in which case they
+    // are already at max_concurrent and both claims below would be refused for
+    // the wrong reason. Release anything they hold first.
+    await db
+      .update(sessions)
+      .set({ status: SessionStatus.APPROVED, offeredToAgentId: null, offerExpiresAt: null })
+      .where(
+        and(eq(sessions.status, SessionStatus.OFFERED), eq(sessions.offeredToAgentId, AGENT_TWO)),
+      );
+
     const raceA = await seedQueued(db, TENANT_A, 'en');
     const raceB = await seedQueued(db, TENANT_A, 'en');
     await goAvailable(AGENT_TWO, TENANT_A);

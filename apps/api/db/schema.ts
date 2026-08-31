@@ -265,8 +265,11 @@ export const sessions = pgTable(
     agentId: uuid('agent_id').references(() => users.id),
     roomName: text('room_name'),
 
-    // Pull-claim offer fields (D4/D5). `offerExpiresAt` is cleared on accept and
-    // on expiry, so a non-null value always means an offer is outstanding.
+    // Pull-claim offer fields (D4/D5). All three are written on claim (T18) and
+    // kept as history on accept (T19); only the expiry sweeper clears them
+    // (§17.3, T20). So a non-null value on an `OFFERED` row means an offer is
+    // outstanding, while on an `IN_CALL` row it records which agent was offered
+    // the session and when.
     offeredToAgentId: uuid('offered_to_agent_id').references(() => users.id),
     offeredAt: tstz('offered_at'),
     offerExpiresAt: tstz('offer_expires_at'),

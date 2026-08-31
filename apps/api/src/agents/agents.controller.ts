@@ -36,6 +36,7 @@ import {
 import type { AgentAvailabilityRequest, AgentLoginRequest } from '@vcip/shared';
 import {
   agentAvailabilitySchema,
+  agentAcceptSchema,
   agentClaimSchema,
   agentHeartbeatSchema,
   agentLoginSchema,
@@ -49,6 +50,9 @@ import { data } from '../common/http/envelope.js';
 import { Idempotent } from '../common/idempotency/idempotency.decorator.js';
 import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor.js';
 import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
+import type { AcceptResult } from './agent-accept.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AgentAcceptService } from './agent-accept.service.js';
 import type { ClaimResult } from './agent-claim.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentClaimService } from './agent-claim.service.js';
@@ -82,6 +86,7 @@ export class AgentsController {
     private readonly presence: PresenceService,
     private readonly queue: AgentQueueService,
     private readonly claims: AgentClaimService,
+    private readonly accepts: AgentAcceptService,
   ) {}
 
   /**
@@ -175,5 +180,29 @@ export class AgentsController {
     @Body(new ZodValidationPipe(agentClaimSchema)) _body: unknown,
   ): Promise<ApiData<ClaimResult>> {
     return data(await this.claims.claim(asAgent(actor), id));
+  }
+
+  /**
+   * Take up the offer this agent holds: `OFFERED -> IN_CALL` (T19).
+   *
+   * Same guards, same empty strict body, same required `Idempotency-Key` as the
+   * claim. 200 rather than 201 for the same reason: the session existed and
+   * this moved it.
+   *
+   * Note what is *not* here: no LiveKit call, no media token, no recording, no
+   * socket event. §17.2 lists those, but they are T24, T25, T26 and T28 — this
+   * route is the state transition.
+   */
+  @Post('sessions/:id/accept')
+  @HttpCode(200)
+  @UseGuards(AgentJwtGuard, TenantGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent('POST /v1/agent/sessions/{id}/accept')
+  async acceptSession(
+    @Auth() actor: Actor,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body(new ZodValidationPipe(agentAcceptSchema)) _body: unknown,
+  ): Promise<ApiData<AcceptResult>> {
+    return data(await this.accepts.accept(asAgent(actor), id));
   }
 }

@@ -5,11 +5,14 @@ import { QueueModule } from '../queue/queue.module.js';
 import { SessionsModule } from '../sessions/sessions.module.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
 import { AGENT_REPOSITORY, DrizzleAgentRepository } from './agent.repository.js';
+import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
 import { PRESENCE_REPOSITORY, RedisPresenceRepository } from './presence.repository.js';
+import { OfferSweeperController } from './offer-sweeper.controller.js';
+import { OFFER_SWEEP_ENABLED, OfferSweeper } from './offer-sweeper.service.js';
 import { PresenceService } from './presence.service.js';
 
 /**
@@ -42,10 +45,16 @@ import { PresenceService } from './presence.service.js';
  * keeps every SQL statement this module issues in files that already own SQL.
  * `QueueModule` is still read-only here — nothing in T18 removes, re-scores, or
  * repairs a queue member.
+ *
+ * T19 and T20 add no imports. Accept is another conditional UPDATE through the
+ * same repository port, and the offer sweeper needs only that port and
+ * presence. The sweeper is the module's one non-request component: it has no
+ * caller, runs across every tenant, and reaches HTTP solely through an
+ * internal-token route kept for tests and operations.
  */
 @Module({
   imports: [AuthModule, IdempotencyModule, QueueModule, SessionsModule, TenantsModule],
-  controllers: [AgentsController],
+  controllers: [AgentsController, OfferSweeperController],
   providers: [
     { provide: AGENT_REPOSITORY, useClass: DrizzleAgentRepository },
     { provide: PRESENCE_REPOSITORY, useClass: RedisPresenceRepository },
@@ -53,6 +62,11 @@ import { PresenceService } from './presence.service.js';
     PresenceService,
     AgentQueueService,
     AgentClaimService,
+    AgentAcceptService,
+    // The timer runs in the application; test modules build their own graph
+    // and leave it off, so no background pass fires between cases.
+    { provide: OFFER_SWEEP_ENABLED, useValue: true },
+    OfferSweeper,
   ],
   exports: [PresenceService, AGENT_REPOSITORY],
 })

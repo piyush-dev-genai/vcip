@@ -127,3 +127,19 @@ export type AgentHeartbeatRequest = z.infer<typeof agentHeartbeatSchema>;
 export const agentClaimSchema = z.strictObject({});
 
 export type AgentClaimRequest = z.infer<typeof agentClaimSchema>;
+
+// ---------------------------------------------------------------- accept
+
+/**
+ * `POST /v1/agent/sessions/{session_id}/accept` — no fields either.
+ *
+ * The agent is in the JWT, the session is in the path, and everything the
+ * accept decides is already recorded: an unexpired offer in this agent's name.
+ * There is nothing left for a body to contribute, and a strict empty object
+ * says so structurally — a request offering an `agent_id`, a `connected_at`, or
+ * a `room_name` it would like used is a 400 rather than a field the server has
+ * to remember not to trust.
+ */
+export const agentAcceptSchema = z.strictObject({});
+
+export type AgentAcceptRequest = z.infer<typeof agentAcceptSchema>;

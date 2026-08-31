@@ -31,6 +31,8 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   ClaimableSessionRow,
   ClaimCommand,
+  ExpiredOfferRow,
+  SessionAcceptOutcome,
   SessionClaimOutcome,
   CreateSessionInput,
   GuardedUpdate,
@@ -72,6 +74,7 @@ interface StoredSession {
   version: number;
   offeredToAgentId: string | null;
   offeredAt?: Date | null;
+  offerExpiresAt?: Date | null;
   agentId: string | null;
 }
 
@@ -141,6 +144,7 @@ class FakeSessionRepository implements SessionRepository {
       language: row.language,
       offeredToAgentId: row.offeredToAgentId,
       offeredAt: row.offeredAt ?? null,
+      offerExpiresAt: row.offerExpiresAt ?? null,
     });
   }
 
@@ -168,6 +172,7 @@ class FakeSessionRepository implements SessionRepository {
       ...row,
       status: SessionStatus.OFFERED,
       offeredToAgentId: command.agentId,
+      offerExpiresAt: command.offerExpiresAt,
       version: row.version + 1,
     };
     this.rows.set(claimed.id, claimed);
@@ -178,6 +183,7 @@ class FakeSessionRepository implements SessionRepository {
         status: claimed.status,
         offeredToAgentId: command.agentId,
         offeredAt: command.offeredAt,
+        offerExpiresAt: command.offerExpiresAt,
         version: claimed.version,
       },
     });
@@ -193,6 +199,14 @@ class FakeSessionRepository implements SessionRepository {
 
   findQueued(): Promise<readonly QueuedSessionRow[]> {
     throw new Error('a claim must not read the queue projection');
+  }
+
+  accept(): Promise<SessionAcceptOutcome> {
+    throw new Error('a claim must not accept');
+  }
+
+  expireOffers(): Promise<readonly ExpiredOfferRow[]> {
+    throw new Error('a claim must not sweep offers');
   }
 }
 

@@ -31,12 +31,14 @@ import { DATABASE } from '../common/db/db.tokens.js';
 import { LoggingModule } from '../common/logging/logging.module.js';
 import { REDIS } from '../common/redis/redis.tokens.js';
 import { AGENT_REPOSITORY } from './agent.repository.js';
+import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsModule } from './agents.module.js';
 import { AgentsService } from './agents.service.js';
 import { PRESENCE_REPOSITORY } from './presence.repository.js';
+import { OfferSweeper } from './offer-sweeper.service.js';
 import { PresenceService } from './presence.service.js';
 
 /** Secrets are fake and never leave this file. 32+ chars, as the config demands. */
@@ -112,6 +114,26 @@ describe('AgentsModule resolves through the container', () => {
     // A method, not a route table: this suite resolves the graph rather than
     // serving requests, and the HTTP suite asserts the path and the guards.
     expect(typeof moduleRef.get(AgentsController, { strict: false }).claimSession).toBe('function');
+  });
+
+  it('resolves AgentAcceptService despite its optional clock argument', () => {
+    const service = moduleRef.get(AgentAcceptService, { strict: false });
+    expect(service).toBeInstanceOf(AgentAcceptService);
+    expect(typeof service.accept).toBe('function');
+  });
+
+  it('resolves OfferSweeper with both optional arguments', () => {
+    // Two optionals, one of them a boolean flag and one a function type — the
+    // shape most likely to resolve as `Object` and fail at boot.
+    const sweeper = moduleRef.get(OfferSweeper, { strict: false });
+    expect(sweeper).toBeInstanceOf(OfferSweeper);
+    expect(typeof sweeper.sweep).toBe('function');
+  });
+
+  it('exposes the accept route on the controller', () => {
+    expect(typeof moduleRef.get(AgentsController, { strict: false }).acceptSession).toBe(
+      'function',
+    );
   });
 
   it('resolves both repositories behind their tokens', () => {

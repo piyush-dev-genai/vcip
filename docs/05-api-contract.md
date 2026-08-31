@@ -1861,14 +1861,16 @@ says `QUEUED`, not because anything was removed from Redis.
 
 \---
 
-\## 17.2 Accept Session
+\## 17.2 Accept Session [IMPLEMENTED]
 
 ```http
 POST /v1/agent/sessions/{session_id}/accept
 ```
 
 Authentication: Agent JWT.
-Headers: `Idempotency-Key: <unique-key>`
+Headers: `Idempotency-Key: <unique-key>` (required, D13).
+Request body: empty, strictly. A body naming an `agent_id`, a
+`connected_at`, or a `room_name` is a `400`.
 
 ### Preconditions
 
@@ -1878,21 +1880,77 @@ offered_to_agent_id = calling agent
 offer has not expired
 ```
 
+**Holding the offer is the authorization.** Unlike the claim, accept performs no
+profile lookup, no language check, no `max_concurrent` count, and no
+presence check. Each of those decided *whether this agent should get this
+session*, and that was settled at claim time; an unexpired offer in the agent's
+name is PostgreSQL's record of the answer. In particular an agent whose
+heartbeat lapsed between claiming and accepting is **not** refused — dropping a
+waiting customer over a late heartbeat would be the worse outcome, and
+PostgreSQL, not Redis, is authoritative (D1).
+
 ### State Transition
 
 ```text
 OFFERED -> IN_CALL
 ```
 
-### Side Effects
+```sql
+UPDATE sessions
+   SET status = 'IN_CALL',
+       agent_id = :agent_id,
+       connected_at = :now,
+       version = version + 1
+ WHERE id = :session_id
+   AND tenant_id = :tenant_id
+   AND status = 'OFFERED'
+   AND offered_to_agent_id = :agent_id
+   AND offer_expires_at > :now;
+```
 
-1. Assigns `agent_id`
-2. Marks agent presence BUSY
-3. Opens the LiveKit room
-4. Sets `connected_at`
-5. Emits `session.assigned`
-6. Emits `agent.joined` when the participant actually joins (via LiveKit webhook)
-7. Starts recording
+One clock reading does both jobs: it becomes `connected_at` and it is
+the instant the expiry is measured against, so an accept can never be judged
+late by a clock different from the one that timestamps it.
+
+`offer_expires_at > :now` is strict. The sweeper's predicate is
+`<=` on the same column against the same clock, so exactly one of the
+two can match a given instant and the boundary belongs to neither twice.
+
+**The contender is the sweeper, not another agent.** No second agent can hold
+this offer, so the race accept has to win is against §17.3 returning the same row
+to the queue. Both act on `status = 'OFFERED'`, so PostgreSQL
+serialises them and the loser matches nothing. The expiry predicate is not what
+resolves that race — it is what stops an agent accepting an offer that lapsed
+seconds ago and the sweeper has simply not reached yet.
+
+**Why `status = 'OFFERED'` is load-bearing.** The offer fields survive
+an accept (see below), so an `IN_CALL` row still satisfies every other
+predicate in the statement. Without the status predicate a second accept would
+bump the version, append a second `AGENT_ACCEPTED`, and reset
+`connected_at` on a call already in progress.
+
+### Session event
+
+One `AGENT_ACCEPTED`, actor type `AGENT`, in the same
+transaction as the update. `CALL_STARTED` belongs to the LiveKit join
+webhook, not here.
+
+### Side effects
+
+Two, in this order: PostgreSQL commits the transition and its event, then the
+agent's Redis presence is reasserted as `BUSY`. The agent was already
+`BUSY` from the claim; reasserting repairs a presence whose earlier
+write failed. As with the claim, a failed Redis write does not fail the accept.
+
+`offered_to_agent_id`, `offered_at` and
+`offer_expires_at` are **kept**, not cleared. On an `IN_CALL`
+row they are history — which agent was offered this session, when, and until
+when. Only §17.3 clears them.
+
+**What accept does not do.** It does not create a LiveKit room, mint a media
+token, start recording, emit a WebSocket event, or send a webhook. Those are
+separate tasks. `room_name` is returned because the column has held it
+since creation (R2): it is a name, not an admission ticket.
 
 ### Response
 
@@ -1902,26 +1960,115 @@ OFFERED -> IN_CALL
     "session_id": "session-uuid",
     "status": "IN_CALL",
     "agent_id": "agent-uuid",
-    "room_name": "vcip_session_uuid"
+    "room_name": "vcip_session-uuid"
   }
 }
 ```
 
+Exactly these four fields, and no customer data.
+
+### Retrying an accept
+
+An agent accepting a session they are already `IN_CALL` on gets
+`200` and the same body, not a `409`. Nothing transitions
+again: no second event, no version bump, and `connected_at` keeps the
+instant the call actually began rather than moving forward on every retry. A lost
+response is the ordinary way to arrive here, and the agent is about to join a
+call.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `VALIDATION_ERROR` | No `Idempotency-Key`, a non-UUID session id, or any body field |
+| `401` | `UNAUTHENTICATED` | No agent JWT |
+| `404` | `NOT_FOUND` | No such session, or another tenant's — deliberately indistinguishable (I8) |
+| `409` | `SESSION_ALREADY_ASSIGNED` | The offer, or the call, belongs to another agent |
+| `409` | `SESSION_INVALID_STATE` | No offer outstanding, or the offer has expired and the session has returned to the queue |
+
 \---
 
-\## 17.3 Offer Expiry
+\## 17.3 Offer Expiry [IMPLEMENTED]
 
-If the offer is not accepted within `tenants.offer_timeout_seconds`, a sweeper
-returns the session to the queue:
+An offer not accepted within `tenants.offer_timeout_seconds` is
+returned to the queue by a sweeper:
 
 ```text
 OFFERED -> QUEUED
 ```
 
-`offered_to_agent_id` and `offered_at` are cleared, and
-`session.offer_expired` is emitted to the agent. This is not a billable event.
+```sql
+WITH due AS (
+  SELECT id, tenant_id, offered_to_agent_id
+    FROM sessions
+   WHERE status = 'OFFERED'
+     AND offer_expires_at <= :now
+   ORDER BY offer_expires_at
+   LIMIT :batch
+     FOR UPDATE SKIP LOCKED
+), swept AS (
+  UPDATE sessions s
+     SET status = 'QUEUED',
+         offered_to_agent_id = NULL,
+         offered_at = NULL,
+         offer_expires_at = NULL,
+         version = s.version + 1
+    FROM due WHERE s.id = due.id
+  RETURNING s.id
+)
+SELECT due.id, due.tenant_id, due.offered_to_agent_id AS agent_id
+  FROM due JOIN swept ON swept.id = due.id;
+```
 
-Automatic reassignment to a different agent is not implemented in the MVP.
+`offered_to_agent_id`, `offered_at` and
+`offer_expires_at` are cleared, and one `OFFER_EXPIRED`
+event is appended per swept row in the same transaction. `OFFER_EXPIRED`
+rather than `SESSION_QUEUED`: the audit trail has to distinguish a
+customer joining the queue from an agent letting an offer lapse, which is what
+explains why a customer waited twice.
+
+This is not a billable event, and automatic reassignment to another agent is not
+implemented (D4).
+
+**The CTE is not decoration.** `RETURNING` reports the row as it now
+is, so `RETURNING offered_to_agent_id` on a statement that just set
+that column to `NULL` returns `NULL` for every row. The
+agent who let the offer lapse would be unreachable and nothing would ever clear
+their `BUSY`.
+
+### Freeing the agent
+
+`BUSY` is a Redis status on a key the heartbeat keeps refreshing, so
+an agent whose offer lapsed would otherwise stay `BUSY` indefinitely
+and never be offered work again. Each distinct agent in a swept batch is returned
+to `AVAILABLE`, best-effort and individually guarded: PostgreSQL has
+already committed, and a Redis failure must neither undo that nor stop the
+remaining agents being freed.
+
+### The queue projection
+
+Nothing is written to Redis. §17.1 deliberately leaves the ZSET member in place
+on claim, so a session returning to `QUEUED` is already sitting at its
+original score — the customer keeps the place they have been waiting in, at no
+cost.
+
+### Running it
+
+A pass runs on an interval inside the API process, bounded to a fixed batch per
+pass. It is safe to run on every instance simultaneously and needs no lock or
+leader election: each row is taken by exactly one statement, and
+`FOR UPDATE SKIP LOCKED` means concurrent sweepers take disjoint
+batches rather than contending.
+
+```http
+POST /internal/offers/sweep
+```
+
+Internal token only (D10). It runs one pass immediately and reports counts —
+`{ "expired": n, "freed": n }` — and exists for deterministic testing
+and for operations, not because the sweeper needs a caller. It is naturally
+idempotent: a second pass finds the same offers already `QUEUED`.
+
 
 \# 18. Submit Verdict
 

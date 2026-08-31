@@ -17,7 +17,9 @@
     "db:verify-queue": "tsx scripts/verify-queue.ts",
     "db:verify-presence": "tsx scripts/verify-presence.ts",
     "db:verify-agent-queue": "tsx scripts/verify-agent-queue.ts",
-    "db:verify-agent-claim": "tsx scripts/verify-agent-claim.ts"
+    "db:verify-agent-claim": "tsx scripts/verify-agent-claim.ts",
+    "db:verify-agent-accept": "tsx scripts/verify-agent-accept.ts",
+    "db:verify-day2-gate": "nest build && tsx scripts/verify-day2-gate.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

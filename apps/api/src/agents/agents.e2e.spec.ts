@@ -53,8 +53,12 @@ import type {
 import { QUEUE_REPOSITORY } from '../queue/queue.repository.js';
 import type {
   CreateSessionInput,
+  AcceptCommand,
   ClaimableSessionRow,
   ClaimCommand,
+  ExpireOffersCommand,
+  ExpiredOfferRow,
+  SessionAcceptOutcome,
   SessionClaimOutcome,
   GuardedUpdate,
   QueuedSessionRow,
@@ -64,10 +68,13 @@ import type {
 import { SESSION_REPOSITORY } from '../sessions/session.repository.js';
 import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './agent.repository.js';
 import { AGENT_REPOSITORY } from './agent.repository.js';
+import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
+import { OfferSweeperController } from './offer-sweeper.controller.js';
+import { OfferSweeper } from './offer-sweeper.service.js';
 import { presenceKey, PRESENCE_FIELDS, PRESENCE_TTL_SECONDS } from './presence.keys.js';
 import type { PresenceEntry, PresenceRepository, TouchResult } from './presence.repository.js';
 import { PRESENCE_REPOSITORY } from './presence.repository.js';
@@ -254,9 +261,11 @@ interface StoredSession {
   priority: number;
   queuedAt: Date;
   version: number;
+  connectedAt?: Date | null;
   /** Set by a claim (T18). Absent until one succeeds. */
   offeredToAgentId?: string | null;
   offeredAt?: Date | null;
+  offerExpiresAt?: Date | null;
   /** Set by an accept (T19). Present here only so capacity can be counted. */
   agentId?: string | null;
 }
@@ -381,7 +390,78 @@ class FakeSessionStore implements SessionRepository {
       language: row.language,
       offeredToAgentId: row.offeredToAgentId ?? null,
       offeredAt: row.offeredAt ?? null,
+      offerExpiresAt: row.offerExpiresAt ?? null,
     });
+  }
+
+  accept(command: AcceptCommand): Promise<SessionAcceptOutcome> {
+    this.writes += 1;
+    const row = this.rows.get(command.sessionId);
+    // Every predicate the real statement applies: tenant, status, whose offer
+    // it is, and whether it has lapsed.
+    if (
+      row === undefined ||
+      row.tenantId !== command.tenantId ||
+      row.status !== SessionStatus.OFFERED ||
+      row.offeredToAgentId !== command.agentId ||
+      row.offerExpiresAt === undefined ||
+      row.offerExpiresAt === null ||
+      row.offerExpiresAt.getTime() <= command.now.getTime()
+    ) {
+      return Promise.resolve({ kind: 'LOST' });
+    }
+
+    const accepted: StoredSession = {
+      ...row,
+      status: SessionStatus.IN_CALL,
+      agentId: command.agentId,
+      connectedAt: command.now,
+      version: row.version + 1,
+    };
+    this.rows.set(accepted.id, accepted);
+
+    return Promise.resolve({
+      kind: 'ACCEPTED',
+      session: {
+        id: accepted.id,
+        status: accepted.status,
+        agentId: command.agentId,
+        connectedAt: command.now,
+        roomName: `vcip_${accepted.id}`,
+        version: accepted.version,
+      },
+    });
+  }
+
+  expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {
+    this.writes += 1;
+    const due = [...this.rows.values()]
+      .filter(
+        (row) =>
+          row.status === SessionStatus.OFFERED &&
+          row.offerExpiresAt !== undefined &&
+          row.offerExpiresAt !== null &&
+          row.offerExpiresAt.getTime() <= command.now.getTime(),
+      )
+      .slice(0, command.limit);
+
+    const swept = due.map((row) => ({
+      id: row.id,
+      tenantId: row.tenantId,
+      agentId: row.offeredToAgentId ?? null,
+    }));
+
+    for (const row of due) {
+      this.rows.set(row.id, {
+        ...row,
+        status: SessionStatus.QUEUED,
+        offeredToAgentId: null,
+        offeredAt: null,
+        offerExpiresAt: null,
+        version: row.version + 1,
+      });
+    }
+    return Promise.resolve(swept);
   }
 
   claim(command: ClaimCommand): Promise<SessionClaimOutcome> {
@@ -414,6 +494,7 @@ class FakeSessionStore implements SessionRepository {
       status: SessionStatus.OFFERED,
       offeredToAgentId: command.agentId,
       offeredAt: command.offeredAt,
+      offerExpiresAt: command.offerExpiresAt,
       version: row.version + 1,
     };
     this.rows.set(claimed.id, claimed);
@@ -425,6 +506,7 @@ class FakeSessionStore implements SessionRepository {
         status: claimed.status,
         offeredToAgentId: command.agentId,
         offeredAt: command.offeredAt,
+        offerExpiresAt: command.offerExpiresAt,
         version: claimed.version,
       },
     });
@@ -526,7 +608,7 @@ const tenantStore = new FakeTenantConfigStore();
 
 @Module({
   imports: [LoggingModule],
-  controllers: [AgentsController],
+  controllers: [AgentsController, OfferSweeperController],
   providers: [
     { provide: AUTH_CONFIG, useValue: TEST_AUTH_CONFIG },
     { provide: API_KEY_STORE, useClass: FakeApiKeyStore },
@@ -560,6 +642,24 @@ const tenantStore = new FakeTenantConfigStore();
     IdempotencyInterceptor,
     { provide: TENANT_CONFIG_STORE, useValue: tenantStore },
     TenantsService,
+    {
+      provide: AgentAcceptService,
+      useFactory: (
+        sessions: SessionRepository,
+        presence: PresenceService,
+        scope: TenantScope,
+        logger,
+      ) => new AgentAcceptService(sessions, presence, scope, logger, () => new Date(clockMs)),
+      inject: [SESSION_REPOSITORY, PresenceService, TenantScope, LOGGER],
+    },
+    {
+      // The timer stays off: this suite triggers sweeps explicitly, so no pass
+      // can fire between cases and change a fixture out from under an assertion.
+      provide: OfferSweeper,
+      useFactory: (sessions: SessionRepository, presence: PresenceService, logger) =>
+        new OfferSweeper(sessions, presence, logger, false, () => new Date(clockMs)),
+      inject: [SESSION_REPOSITORY, PresenceService, LOGGER],
+    },
     {
       provide: AgentClaimService,
       useFactory: (
@@ -2105,6 +2205,402 @@ describe('agent identity and presence over HTTP', () => {
       expect(logged).toContain('agent.claim.offered');
       expect(logged).toContain(AGENT_A1);
       expect(logged).toContain(TENANT_A);
+    });
+  });
+
+  // ------------------------------------------------------------ accept
+
+  describe('POST /v1/agent/sessions/:id/accept', () => {
+    const SESSION_EN = '00000000-0000-4000-8000-00000000f001';
+    const SESSION_TWO = '00000000-0000-4000-8000-00000000f002';
+    const QUEUED_AT = Date.parse('2026-08-31T08:59:28.000Z');
+
+    let keySeq = 0;
+    const idem = (): string => `accept-key-${(keySeq += 1)}`;
+
+    const call = (path: string, id: string, token: string, key = idem()) =>
+      post(`/sessions/${id}/${path}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({});
+
+    const accept = (id: string, token: string, key = idem()) => call('accept', id, token, key);
+    const claim = (id: string, token: string, key = idem()) => call('claim', id, token, key);
+
+    const enqueue = (id: string, over: Partial<StoredSession> = {}): void => {
+      const row: StoredSession = {
+        id,
+        tenantId: TENANT_A,
+        status: SessionStatus.QUEUED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(QUEUED_AT),
+        version: 2,
+        ...over,
+      };
+      sessionStore.seed(row);
+      queueStore.seed(row.tenantId, row.language, row.id, row.queuedAt.getTime());
+    };
+
+    const availableAgent = async (email = 'agent.one@demo.local'): Promise<string> => {
+      const token = await loginAs(email);
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      return token;
+    };
+
+    /** The real route to an offer: queue it, then claim it. */
+    const claimed = async (id: string): Promise<string> => {
+      enqueue(id);
+      const token = await availableAgent();
+      const response = await claim(id, token);
+      expect(response.status).toBe(200);
+      return token;
+    };
+
+    // --- the happy path ----------------------------------------------------
+
+    it('moves an offered session to IN_CALL', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const response = await accept(SESSION_EN, token);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe(SessionStatus.IN_CALL);
+      expect(sessionStore.rows.get(SESSION_EN)?.status).toBe(SessionStatus.IN_CALL);
+    });
+
+    it('assigns the session to the accepting agent', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const response = await accept(SESSION_EN, token);
+
+      expect(response.body.data.agent_id).toBe(AGENT_A1);
+      expect(sessionStore.rows.get(SESSION_EN)?.agentId).toBe(AGENT_A1);
+    });
+
+    it('returns exactly the four contract fields and no customer data', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const response = await accept(SESSION_EN, token);
+
+      expect(Object.keys(response.body)).toEqual(['data']);
+      expect(Object.keys(response.body.data).sort()).toEqual([
+        'agent_id',
+        'room_name',
+        'session_id',
+        'status',
+      ]);
+      expect(response.body.data.room_name).toBe(`vcip_${SESSION_EN}`);
+    });
+
+    it('sets connected_at', async () => {
+      const token = await claimed(SESSION_EN);
+
+      await accept(SESSION_EN, token);
+
+      expect(sessionStore.rows.get(SESSION_EN)?.connectedAt).toBeDefined();
+    });
+
+    it('keeps the agent BUSY', async () => {
+      const token = await claimed(SESSION_EN);
+
+      await accept(SESSION_EN, token);
+
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.BUSY);
+    });
+
+    it('keeps the offer fields as history', async () => {
+      const token = await claimed(SESSION_EN);
+
+      await accept(SESSION_EN, token);
+
+      const row = sessionStore.rows.get(SESSION_EN);
+      expect(row?.offeredToAgentId).toBe(AGENT_A1);
+      expect(row?.offerExpiresAt).not.toBeNull();
+    });
+
+    // --- refusals ----------------------------------------------------------
+
+    it('refuses a session nobody has claimed', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+
+      const response = await accept(SESSION_EN, token);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe(ErrorCode.SESSION_INVALID_STATE);
+    });
+
+    it('refuses an offer held by another agent', async () => {
+      await claimed(SESSION_EN);
+      const other = await availableAgent('agent.two@demo.local');
+
+      const response = await accept(SESSION_EN, other);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe(ErrorCode.SESSION_ALREADY_ASSIGNED);
+      expect(sessionStore.rows.get(SESSION_EN)?.status).toBe(SessionStatus.OFFERED);
+    });
+
+    it('refuses an offer that has lapsed', async () => {
+      const token = await claimed(SESSION_EN);
+      // Past the tenant's 30-second window.
+      clockMs += 31_000;
+
+      const response = await accept(SESSION_EN, token);
+
+      expect(response.status).toBe(409);
+      expect(sessionStore.rows.get(SESSION_EN)?.status).toBe(SessionStatus.OFFERED);
+    });
+
+    it('is a 404 for another tenant session', async () => {
+      sessionStore.seed({
+        id: SESSION_TWO,
+        tenantId: TENANT_B,
+        status: SessionStatus.OFFERED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(QUEUED_AT),
+        version: 2,
+        offeredToAgentId: AGENT_B1,
+        offerExpiresAt: new Date(clockMs + 30_000),
+      });
+      const token = await availableAgent();
+
+      const response = await accept(SESSION_TWO, token);
+
+      expect(response.status).toBe(404);
+    });
+
+    it('rejects a request with no credential', async () => {
+      await claimed(SESSION_EN);
+
+      const response = await post(`/sessions/${SESSION_EN}/accept`)
+        .set('Idempotency-Key', idem())
+        .send({});
+
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects a body naming an agent or a room', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const response = await post(`/sessions/${SESSION_EN}/accept`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', idem())
+        .send({ agent_id: AGENT_A2, room_name: 'vcip_elsewhere' });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('requires an Idempotency-Key', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const response = await post(`/sessions/${SESSION_EN}/accept`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(response.status).toBe(400);
+    });
+
+    it('rejects a query string naming another tenant', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const response = await post(`/sessions/${SESSION_EN}/accept?tenant_id=${TENANT_B}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', idem())
+        .send({});
+
+      expect(response.status).toBe(403);
+    });
+
+    // --- retry -------------------------------------------------------------
+
+    it('returns the session to the agent already in it', async () => {
+      const token = await claimed(SESSION_EN);
+
+      const first = await accept(SESSION_EN, token);
+      // A different key: a genuine second request, not an idempotency replay.
+      const again = await accept(SESSION_EN, token);
+
+      expect(again.status).toBe(200);
+      expect(again.body.data).toEqual(first.body.data);
+      expect(sessionStore.rows.get(SESSION_EN)?.version).toBe(first.body.data ? 4 : 4);
+    });
+
+    it('conflicts when the same key is reused for a different session', async () => {
+      const token = await claimed(SESSION_EN);
+      const key = 'one-key-two-accepts';
+
+      const first = await accept(SESSION_EN, token, key);
+      const second = await accept(SESSION_TWO, token, key);
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(409);
+      expect(second.body.error.code).toBe(ErrorCode.CONFLICT);
+    });
+
+    // --- the queue ---------------------------------------------------------
+
+    it('leaves the Redis queue member untouched', async () => {
+      const token = await claimed(SESSION_EN);
+      const snapshot = (): string =>
+        JSON.stringify([...queueStore.sets].map(([k, v]) => [k, [...v.entries()].sort()]));
+      const before = snapshot();
+
+      await accept(SESSION_EN, token);
+
+      expect(snapshot()).toBe(before);
+    });
+
+    it('logs no credential', async () => {
+      const token = await claimed(SESSION_EN);
+
+      await accept(SESSION_EN, token);
+
+      expect(logged).not.toContain(token);
+      expect(logged).not.toContain(PASSWORD);
+      expect(logged).toContain('agent.accept.connected');
+    });
+  });
+
+  // ------------------------------------------------------- offer sweeper
+
+  describe('POST /internal/offers/sweep', () => {
+    const SESSION_EN = '00000000-0000-4000-8000-00000000f101';
+    const QUEUED_AT = Date.parse('2026-08-31T08:59:28.000Z');
+
+    const sweep = () =>
+      request(app.getHttpServer())
+        .post('/internal/offers/sweep')
+        .set(INTERNAL_TOKEN_HEADER, TEST_AUTH_CONFIG.internalToken)
+        .send({});
+
+    const claimOne = async (id: string): Promise<string> => {
+      sessionStore.seed({
+        id,
+        tenantId: TENANT_A,
+        status: SessionStatus.QUEUED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(QUEUED_AT),
+        version: 2,
+      });
+      queueStore.seed(TENANT_A, 'en', id, QUEUED_AT);
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      const response = await post(`/sessions/${id}/claim`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', `sweep-claim-${id}`)
+        .send({});
+      expect(response.status).toBe(200);
+      return token;
+    };
+
+    it('returns a lapsed offer to the queue', async () => {
+      await claimOne(SESSION_EN);
+      clockMs += 31_000;
+
+      const response = await sweep();
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.expired).toBe(1);
+      expect(sessionStore.rows.get(SESSION_EN)?.status).toBe(SessionStatus.QUEUED);
+    });
+
+    it('frees the agent who let it lapse', async () => {
+      const token = await claimOne(SESSION_EN);
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.BUSY);
+
+      // Heartbeating throughout, which is the case that matters: an agent who
+      // stops loses the key to its 15s TTL, but one with the tab open stays
+      // BUSY for as long as they keep refreshing it — that is, for ever.
+      for (let i = 0; i < 4; i += 1) {
+        clockMs += 8_000;
+        await bearer('/heartbeat', token).send({});
+      }
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.BUSY);
+
+      const response = await sweep();
+
+      // Otherwise the agent stays BUSY for as long as their heartbeat runs.
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.AVAILABLE);
+      expect(response.body.data.freed).toBe(1);
+    });
+
+    it('leaves an offer that is still live', async () => {
+      await claimOne(SESSION_EN);
+
+      const response = await sweep();
+
+      expect(response.body.data.expired).toBe(0);
+      expect(sessionStore.rows.get(SESSION_EN)?.status).toBe(SessionStatus.OFFERED);
+    });
+
+    it('lets the session be claimed again once it is back', async () => {
+      await claimOne(SESSION_EN);
+      clockMs += 31_000;
+      await sweep();
+
+      // The same agent, which also proves their max_concurrent was released.
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      const again = await post(`/sessions/${SESSION_EN}/claim`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', 'reclaim-after-sweep')
+        .send({});
+
+      expect(again.status).toBe(200);
+      expect(again.body.data.offered_to_agent_id).toBe(AGENT_A1);
+    });
+
+    it('keeps the queue member at its original score', async () => {
+      await claimOne(SESSION_EN);
+      clockMs += 31_000;
+
+      await sweep();
+
+      // T18 never removed it, so the customer keeps the place they waited for.
+      expect(queueStore.sets.get(queueKey(TENANT_A, 'en'))?.get(SESSION_EN)).toBe(QUEUED_AT);
+    });
+
+    it('is a no-op when run twice', async () => {
+      await claimOne(SESSION_EN);
+      clockMs += 31_000;
+
+      const first = await sweep();
+      const second = await sweep();
+
+      expect(first.body.data.expired).toBe(1);
+      expect(second.body.data.expired).toBe(0);
+    });
+
+    it('rejects a request with no internal token', async () => {
+      const response = await request(app.getHttpServer()).post('/internal/offers/sweep').send({});
+
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects an agent JWT', async () => {
+      const token = await loginAs();
+
+      const response = await request(app.getHttpServer())
+        .post('/internal/offers/sweep')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(response.status).toBe(401);
+    });
+
+    it('reports counts and no identifiers', async () => {
+      await claimOne(SESSION_EN);
+      clockMs += 31_000;
+
+      const response = await sweep();
+
+      expect(Object.keys(response.body.data).sort()).toEqual(['expired', 'freed']);
+      expect(JSON.stringify(response.body)).not.toContain(SESSION_EN);
+      expect(JSON.stringify(response.body)).not.toContain(AGENT_A1);
     });
   });
 });

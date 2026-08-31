@@ -5,6 +5,7 @@ import {
   agentAvailabilitySchema,
   agentHeartbeatSchema,
   agentLoginSchema,
+  agentAcceptSchema,
   agentClaimSchema,
 } from './agent.js';
 
@@ -153,5 +154,33 @@ describe('agentClaimSchema', () => {
     // Both are empty strictObjects, and both are that way on purpose. If one
     // ever grows a field, this is the test that says so out loud.
     expect(Object.keys(agentClaimSchema.shape)).toEqual([]);
+  });
+});
+
+describe('agentAcceptSchema', () => {
+  it('accepts an empty body', () => {
+    expect(agentAcceptSchema.parse({})).toEqual({});
+  });
+
+  it('rejects every field a caller might try to assert', () => {
+    for (const body of [
+      // Decided at claim time and recorded in PostgreSQL.
+      { agent_id: '00000000-0000-4000-8000-000000000001' },
+      { tenant_id: '00000000-0000-4000-8000-00000000000a' },
+      { session_id: '00000000-0000-4000-8000-00000000e001' },
+      // Server-owned: the accept instant and the room are not the client's.
+      { connected_at: '2099-01-01T00:00:00.000Z' },
+      { room_name: 'vcip_somewhere_else' },
+      { status: 'IN_CALL' },
+      // Nor may a caller wave away the expiry that refused them.
+      { offer_expires_at: '2099-01-01T00:00:00.000Z' },
+      { force: true },
+    ]) {
+      expect(agentAcceptSchema.safeParse(body).success).toBe(false);
+    }
+  });
+
+  it('is the same shape as the claim: the path and the token say everything', () => {
+    expect(Object.keys(agentAcceptSchema.shape)).toEqual([]);
   });
 });

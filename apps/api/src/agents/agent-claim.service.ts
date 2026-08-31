@@ -147,6 +147,9 @@ export class AgentClaimService {
       agentId: actor.userId,
       maxConcurrent: profile.maxConcurrent,
       offeredAt,
+      // Computed once, here, and stored. The response then reports the row
+      // rather than a second derivation of it.
+      offerExpiresAt: offerExpiresAt(offeredAt, config.offerTimeoutSeconds),
       // The canonical name for this transition. `SESSION_ASSIGNED` is what
       // `docs/06-database-schema.md` §15 calls it, and the vocabulary is
       // closed — the payload carries the edge, so no new name is needed to
@@ -216,8 +219,12 @@ export class AgentClaimService {
   ): ClaimResult | null {
     if (session.status !== SessionStatus.OFFERED) return null;
     if (session.offeredToAgentId !== actor.userId) return null;
-    /* c8 ignore next -- OFFERED always carries the timestamp that set it */
-    const offeredAt = session.offeredAt ?? this.now();
+
+    // The stored expiry, not a fresh derivation. The sweeper acts on this
+    // column, so an agent must be told the same instant the sweeper will use;
+    // the fallback covers only a row written before the column was persisted.
+    const expiresAt =
+      session.offerExpiresAt ?? offerExpiresAt(session.offeredAt ?? this.now(), timeoutSeconds);
 
     void this.markBusy(actor, session.id);
 
@@ -235,7 +242,7 @@ export class AgentClaimService {
       session_id: session.id,
       status: SessionStatus.OFFERED,
       offered_to_agent_id: actor.userId,
-      offer_expires_at: offerExpiresAt(offeredAt, timeoutSeconds).toISOString(),
+      offer_expires_at: expiresAt.toISOString(),
     };
   }
 
@@ -363,7 +370,8 @@ export class AgentClaimService {
       session_id: session.id,
       status: session.status,
       offered_to_agent_id: session.offeredToAgentId,
-      offer_expires_at: offerExpiresAt(session.offeredAt, timeoutSeconds).toISOString(),
+      // What the row holds, so the agent and the sweeper agree.
+      offer_expires_at: session.offerExpiresAt.toISOString(),
     };
   }
 
