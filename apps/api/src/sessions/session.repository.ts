@@ -165,6 +165,28 @@ export interface QueuedSessionRow {
 }
 
 /**
+ * A session as the claim path reads it, before deciding anything.
+ *
+ * Narrow for the same reason `QueuedSessionRow` is: `external_ref`, consent,
+ * geo, and IP country are not needed to decide a claim, so they never enter the
+ * process. The offer columns *are* here, and they are the point — without
+ * `offered_to_agent_id` the claim cannot tell "another agent holds this" from
+ * "you already hold this", and told an agent retrying their own successful
+ * claim that they had lost it.
+ *
+ * `tenantId` is present so `TenantScope` can still be the single place a 404 is
+ * decided, even though the read is already tenant-scoped in SQL.
+ */
+export interface ClaimableSessionRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly status: SessionStatus;
+  readonly language: string;
+  readonly offeredToAgentId: string | null;
+  readonly offeredAt: Date | null;
+}
+
+/**
  * An agent's claim on one queued session (T18).
  *
  * Separate from `GuardedUpdate` on purpose, and the separation is the safety
@@ -270,6 +292,16 @@ export interface SessionRepository {
    * for business state regardless.
    */
   claim(command: ClaimCommand): Promise<SessionClaimOutcome>;
+
+  /**
+   * One session, as the claim path needs to see it.
+   *
+   * Tenant-scoped in SQL rather than fetched and then checked, so another
+   * tenant's row is never loaded at all (I8) — the same treatment `findQueued`
+   * gets, and a narrowing on `findById`, which returns every column of any
+   * session by id.
+   */
+  findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null>;
 }
 
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
@@ -453,6 +485,27 @@ export class DrizzleSessionRepository implements SessionRepository {
 
       return toRow(row);
     });
+  }
+
+  async findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null> {
+    const rows = await this.db
+      .select({
+        id: sessions.id,
+        tenantId: sessions.tenantId,
+        status: sessions.status,
+        language: sessions.language,
+        offeredToAgentId: sessions.offeredToAgentId,
+        offeredAt: sessions.offeredAt,
+      })
+      .from(sessions)
+      // Both predicates in the WHERE clause: a foreign id yields no row rather
+      // than a row a later check has to remember to reject.
+      .where(and(eq(sessions.id, sessionId), eq(sessions.tenantId, tenantId)))
+      .limit(1);
+
+    const row = rows[0];
+    if (row === undefined) return null;
+    return { ...row, status: row.status as SessionStatus };
   }
 
   async claim(command: ClaimCommand): Promise<SessionClaimOutcome> {

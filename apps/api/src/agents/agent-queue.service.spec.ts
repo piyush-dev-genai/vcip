@@ -28,6 +28,7 @@ import type {
 } from '../queue/queue.repository.js';
 import type {
   CreateSessionInput,
+  ClaimableSessionRow,
   ClaimCommand,
   SessionClaimOutcome,
   GuardedUpdate,
@@ -174,6 +175,10 @@ class FakeSessionRepository implements SessionRepository {
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the queue view must not claim sessions');
+  }
+
+  findClaimable(): Promise<ClaimableSessionRow | null> {
+    throw new Error('the queue view must not read sessions one at a time');
   }
 }
 

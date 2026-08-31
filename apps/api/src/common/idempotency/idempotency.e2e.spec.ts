@@ -1,5 +1,5 @@
 import { Writable } from 'node:stream';
-import { Body, Controller, Get, Module, Post } from '@nestjs/common';
+import { Body, Controller, Get, Module, Param, Post } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
@@ -124,6 +124,22 @@ class ProbeController {
   queue(): unknown {
     handlerCalls += 1;
     return { data: { queued: true } };
+  }
+
+  /**
+   * Mirrors the shape of the three per-session routes: an empty body, with the
+   * resource named only in the path.
+   *
+   * This is the case the fingerprint could not see. Without the resolved route
+   * parameters, every call to this endpoint hashed identically, so one caller
+   * reusing a key against a different session was handed the first session's
+   * response with a 200.
+   */
+  @Post('sessions/:id/abort')
+  @Idempotent('POST /v1/sessions/{id}/abort')
+  abortSession(@Param('id') id: string): unknown {
+    handlerCalls += 1;
+    return { data: { session_id: id, aborted: true } };
   }
 
   /** Not marked: a read endpoint must not be forced to carry a key. */
@@ -461,5 +477,38 @@ describe('idempotency through a real application', () => {
     expect(stored).not.toContain('FAKE-BEARER-TOKEN-0000');
     expect(stored).not.toContain('Bearer');
     expect(logged).not.toContain('FAKE-BEARER-TOKEN-0000');
+  });
+
+  describe('a key is bound to the resource it was used on', () => {
+    it('conflicts when the same key is used for a different session', async () => {
+      const first = await post('/probe/sessions/session-a/abort', 'k-shared', {});
+      const second = await post('/probe/sessions/session-b/abort', 'k-shared', {});
+
+      expect(first.status).toBe(201);
+      expect(first.body.data.session_id).toBe('session-a');
+      // Not a replay of session-a's response, which is what this used to be.
+      expect(second.status).toBe(409);
+      expect(second.body.error.code).toBe(ErrorCode.CONFLICT);
+      // And the second request never ran.
+      expect(handlerCalls).toBe(1);
+    });
+
+    it('still replays when the same key is used for the same session', async () => {
+      const first = await post('/probe/sessions/session-a/abort', 'k-same', {});
+      const second = await post('/probe/sessions/session-a/abort', 'k-same', {});
+
+      expect(second.status).toBe(first.status);
+      expect(second.body).toEqual(first.body);
+      expect(handlerCalls).toBe(1);
+    });
+
+    it('lets different keys act on different sessions', async () => {
+      const a = await post('/probe/sessions/session-a/abort', 'k-a', {});
+      const b = await post('/probe/sessions/session-b/abort', 'k-b', {});
+
+      expect(a.body.data.session_id).toBe('session-a');
+      expect(b.body.data.session_id).toBe('session-b');
+      expect(handlerCalls).toBe(2);
+    });
   });
 });

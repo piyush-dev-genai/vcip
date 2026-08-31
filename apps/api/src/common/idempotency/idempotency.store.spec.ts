@@ -111,6 +111,35 @@ describe('request fingerprinting', () => {
     expect(a).not.toBe(b);
   });
 
+  it('differs when the route parameters differ', () => {
+    // The regression this exists for. The three per-session routes carry an
+    // empty body and name their resource only in the path, so without the
+    // resolved parameters these two calls hashed identically — and the second
+    // was replayed the first one's response.
+    const a = fingerprintRequest('POST', 'POST /v1/sessions/{id}/queue', {}, { id: 'session-a' });
+    const b = fingerprintRequest('POST', 'POST /v1/sessions/{id}/queue', {}, { id: 'session-b' });
+    expect(a).not.toBe(b);
+  });
+
+  it('matches when the route parameters match', () => {
+    const a = fingerprintRequest('POST', 'POST /v1/sessions/{id}/queue', {}, { id: 'session-a' });
+    const b = fingerprintRequest('POST', 'POST /v1/sessions/{id}/queue', {}, { id: 'session-a' });
+    expect(a).toBe(b);
+  });
+
+  it('treats absent parameters as no parameters', () => {
+    // Routes without a path parameter must not be forced to pass one.
+    expect(fingerprintRequest('POST', 'POST /v1/sessions', { a: 1 })).toBe(
+      fingerprintRequest('POST', 'POST /v1/sessions', { a: 1 }, {}),
+    );
+  });
+
+  it('does not confuse a parameter with a body field of the same name', () => {
+    expect(fingerprintRequest('POST', '/p', {}, { id: 'x' })).not.toBe(
+      fingerprintRequest('POST', '/p', { id: 'x' }, {}),
+    );
+  });
+
   it('differs when the endpoint or method differs', () => {
     expect(fingerprintRequest('POST', '/a', {})).not.toBe(fingerprintRequest('POST', '/b', {}));
     expect(fingerprintRequest('POST', '/a', {})).not.toBe(fingerprintRequest('PUT', '/a', {}));

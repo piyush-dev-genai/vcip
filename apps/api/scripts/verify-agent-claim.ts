@@ -513,6 +513,53 @@ async function main(): Promise<void> {
         }
         check(adminStatus === 403, 'a tenant admin cannot claim');
 
+        section('[retry] an agent asking again for an offer they already hold');
+        // AGENT_ONE claimed `first` at the top of this run and still holds it.
+        const held = await service.claim(actor(AGENT_ONE, TENANT_A), first);
+        check(held.status === SessionStatus.OFFERED, 'the offer is returned, not refused');
+        check(held.offered_to_agent_id === AGENT_ONE, 'and it is still theirs');
+        check(
+          held.offer_expires_at === offerExpiresAt(NOW, OFFER_TIMEOUT).toISOString(),
+          'with the original window, not one re-based on the retry',
+        );
+
+        const [afterRetry] = await executor
+          .select({ version: sessions.version })
+          .from(sessions)
+          .where(eq(sessions.id, first));
+        check(
+          Number(afterRetry?.version) === 2,
+          'the retry bumped no version — nothing was re-claimed',
+        );
+        const retryEvents = await executor
+          .select({ id: sessionEvents.id })
+          .from(sessionEvents)
+          .where(eq(sessionEvents.sessionId, first));
+        check(retryEvents.length === 1, 'and appended no second SESSION_ASSIGNED');
+
+        section('[read] the claim projection is tenant-scoped in sql');
+        const projectionRepo = new DrizzleSessionRepository(executor, eventWriter);
+        const foreignForRead = await seedQueued(executor, TENANT_B, 'en');
+        check(
+          (await projectionRepo.findClaimable(TENANT_A, foreignForRead)) === null,
+          "findClaimable returns nothing for another tenant's session id",
+        );
+        check(
+          (await projectionRepo.findClaimable(TENANT_B, foreignForRead)) !== null,
+          'and returns the row to the tenant that owns it',
+        );
+        const projected = await projectionRepo.findClaimable(TENANT_A, first);
+        check(
+          projected?.offeredToAgentId === AGENT_ONE && projected.offeredAt !== null,
+          'it carries the offer columns the retry path needs',
+        );
+        check(
+          Object.keys(projected ?? {})
+            .sort()
+            .join(',') === 'id,language,offeredAt,offeredToAgentId,status,tenantId',
+          'and nothing else — no external_ref, consent, geo, or ip_country',
+        );
+
         section('[repository] the guards live in the SQL, not only in the service');
         // Straight at the port, bypassing the service entirely. The service
         // rejects a cross-tenant session with a 404 long before the UPDATE

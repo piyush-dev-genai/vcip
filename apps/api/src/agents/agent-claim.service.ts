@@ -41,9 +41,9 @@ import { TenantScope } from '../common/auth/tenant-scope.js';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
 import { setContextSession } from '../common/logging/request-context.js';
 import type {
+  ClaimableSessionRow,
   SessionClaimOutcome,
   SessionRepository,
-  SessionRow,
 } from '../sessions/session.repository.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
@@ -120,15 +120,25 @@ export class AgentClaimService {
     setContextSession(sessionId);
 
     const profile = await this.requireProfile(actor);
-    const session = await this.requireClaimable(actor, sessionId);
+    const session = await this.load(actor, sessionId);
+
+    // Read before anything is decided: the timeout is needed both to report an
+    // offer this agent already holds and to describe a new one, and a missing
+    // tenant row is a 500 rather than something that should surface halfway
+    // through a transaction.
+    const config = await this.tenants.requireConfig(actor.tenantId);
+
+    // Already theirs. Answered before language, presence, and capacity, because
+    // none of those is being decided — the offer exists, and this is a report
+    // of it. A retry after a lost response is the ordinary way to arrive here,
+    // and the old behaviour told that agent another agent had taken a session
+    // they were in fact holding, with no route left to find it.
+    const own = this.ownOffer(actor, session, config.offerTimeoutSeconds);
+    if (own !== null) return own;
+
+    this.requireClaimable(session);
     this.requireLanguage(actor, profile, session);
     await this.requirePresent(actor);
-
-    // Read before the write, and outside it: the timeout is tenant
-    // configuration, not part of the claim's atomicity, and a missing tenant
-    // row is a 500 rather than something that should abort a transaction
-    // halfway through.
-    const config = await this.tenants.requireConfig(actor.tenantId);
 
     const offeredAt = this.now();
     const outcome = await this.sessions.claim({
@@ -179,17 +189,66 @@ export class AgentClaimService {
    * tenants (I8). That check runs before status, language, and presence — none
    * of which may leak anything about a row this agent may not see.
    */
-  private async requireClaimable(actor: AgentActor, sessionId: string): Promise<SessionRow> {
-    const session = this.scope.assertOwnership(actor, await this.sessions.findById(sessionId));
+  private async load(actor: AgentActor, sessionId: string): Promise<ClaimableSessionRow> {
+    // The read is already tenant-scoped in SQL, so this can only be reached
+    // with a matching row or none. `assertOwnership` is still what turns "none"
+    // into the 404, so a session in another tenant and a session that never
+    // existed keep giving the identical answer, decided in one place (I8).
+    return this.scope.assertOwnership(
+      actor,
+      await this.sessions.findClaimable(actor.tenantId, sessionId),
+    );
+  }
 
-    if (session.status !== SessionStatus.QUEUED) {
-      if (ASSIGNED_STATUSES.includes(session.status)) throw alreadyAssigned();
-      throw new DomainError(
-        ErrorCode.SESSION_INVALID_STATE,
-        'The session is not waiting in the queue.',
-      );
-    }
-    return session;
+  /**
+   * The offer this agent already holds, or null.
+   *
+   * Reported as a success rather than a conflict, with the expiry derived from
+   * the stored `offered_at` — so a retry gets the *original* window, not a
+   * fresh one. Nothing is re-claimed and no event is appended; the only write
+   * is the best-effort `BUSY`, which repairs a presence whose first write
+   * failed.
+   */
+  private ownOffer(
+    actor: AgentActor,
+    session: ClaimableSessionRow,
+    timeoutSeconds: number,
+  ): ClaimResult | null {
+    if (session.status !== SessionStatus.OFFERED) return null;
+    if (session.offeredToAgentId !== actor.userId) return null;
+    /* c8 ignore next -- OFFERED always carries the timestamp that set it */
+    const offeredAt = session.offeredAt ?? this.now();
+
+    void this.markBusy(actor, session.id);
+
+    this.logger.info(
+      {
+        event: 'agent.claim.already_held',
+        agent_id: actor.userId,
+        tenant_id: actor.tenantId,
+        session_id: session.id,
+      },
+      'returning the offer this agent already holds',
+    );
+
+    return {
+      session_id: session.id,
+      status: SessionStatus.OFFERED,
+      offered_to_agent_id: actor.userId,
+      offer_expires_at: offerExpiresAt(offeredAt, timeoutSeconds).toISOString(),
+    };
+  }
+
+  /** Reject a session that is not waiting in the queue for someone to take. */
+  private requireClaimable(session: ClaimableSessionRow): void {
+    if (session.status === SessionStatus.QUEUED) return;
+    // By here the offer is not this agent's — `ownOffer` returned first — so
+    // "another agent" is accurate rather than a guess.
+    if (ASSIGNED_STATUSES.includes(session.status)) throw alreadyAssigned();
+    throw new DomainError(
+      ErrorCode.SESSION_INVALID_STATE,
+      'The session is not waiting in the queue.',
+    );
   }
 
   /**
@@ -204,7 +263,11 @@ export class AgentClaimService {
    * hand-built request, and telling them plainly why it was refused leaks
    * nothing they could not already see.
    */
-  private requireLanguage(actor: AgentActor, profile: AgentProfileRow, session: SessionRow): void {
+  private requireLanguage(
+    actor: AgentActor,
+    profile: AgentProfileRow,
+    session: ClaimableSessionRow,
+  ): void {
     if (speaks(eligibleLanguages(profile.languages), session.language)) return;
 
     this.logger.warn(

@@ -54,13 +54,39 @@ export type IdempotencyRecord = PendingRecord | CompletedRecord;
 /**
  * Fingerprint of the request this key was used for.
  *
- * A SHA-256 of the method, path, and body — never the body itself. Two things
- * follow from hashing rather than storing: a replay with a different payload is
- * detectable, and a request body containing customer data never lands in Redis
- * or in a log line. The digest is not reversible, so it discloses nothing.
+ * A SHA-256 of the method, path, **path parameters**, and body — never the body
+ * itself. Two things follow from hashing rather than storing: a replay with a
+ * different payload is detectable, and a request body containing customer data
+ * never lands in Redis or in a log line. The digest is not reversible, so it
+ * discloses nothing.
+ *
+ * `params` is separate from `path` and is not optional in spirit, only in
+ * signature. `path` is the *static* endpoint identifier — `POST
+ * /v1/sessions/{id}/queue`, not the resolved URL — so without the resolved
+ * parameters, three of D13's six protected operations were fingerprinted purely
+ * as "this endpoint, empty body": queue, abort, and claim all carry their
+ * resource only in the URL. One agent reusing a key against a different session
+ * matched the stored fingerprint and was replayed the *first* session's
+ * response, with a 200 and no error, while the second session was never
+ * touched. Including the parameters turns that into the 409 the mismatch branch
+ * was always meant to give.
+ *
+ * The resolved URL is deliberately not used instead: it carries the query
+ * string, so `?utm=x` would fork the fingerprint of an otherwise identical
+ * retry.
  */
-export function fingerprintRequest(method: string, path: string, body: unknown): string {
-  const canonical = JSON.stringify({ method, path, body: canonicalise(body) });
+export function fingerprintRequest(
+  method: string,
+  path: string,
+  body: unknown,
+  params: unknown = {},
+): string {
+  const canonical = JSON.stringify({
+    method,
+    path,
+    params: canonicalise(params),
+    body: canonicalise(body),
+  });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 

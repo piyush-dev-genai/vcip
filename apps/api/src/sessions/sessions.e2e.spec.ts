@@ -48,6 +48,7 @@ import { TENANT_CONFIG_STORE } from '../tenants/tenant-config.store.js';
 import { TenantsService } from '../tenants/tenants.service.js';
 import type {
   CreateSessionInput,
+  ClaimableSessionRow,
   ClaimCommand,
   SessionClaimOutcome,
   GuardedUpdate,
@@ -286,6 +287,10 @@ class InMemorySessionRepository implements SessionRepository {
       payload: command.event.payload,
     });
     return updated;
+  }
+
+  findClaimable(): Promise<ClaimableSessionRow | null> {
+    throw new Error('the customer lifecycle must not read the claim projection');
   }
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {

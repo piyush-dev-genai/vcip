@@ -29,6 +29,7 @@ import { ActorRole } from '../common/auth/auth-context.js';
 import { TenantScope } from '../common/auth/tenant-scope.js';
 import { createLogger } from '../common/logging/logger.js';
 import type {
+  ClaimableSessionRow,
   ClaimCommand,
   SessionClaimOutcome,
   CreateSessionInput,
@@ -70,6 +71,7 @@ interface StoredSession {
   language: string;
   version: number;
   offeredToAgentId: string | null;
+  offeredAt?: Date | null;
   agentId: string | null;
 }
 
@@ -124,6 +126,21 @@ class FakeSessionRepository implements SessionRepository {
       exportStatus: 'NOT_STARTED',
       createdAt: new Date(NOW - 120_000),
       updatedAt: new Date(NOW - 60_000),
+    });
+  }
+
+  findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null> {
+    const row = this.rows.get(sessionId);
+    // Tenant is a predicate in the real statement, so a foreign id is absent
+    // rather than present-and-rejected.
+    if (row === undefined || row.tenantId !== tenantId) return Promise.resolve(null);
+    return Promise.resolve({
+      id: row.id,
+      tenantId: row.tenantId,
+      status: row.status,
+      language: row.language,
+      offeredToAgentId: row.offeredToAgentId,
+      offeredAt: row.offeredAt ?? null,
     });
   }
 
@@ -473,6 +490,103 @@ describe('AgentClaimService', () => {
         status: 404,
       });
       expect(sessions.commands).toHaveLength(0);
+    });
+
+    it('returns the offer this agent already holds, rather than a 409', async () => {
+      // The ordinary way to arrive here: the first claim succeeded and its
+      // response was lost, so the agent retries with a fresh key.
+      sessions.seed(
+        stored({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: AGENT_EN_HI,
+          offeredAt: new Date(NOW - 5_000),
+        }),
+      );
+
+      const result = await service.claim(actor(), SESSION);
+
+      expect(result.status).toBe(SessionStatus.OFFERED);
+      expect(result.offered_to_agent_id).toBe(AGENT_EN_HI);
+      expect(result.session_id).toBe(SESSION);
+    });
+
+    it('reports the original offer window, not a fresh one', async () => {
+      sessions.seed(
+        stored({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: AGENT_EN_HI,
+          offeredAt: new Date(NOW - 5_000),
+        }),
+      );
+
+      const result = await service.claim(actor(), SESSION);
+
+      // offered_at + 30s, from five seconds ago — not now + 30s. Re-basing the
+      // window on a retry would let an agent hold a session indefinitely.
+      expect(result.offer_expires_at).toBe('2026-08-31T10:00:25.000Z');
+    });
+
+    it('does not re-claim the session it already holds', async () => {
+      sessions.seed(
+        stored({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: AGENT_EN_HI,
+          offeredAt: new Date(NOW),
+        }),
+      );
+
+      await service.claim(actor(), SESSION);
+
+      // No conditional UPDATE, so no second SESSION_ASSIGNED event and no
+      // version bump for something that did not change.
+      expect(sessions.commands).toHaveLength(0);
+    });
+
+    it('repairs a BUSY presence whose first write failed', async () => {
+      sessions.seed(
+        stored({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: AGENT_EN_HI,
+          offeredAt: new Date(NOW),
+        }),
+      );
+      available();
+
+      await service.claim(actor(), SESSION);
+
+      expect(presenceStore.entries.get(AGENT_EN_HI)?.status).toBe(AgentPresence.BUSY);
+    });
+
+    it('answers even when the agent has since gone unavailable', async () => {
+      // Reporting an offer that already exists decides nothing, so presence is
+      // not consulted — an agent who stepped away must still be able to find
+      // the session they are holding.
+      sessions.seed(
+        stored({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: AGENT_EN_HI,
+          offeredAt: new Date(NOW),
+        }),
+      );
+      presenceStore.entries.delete(AGENT_EN_HI);
+
+      await expect(service.claim(actor(), SESSION)).resolves.toMatchObject({
+        status: SessionStatus.OFFERED,
+      });
+    });
+
+    it('still refuses an offer held by someone else in the same tenant', async () => {
+      sessions.seed(
+        stored({
+          status: SessionStatus.OFFERED,
+          offeredToAgentId: AGENT_MULTI,
+          offeredAt: new Date(NOW),
+        }),
+      );
+
+      await expect(service.claim(actor(), SESSION)).rejects.toMatchObject({
+        code: ErrorCode.SESSION_ALREADY_ASSIGNED,
+      });
     });
 
     it('is already assigned when another agent holds the offer', async () => {

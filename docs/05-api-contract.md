@@ -335,6 +335,17 @@ Idempotency-Key: <unique-key>
 `Idempotency-Key` is required for operations where duplicate execution could create an incorrect result.
 
 
+A key is bound to the request it was first used for: the method, the endpoint,
+the **resolved path parameters**, and the body. Presenting the same key for a
+different request is `409 CONFLICT`, never a replay of the earlier answer.
+
+The path parameters are part of that binding because three of the six protected
+operations — queue, abort, and claim — carry an empty body and name their
+resource only in the URL. Without them, one caller reusing a key across two
+sessions was handed the first session's response with a `200`, while the
+second session was never touched.
+
+
 
 \---
 
@@ -1778,6 +1789,26 @@ when?", and the session's own routes answer everything else.
 `offer_expires_at` is
 `offered_at + tenants.offer_timeout_seconds`, computed by the server.
 Section 17.3 sweeps against the same rule.
+
+### Retrying a claim you already hold
+
+An agent claiming a session that is already `OFFERED` **to them** gets `200` and
+the existing offer, not a `409`. It is answered before language, presence, and
+capacity are considered, because none of those is being decided — the offer
+exists, and this reports it.
+
+`offer_expires_at` comes from the stored `offered_at`, so a retry reports the
+*original* window. Re-basing it would let an agent extend an offer indefinitely
+by asking again.
+
+Nothing is re-claimed: no conditional UPDATE runs, no `version` is bumped, and no
+second `SESSION_ASSIGNED` is appended. The only write is the best-effort `BUSY`,
+which repairs a presence whose first write failed.
+
+The ordinary way to arrive here is a lost response. Before this existed, an agent
+retrying their own successful claim was told the session had already been claimed
+by another agent — and since a claimed session no longer appears in
+`GET /v1/agent/queue`, they had no route back to work they were in fact holding.
 
 ### Errors
 

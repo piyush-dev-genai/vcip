@@ -93,9 +93,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
     // through. Idempotency is never imposed on a route that did not ask.
     if (options === undefined) return next.handle();
 
-    const request = context
-      .switchToHttp()
-      .getRequest<AuthenticatedRequest & { method?: string; url?: string }>();
+    const request = context.switchToHttp().getRequest<
+      AuthenticatedRequest & {
+        method?: string;
+        url?: string;
+        /** Resolved route parameters — `{ id }` on the three per-session routes. */
+        params?: Record<string, string>;
+      }
+    >();
 
     const presentedKey = request.headers[IDEMPOTENCY_KEY_HEADER];
     if (typeof presentedKey !== 'string' || presentedKey.trim().length === 0) {
@@ -123,10 +128,19 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     const key = idempotencyKey(actor, options.endpoint, presentedKey);
+    // The resolved route parameters are part of the fingerprint, not part of
+    // the key. Part of the fingerprint, because a key used against a different
+    // resource is a different request and must conflict rather than replay
+    // someone else's answer — `{id}` is the whole of what distinguishes two
+    // calls to queue, abort, or claim, all of which have empty bodies. Not part
+    // of the key, because the key is the client's own name for its operation,
+    // and appending the resource to it would silently make one key mean several
+    // independent operations.
     const fingerprint = fingerprintRequest(
       request.method ?? 'POST',
       options.endpoint,
       request.body,
+      request.params ?? {},
     );
 
     try {

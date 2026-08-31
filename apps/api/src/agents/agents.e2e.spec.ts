@@ -53,6 +53,7 @@ import type {
 import { QUEUE_REPOSITORY } from '../queue/queue.repository.js';
 import type {
   CreateSessionInput,
+  ClaimableSessionRow,
   ClaimCommand,
   SessionClaimOutcome,
   GuardedUpdate,
@@ -365,6 +366,22 @@ class FakeSessionStore implements SessionRepository {
     this.singleReads += 1;
     const row = this.rows.get(sessionId);
     return Promise.resolve(row === undefined ? null : asSessionRow(row));
+  }
+
+  findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null> {
+    this.singleReads += 1;
+    const row = this.rows.get(sessionId);
+    // The tenant predicate is in the real query's WHERE clause, so a foreign
+    // id yields nothing here too.
+    if (row === undefined || row.tenantId !== tenantId) return Promise.resolve(null);
+    return Promise.resolve({
+      id: row.id,
+      tenantId: row.tenantId,
+      status: row.status,
+      language: row.language,
+      offeredToAgentId: row.offeredToAgentId ?? null,
+      offeredAt: row.offeredAt ?? null,
+    });
   }
 
   claim(command: ClaimCommand): Promise<SessionClaimOutcome> {
@@ -1889,6 +1906,46 @@ describe('agent identity and presence over HTTP', () => {
 
       expect(response.status).toBe(409);
       expect(response.body.error.code).toBe(ErrorCode.SESSION_ALREADY_ASSIGNED);
+    });
+
+    it('returns the offer to the agent already holding it', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+
+      const first = await claim(SESSION_EN, token);
+      // A different key: not an idempotency replay, a genuine second request.
+      const again = await claim(SESSION_EN, token);
+
+      expect(first.status).toBe(200);
+      expect(again.status).toBe(200);
+      expect(again.body.data.offered_to_agent_id).toBe(AGENT_A1);
+      expect(again.body.data.offer_expires_at).toBe(first.body.data.offer_expires_at);
+    });
+
+    it('does not report an agent own offer as taken by someone else', async () => {
+      enqueue(SESSION_EN, { status: SessionStatus.OFFERED, offeredToAgentId: AGENT_A1 });
+      const token = await availableAgent();
+
+      const response = await claim(SESSION_EN, token);
+
+      expect(response.status).not.toBe(409);
+      expect(JSON.stringify(response.body)).not.toContain('another agent');
+    });
+
+    it('conflicts when the same key is reused for a different session', async () => {
+      enqueue(SESSION_EN);
+      enqueue(SESSION_TA, { language: 'hi' });
+      const token = await availableAgent();
+      const key = 'one-key-two-sessions';
+
+      const first = await claim(SESSION_EN, token, key);
+      const second = await claim(SESSION_TA, token, key);
+
+      expect(first.status).toBe(200);
+      // Not a 200 replaying SESSION_EN's body, which is what this used to be.
+      expect(second.status).toBe(409);
+      expect(second.body.error.code).toBe(ErrorCode.CONFLICT);
+      expect(sessionStore.rows.get(SESSION_TA)?.status).toBe(SessionStatus.QUEUED);
     });
 
     it('is a 409 when the session has not queued yet', async () => {
