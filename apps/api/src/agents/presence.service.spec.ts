@@ -5,6 +5,8 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ExpiredOfferRow,
   QueuedSessionRow,
@@ -155,6 +157,22 @@ class FakeSessionRepository implements SessionRepository {
   findById(): Promise<SessionRow | null> {
     throw new Error('presence must not read a session');
   }
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('presence must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('presence must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('presence must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('presence must not drive call lifecycle');
+  }
+
   findActiveWork(): Promise<readonly AgentWorkRow[]> {
     throw new Error('presence counts active work, it does not list it');
   }

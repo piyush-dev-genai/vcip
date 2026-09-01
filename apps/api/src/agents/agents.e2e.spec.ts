@@ -56,6 +56,8 @@ import type {
   AcceptCommand,
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpireOffersCommand,
@@ -385,6 +387,22 @@ class FakeSessionStore implements SessionRepository {
    * with them, within their tenant. Reproduced rather than stubbed because the
    * work route is exercised over HTTP here, and a stub would test nothing.
    */
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('no agent route drives call lifecycle; T26 has its own controller');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('no agent route drives call lifecycle; T26 has its own controller');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('no agent route drives call lifecycle; T26 has its own controller');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('no agent route drives call lifecycle; T26 has its own controller');
+  }
+
   findActiveWork(tenantId: string, agentId: string): Promise<readonly AgentWorkRow[]> {
     this.singleReads += 1;
     const held = [...this.rows.values()].filter(
@@ -620,6 +638,7 @@ class FakeTenantConfigStore implements TenantConfigStore {
       minStabilityScore: 30,
       gpsMaxAccuracyM: 100,
       offerTimeoutSeconds: this.offerTimeoutSeconds,
+      agentReconnectTimeoutSeconds: 60,
     });
   }
 

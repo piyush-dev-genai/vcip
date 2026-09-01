@@ -14,6 +14,8 @@ import { ActorRole } from '../common/auth/auth-context.js';
 import type {
   AcceptCommand,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   ClaimCommand,
   ClaimableSessionRow,
   CreateSessionInput,
@@ -56,6 +58,22 @@ const row = (over: Partial<AgentWorkRow> = {}): AgentWorkRow => ({
 class FakeSessions implements SessionRepository {
   rows: readonly AgentWorkRow[] = [];
   readonly asked: { tenantId: string; agentId: string }[] = [];
+
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('reading work must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('reading work must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('reading work must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('reading work must not drive call lifecycle');
+  }
 
   findActiveWork(tenantId: string, agentId: string): Promise<readonly AgentWorkRow[]> {
     this.asked.push({ tenantId, agentId });

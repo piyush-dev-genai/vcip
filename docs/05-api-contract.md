@@ -2604,6 +2604,242 @@ AI events must not contain images or raw document content.
 
 
 
+\# 19a. LiveKit Webhook [IMPLEMENTED]
+
+
+
+\### Endpoint
+
+
+
+```http
+
+POST /internal/livekit/webhook
+
+```
+
+
+
+Added by D7, which recorded that this contract previously had no such endpoint.
+
+
+
+\### Authentication
+
+
+
+LiveKit's own signature, and **not** `X-Internal-Token`.
+
+
+
+This is a deliberate amendment to D10. The other internal routes are called by
+
+services this repository controls, which can send whatever header they are told
+
+to. `livekit-server` cannot: it has no configuration for custom webhook
+
+headers, and sends only a JWT in `Authorization` whose claim carries a SHA-256
+
+of the body, signed with the same key pair that mints media tokens. Requiring a
+
+header the sender cannot produce would leave the endpoint permanently
+
+unreachable.
+
+
+
+What D10 protects still holds. An unsigned or wrongly signed delivery is
+
+refused with `401`; the signature covers the body, so a replayed envelope
+
+cannot be edited to name another room; and the route is not publicly routed.
+
+
+
+\### Content type
+
+
+
+```text
+
+Content-Type: application/webhook+json
+
+```
+
+
+
+Not `application/json`. A body parser configured only for the latter never
+
+captures the raw bytes, and every authentic delivery then fails signature
+
+verification — the signature is over the exact bytes sent, so a re-serialised
+
+body hashes differently.
+
+
+
+\### Events acted on
+
+
+
+```text
+
+participant\_joined
+
+participant\_left
+
+room\_finished
+
+```
+
+
+
+Everything else LiveKit sends — `track\_*`, `room\_started`, the `egress\_*`
+
+family — is acknowledged and ignored. Egress belongs to T28.
+
+
+
+A `participant\_left` carrying `DisconnectReason.DUPLICATE\_IDENTITY` is a
+
+reconnection, not a departure: one session is one room and the participant
+
+identity is the role, so a rejoin evicts the previous connection and LiveKit
+
+reports the eviction as a leave.
+
+
+
+\### Effects
+
+
+
+| Event | Effect |
+
+| --- | --- |
+
+| both participants present | `CALL\_STARTED` appended, once per session |
+
+| agent leaves | `AGENT\_DISCONNECTED` appended; session stays `IN\_CALL` (D18); reconnect window armed |
+
+| agent returns in time | `AGENT\_RECONNECTED` appended; the call resumes |
+
+| customer leaves | grace window armed; nothing else |
+
+| room closes | room presence forgotten; no session changes |
+
+
+
+`CALL\_STARTED` requires **both** participants to be in the room. It is not the
+
+accept (`connected\_at`, §17.2) and not either party arriving alone: a
+
+verification begins when both can see each other, `talk\_ms` is measured from
+
+it, and the evidence package will claim it.
+
+
+
+**No delivery terminates a session.** Departures arm a window; the sweeper below
+
+decides. A webhook can arrive late, twice, or out of order, and a billing
+
+decision does not belong on the far side of a network delivery.
+
+
+
+\### Response
+
+
+
+Always `200` unless the signature fails, because LiveKit retries a non-2xx and
+
+an event nothing will ever accept must not be redelivered forever.
+
+
+
+```json
+
+{ "data": { "handled": "JOINED", "duplicate": false } }
+
+```
+
+
+
+`handled` is one of `JOINED`, `LEFT`, `ROOM\_CLOSED`, `IGNORE`, `DUPLICATE`.
+
+
+
+---
+
+
+
+\## 19b. Call Sweeper [IMPLEMENTED]
+
+
+
+```http
+
+POST /internal/calls/sweep
+
+```
+
+
+
+Internal token only (D10) — unlike the webhook, this route has a caller we
+
+control. It runs one pass immediately and reports counts:
+
+`{ "due": n, "dropped": n, "aborted": n, "stale": n }`. A pass also runs on an
+
+interval inside the API process; the route exists for deterministic testing and
+
+for operations.
+
+
+
+A window that lapses ends the session, and which side vanished decides how (R4,
+
+D18):
+
+
+
+| Window | Outcome | Billing |
+
+| --- | --- | --- |
+
+| customer did not return | `DROPPED\_IN\_CALL` | `FAILED`, 500 paise |
+
+| agent did not return | `ABORTED` | `FAILED`, 500 paise |
+
+
+
+The customer window is 20 seconds, matching `departure\_timeout` in
+
+`infra/livekit.yaml`. It exists because a page reload and a closed tab arrive
+
+identically — both are `participant\_left` with `CLIENT\_INITIATED` — and the
+
+customer app rejoins automatically on reload. The agent window is
+
+`tenants.agent\_reconnect\_timeout\_seconds` (D18).
+
+
+
+The transition and its billing row are written in one transaction, guarded on
+
+`status = 'IN\_CALL'`. A verdict that committed first, a customer abort, or a
+
+second pass all match nothing, so a session is ended and billed at most once
+
+(I3, I11).
+
+
+
+---
+
+
+
 \# 20. Webhook Contract
 
 
@@ -2948,6 +3184,9 @@ The Control API updates export state.
 | `POST /sessions/:id/abort`         | `QUEUED → DROPPED\_QUEUED` or `IN\_CALL → ABORTED` |
 
 | `POST /agent/sessions/:id/verdict` | `IN\_CALL → APPROVED/REJECTED/ABORTED`            |
+| LiveKit webhook                    | No status change; call events only                |
+| call sweeper (customer window)     | `IN\_CALL → DROPPED\_IN\_CALL`                     |
+| call sweeper (agent window)        | `IN\_CALL → ABORTED`                               |
 
 | Egress completion                  | → `EXPORTED`                                     |
 
@@ -3102,6 +3341,7 @@ All require X-Internal-Token and are not publicly routed. See D10.
 POST /internal/ai/result
 POST /internal/egress/completed
 POST /internal/livekit/webhook
+POST /internal/calls/sweep
 ```
 ## Webhook
 

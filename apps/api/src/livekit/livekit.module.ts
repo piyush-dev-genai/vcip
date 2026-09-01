@@ -1,10 +1,18 @@
 import { Module } from '@nestjs/common';
+import { AgentsModule } from '../agents/agents.module.js';
 import { AuthModule } from '../common/auth/auth.module.js';
 import { SessionsModule } from '../sessions/sessions.module.js';
+import { TenantsModule } from '../tenants/tenants.module.js';
+import { CALL_REPOSITORY, RedisCallRepository } from './call.repository.js';
+import { CallLifecycleService } from './call-lifecycle.service.js';
+import { CallSweeperController } from './call-sweeper.controller.js';
+import { CALL_SWEEP_ENABLED, CallSweeper } from './call-sweeper.service.js';
+import { LiveKitWebhookController } from './livekit-webhook.controller.js';
 import { LIVEKIT_CONFIG, livekitConfigFromEnv } from './livekit.config.js';
 import { MediaTokenController } from './media-token.controller.js';
 import { LiveKitTokenMinter, MEDIA_TOKEN_MINTER } from './media-token.minter.js';
 import { MediaTokenService } from './media-token.service.js';
+import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
 
 /**
  * LiveKit credentials (T24).
@@ -36,17 +44,40 @@ import { MediaTokenService } from './media-token.service.js';
  * deployment missing `LIVEKIT_API_SECRET` fails to start rather than failing on
  * the first customer to reach the call screen.
  *
- * Later tasks extend this module rather than adding new ones beside it: T26's
- * webhook receiver and T28's recording both belong to the same boundary and the
- * same credentials.
+ * T26 extends it rather than adding a module beside it, because the webhook is
+ * the same boundary and the same credentials: LiveKit talking to us instead of
+ * us talking to LiveKit. It brings two imports.
+ *
+ * `TenantsModule` supplies `agent_reconnect_timeout_seconds` (D18) — the
+ * reconnect window is per-tenant configuration, not a server constant.
+ *
+ * `AgentsModule` supplies `PresenceService`, because a call that ends without
+ * a verdict has to free the agent holding it (R5). That is the one write
+ * outside PostgreSQL this module performs, it is not authoritative for
+ * anything, and a failure is logged rather than allowed to fail a committed
+ * transition.
+ *
+ * `EventsModule` is still absent: session events are appended through
+ * `SESSION_REPOSITORY`, inside the same transaction as the transition they
+ * describe, which is the only way an append-only log stays consistent with the
+ * row it explains.
+ *
+ * T28's recording belongs here too, when it arrives.
  */
 @Module({
-  imports: [AuthModule, SessionsModule],
-  controllers: [MediaTokenController],
+  imports: [AuthModule, SessionsModule, TenantsModule, AgentsModule],
+  controllers: [MediaTokenController, LiveKitWebhookController, CallSweeperController],
   providers: [
     { provide: LIVEKIT_CONFIG, useFactory: () => livekitConfigFromEnv() },
     { provide: MEDIA_TOKEN_MINTER, useClass: LiveKitTokenMinter },
+    { provide: WEBHOOK_VERIFIER, useClass: LiveKitWebhookVerifier },
+    { provide: CALL_REPOSITORY, useClass: RedisCallRepository },
     MediaTokenService,
+    CallLifecycleService,
+    // The interval runs in the application; test modules build their own graph
+    // and leave it off, so no pass fires between cases.
+    { provide: CALL_SWEEP_ENABLED, useValue: true },
+    CallSweeper,
   ],
   exports: [MEDIA_TOKEN_MINTER, LIVEKIT_CONFIG],
 })

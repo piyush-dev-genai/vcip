@@ -24,6 +24,8 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   AcceptCommand,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   ClaimCommand,
   ClaimableSessionRow,
   CreateSessionInput,
@@ -136,6 +138,22 @@ class FakeSessions implements SessionRepository {
 
   findQueued(): Promise<readonly QueuedSessionRow[]> {
     throw new Error('the media-token path must not read the queue projection');
+  }
+
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('the media-token path must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('the media-token path must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('the media-token path must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('the media-token path must not drive call lifecycle');
   }
 
   findActiveWork(): Promise<readonly AgentWorkRow[]> {

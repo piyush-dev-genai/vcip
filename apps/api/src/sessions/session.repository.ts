@@ -22,10 +22,10 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import type { SessionEventType } from '@vcip/shared';
-// A value import: T17's queued-session read filters on the status literal in
-// SQL, so the enum has to survive compilation rather than be erased.
-import { SessionStatus } from '@vcip/shared';
+// Value imports: T17's queued-session read filters on the status literal in
+// SQL and T26's call reads filter on the event-type literal, so both enums have
+// to survive compilation rather than be erased.
+import { SessionEventType, SessionStatus } from '@vcip/shared';
 import { and, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { sessions, users } from '../../db/schema.js';
@@ -259,6 +259,69 @@ export type SessionClaimOutcome =
   | { readonly kind: 'AT_CAPACITY'; readonly active: number };
 
 /**
+ * One session, as a LiveKit webhook needs to see it (T26).
+ *
+ * Read **without** a tenant filter, and that is the one read in this file where
+ * that is correct rather than an oversight: the webhook arrives from LiveKit,
+ * authenticated by LiveKit's own signature, carrying a room name and no tenant.
+ * An internal caller has no tenant (D10), so there is none to scope by — the
+ * row's own `tenantId` is what every write derived from it then uses.
+ *
+ * `callStartedAt` comes from `session_events`, not from a column: D25 keeps
+ * call history in events, and `talk_ms` is measured from the instant both
+ * participants were actually in the room, which is what `CALL_STARTED` records.
+ * `connected_at` is a different fact — the moment the agent accepted (T19) —
+ * and is deliberately not reused for this.
+ */
+export interface CallSessionRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly status: SessionStatus;
+  /** The assigned agent, so a terminal transition can free them. */
+  readonly agentId: string | null;
+  readonly queuedAt: Date | null;
+  readonly connectedAt: Date | null;
+  /** When `CALL_STARTED` was appended, or null if it never was. */
+  readonly callStartedAt: Date | null;
+}
+
+/**
+ * Ending a call that nobody submitted a verdict for (T26).
+ *
+ * A fourth narrow command, for the reason `ClaimCommand` and `AcceptCommand`
+ * are narrow: it writes `status`, `ended_at`, `talk_ms` and a billing row, and
+ * none of those belong anywhere the customer lifecycle can reach.
+ *
+ * The billing row is written **in the same transaction as the transition**, and
+ * that is the whole design. I3 says a session has at most one billing entry and
+ * `billing_entries.session_id` is the primary key, so a second attempt fails on
+ * the constraint rather than on a check someone remembered to write. Pairing it
+ * with the guarded UPDATE means a session cannot end without being billed, and
+ * cannot be billed without ending.
+ */
+export interface EndCallCommand {
+  readonly sessionId: string;
+  readonly tenantId: string;
+  /** `DROPPED_IN_CALL` or `ABORTED`. The caller's decision, not this file's. */
+  readonly status: SessionStatus;
+  /** Server clock. Becomes `ended_at` and the billing timestamp. */
+  readonly now: Date;
+  /** From `@vcip/shared`'s billing table. Never computed here. */
+  readonly billCategory: string;
+  readonly billAmountPaise: number;
+  readonly event: SessionEventInput;
+}
+
+/** What a successful end-of-call reports back. */
+export interface EndedCallRow {
+  readonly id: string;
+  readonly status: SessionStatus;
+  readonly endedAt: Date;
+  readonly talkMs: number | null;
+  readonly agentId: string | null;
+}
+
+/**
  * One session an agent is currently holding.
  *
  * The answer to "what am I working on", which nothing in the contract could
@@ -483,6 +546,46 @@ export interface SessionRepository {
    * ever be one.
    */
   findActiveWork(tenantId: string, agentId: string): Promise<readonly AgentWorkRow[]>;
+
+  /**
+   * One session, for a LiveKit webhook (T26).
+   *
+   * Not tenant-scoped, because the caller has no tenant to scope by. See
+   * `CallSessionRow`.
+   */
+  findForCallEvent(sessionId: string): Promise<CallSessionRow | null>;
+
+  /**
+   * Append an event to a session without moving it (T26).
+   *
+   * `CALL_STARTED`, `AGENT_DISCONNECTED` and `AGENT_RECONNECTED` are facts about
+   * a call that change no status: D18 is explicit that a disconnected agent
+   * keeps the session, and D25 keeps that history in events rather than in a
+   * column. `update()` cannot express this — it exists to move a session and
+   * takes an expected status to guard the move.
+   *
+   * Returns false when the session does not exist. Appending is otherwise
+   * unconditional: an append-only log (I10) has nothing to race against.
+   */
+  appendCallEvent(sessionId: string, event: SessionEventInput): Promise<boolean>;
+
+  /**
+   * Has this event type ever been appended to this session?
+   *
+   * The once-only guard for `CALL_STARTED`. PostgreSQL answers it rather than
+   * Redis, because "did this call ever start" is durable history and Redis
+   * holds only the transient room presence that led to the question (D1/D2).
+   */
+  hasEvent(sessionId: string, eventType: SessionEventType): Promise<boolean>;
+
+  /**
+   * End a call with no verdict: `IN_CALL -> DROPPED_IN_CALL | ABORTED` (T26).
+   *
+   * Guarded on `status = 'IN_CALL'`, so a verdict that committed first (T35), a
+   * customer abort, or a second sweeper pass all match nothing and get `null`.
+   * The billing row and the event are written in the same transaction.
+   */
+  endCall(command: EndCallCommand): Promise<EndedCallRow | null>;
 
   /**
    * Return lapsed offers to the queue: `OFFERED -> QUEUED` (T20, §17.3).
@@ -780,6 +883,159 @@ export class DrizzleSessionRepository implements SessionRepository {
       status: row.status as SessionStatus,
       heldSince: new Date(row.heldSince as unknown as string),
     }));
+  }
+
+  async findForCallEvent(sessionId: string): Promise<CallSessionRow | null> {
+    // `call_started_at` is a correlated subquery rather than a join, so a
+    // session with no CALL_STARTED yet still comes back — with null — instead
+    // of vanishing from the result.
+    const rows = await this.db.execute<{
+      id: string;
+      tenant_id: string;
+      status: string;
+      agent_id: string | null;
+      queued_at: Date | null;
+      connected_at: Date | null;
+      call_started_at: Date | null;
+    }>(sql`
+      SELECT s.id,
+             s.tenant_id,
+             s.status,
+             s.agent_id,
+             s.queued_at,
+             s.connected_at,
+             (SELECT min(e.server_ts)
+                FROM session_events e
+               WHERE e.session_id = s.id
+                 AND e.event_type = ${SessionEventType.CALL_STARTED}::text) AS call_started_at
+        FROM sessions s
+       WHERE s.id = ${sessionId}::uuid
+    `);
+
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      status: row.status as SessionStatus,
+      agentId: row.agent_id,
+      queuedAt: row.queued_at === null ? null : new Date(row.queued_at),
+      connectedAt: row.connected_at === null ? null : new Date(row.connected_at),
+      callStartedAt: row.call_started_at === null ? null : new Date(row.call_started_at),
+    };
+  }
+
+  async appendCallEvent(sessionId: string, event: SessionEventInput): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: sessions.id, tenantId: sessions.tenantId })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    if (row === undefined) return false;
+
+    await this.events.append(
+      {
+        sessionId: row.id,
+        tenantId: row.tenantId,
+        eventType: event.type,
+        actorType: event.actorType,
+        actorId: event.actorId,
+        payload: event.payload,
+      },
+      this.db,
+    );
+    return true;
+  }
+
+  async hasEvent(sessionId: string, eventType: SessionEventType): Promise<boolean> {
+    const rows = await this.db.execute<{ present: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM session_events
+         WHERE session_id = ${sessionId}::uuid
+           AND event_type = ${eventType}::text
+      ) AS present
+    `);
+    return rows[0]?.present === true;
+  }
+
+  async endCall(command: EndCallCommand): Promise<EndedCallRow | null> {
+    return this.db.transaction(async (tx) => {
+      // Guarded on IN_CALL. A verdict (T35), a customer abort, or a second
+      // sweeper pass all leave the session somewhere else, and this matches
+      // nothing rather than overwriting a terminal status (I11).
+      const [updated] = await tx
+        .update(sessions)
+        .set({
+          status: command.status,
+          endedAt: command.now,
+          // Measured from CALL_STARTED — the instant both participants were in
+          // the room — not from the accept. A call nobody both-joined has no
+          // talk time, and null says so rather than a fabricated zero.
+          talkMs: sql`CASE WHEN (
+            SELECT min(e.server_ts) FROM session_events e
+             WHERE e.session_id = ${command.sessionId}::uuid
+               AND e.event_type = ${SessionEventType.CALL_STARTED}::text
+          ) IS NULL THEN NULL ELSE GREATEST(0, (EXTRACT(EPOCH FROM (${command.now.toISOString()}::timestamptz - (
+            SELECT min(e.server_ts) FROM session_events e
+             WHERE e.session_id = ${command.sessionId}::uuid
+               AND e.event_type = ${SessionEventType.CALL_STARTED}::text
+          ))) * 1000)::int) END`,
+          version: sql`${sessions.version} + 1`,
+          updatedAt: command.now,
+        })
+        .where(
+          and(
+            eq(sessions.id, command.sessionId),
+            eq(sessions.tenantId, command.tenantId),
+            eq(sessions.status, SessionStatus.IN_CALL),
+          ),
+        )
+        .returning({
+          id: sessions.id,
+          status: sessions.status,
+          endedAt: sessions.endedAt,
+          talkMs: sessions.talkMs,
+          agentId: sessions.agentId,
+        });
+
+      if (updated === undefined) return null;
+
+      // Same transaction as the transition. `billing_entries.session_id` is the
+      // primary key, so a duplicate is a constraint violation rather than a
+      // second charge — and because the UPDATE above already matched exactly
+      // once, reaching here twice is not possible for one terminal outcome.
+      await tx.execute(sql`
+        INSERT INTO billing_entries (session_id, tenant_id, category, amount_paise, billed_at, invoice_month)
+        VALUES (
+          ${command.sessionId}::uuid,
+          ${command.tenantId}::uuid,
+          ${command.billCategory}::text,
+          ${command.billAmountPaise}::int,
+          ${command.now.toISOString()}::timestamptz,
+          date_trunc('month', ${command.now.toISOString()}::timestamptz)::date
+        )
+      `);
+
+      await this.events.append(
+        {
+          sessionId: command.sessionId,
+          tenantId: command.tenantId,
+          eventType: command.event.type,
+          actorType: command.event.actorType,
+          actorId: command.event.actorId,
+          payload: command.event.payload,
+        },
+        tx,
+      );
+
+      return {
+        id: updated.id,
+        status: updated.status as SessionStatus,
+        endedAt: updated.endedAt as Date,
+        talkMs: updated.talkMs,
+        agentId: updated.agentId,
+      };
+    });
   }
 
   async expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {

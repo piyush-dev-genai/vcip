@@ -30,6 +30,8 @@ import type {
   CreateSessionInput,
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
@@ -179,6 +181,22 @@ class FakeSessionRepository implements SessionRepository {
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the queue view must not claim sessions');
+  }
+
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('the queue view must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('the queue view must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('the queue view must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('the queue view must not drive call lifecycle');
   }
 
   findActiveWork(): Promise<readonly AgentWorkRow[]> {

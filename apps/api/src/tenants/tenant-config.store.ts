@@ -53,6 +53,17 @@ export interface TenantConfig {
    * here would let a misconfigured tenant silently get someone else's policy.
    */
   readonly offerTimeoutSeconds: number;
+
+  /**
+   * How long a disconnected agent has to come back before the session is
+   * terminated (D18, T26).
+   *
+   * Tenant configuration for the reason `offerTimeoutSeconds` is:
+   * `CHECK (agent_reconnect_timeout_seconds > 0)` guarantees a usable value, so
+   * there is no default to fall back to and inventing one here would let a
+   * misconfigured tenant silently get someone else's policy.
+   */
+  readonly agentReconnectTimeoutSeconds: number;
 }
 
 export interface TenantConfigStore {
@@ -93,6 +104,7 @@ export class DrizzleTenantConfigStore implements TenantConfigStore {
         minStabilityScore: tenants.minStabilityScore,
         gpsMaxAccuracyM: tenants.gpsMaxAccuracyM,
         offerTimeoutSeconds: tenants.offerTimeoutSeconds,
+        agentReconnectTimeoutSeconds: tenants.agentReconnectTimeoutSeconds,
       })
       .from(tenants)
       .where(eq(tenants.id, tenantId))
@@ -112,6 +124,7 @@ export class DrizzleTenantConfigStore implements TenantConfigStore {
       minStabilityScore: toNumber(row.minStabilityScore),
       gpsMaxAccuracyM: toNumber(row.gpsMaxAccuracyM),
       offerTimeoutSeconds: toNumber(row.offerTimeoutSeconds),
+      agentReconnectTimeoutSeconds: toNumber(row.agentReconnectTimeoutSeconds),
     };
   }
 

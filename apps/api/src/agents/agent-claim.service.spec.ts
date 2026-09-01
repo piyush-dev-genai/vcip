@@ -31,6 +31,8 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
@@ -132,6 +134,22 @@ class FakeSessionRepository implements SessionRepository {
       createdAt: new Date(NOW - 120_000),
       updatedAt: new Date(NOW - 60_000),
     });
+  }
+
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('claiming a session must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('claiming a session must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('claiming a session must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('claiming a session must not drive call lifecycle');
   }
 
   findActiveWork(): Promise<readonly AgentWorkRow[]> {
@@ -312,6 +330,7 @@ class FakeTenantConfigStore implements TenantConfigStore {
       minStabilityScore: 30,
       gpsMaxAccuracyM: 100,
       offerTimeoutSeconds: this.offerTimeoutSeconds,
+      agentReconnectTimeoutSeconds: 60,
     });
   }
 

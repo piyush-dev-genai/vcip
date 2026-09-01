@@ -19,6 +19,8 @@ import type {
   AcceptCommand,
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ClaimCommand,
   CreateSessionInput,
@@ -99,6 +101,22 @@ class FakeSessions implements SessionRepository {
   findById(): Promise<SessionRow | null> {
     throw new Error('the sweeper must not read sessions one at a time');
   }
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('the offer sweeper must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('the offer sweeper must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('the offer sweeper must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('the offer sweeper must not drive call lifecycle');
+  }
+
   findActiveWork(): Promise<readonly AgentWorkRow[]> {
     throw new Error('the sweeper must not read the active-work projection');
   }

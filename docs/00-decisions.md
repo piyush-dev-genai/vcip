@@ -135,8 +135,15 @@ minted by a REST endpoint the caller is already authorized to use.
 
 `/internal/*` requires a shared internal credential (`X-Internal-Token`) and is
 not routed publicly. This covers `/internal/ai/result`,
-`/internal/egress/completed`, and `/internal/livekit/webhook` (which additionally
-verifies LiveKit's own signature).
+`/internal/egress/completed`, and `/internal/calls/sweep`.
+
+**Amended by T26 for `/internal/livekit/webhook`.** That route verifies
+LiveKit's signature *instead of* `X-Internal-Token`, not in addition to it.
+`livekit-server` has no configuration for custom webhook headers — it sends only
+its own signed `Authorization` — so requiring the shared credential would leave
+the endpoint permanently unreachable. The signature covers the request body, so
+the route is still authenticated and a replayed delivery cannot be edited. See
+`05-api-contract.md` §19a.
 
 ## D11 — Preflight submits measured values
 
@@ -230,6 +237,14 @@ row is appended to `session_events`. A reconnect timer runs operationally
 - If the timer expires, the session terminates per the failure policy
   (`ABORTED`, billed Rs 5) through the same single-winner guard as any other
   terminal transition.
+
+**Implemented in T26.** The deadline is a Redis sorted set scored by the instant
+it falls due, swept on an interval — transient real-time state (D2), holding no
+authority: the transition itself is a guarded UPDATE against PostgreSQL. A key
+with a TTL would not do, because a key that expires is a key that is gone, and
+the sweeper would find nothing exactly when the deadline mattered. The customer
+gets a symmetric but shorter window for the same reason, ending in
+`DROPPED_IN_CALL` rather than `ABORTED` (R4).
 
 **No `agent_disconnected_at` column is added to `sessions`.** Disconnect history
 lives in `session_events`. A column would only be justified by a concrete query

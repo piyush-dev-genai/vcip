@@ -29,6 +29,8 @@ import type {
   AcceptCommand,
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ClaimCommand,
   CreateSessionInput,
@@ -99,6 +101,22 @@ class FakeSessions implements SessionRepository {
 
   seed(row: Stored): void {
     this.rows.set(row.id, row);
+  }
+
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('accepting a session must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('accepting a session must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('accepting a session must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('accepting a session must not drive call lifecycle');
   }
 
   findActiveWork(): Promise<readonly AgentWorkRow[]> {

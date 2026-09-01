@@ -1,12 +1,23 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ApiErrorFilter } from './common/errors/api-error.filter.js';
 import { corsPolicyFromEnv } from './common/http/cors.config.js';
 import { logger } from './common/logging/logger.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // `rawBody` keeps the exact bytes of each request body alongside the parsed
+  // one. T26's LiveKit webhook is signed over those bytes, and a re-serialised
+  // object hashes differently even when it carries the same fields. Nothing
+  // else reads it.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
+
+  // LiveKit posts its webhooks as `application/webhook+json` (T26). The default
+  // JSON parser only matches `application/json`, so without this the body is
+  // neither parsed nor captured, `rawBody` is empty, and every genuine delivery
+  // fails signature verification with a 401 — which is exactly what it did.
+  app.useBodyParser('json', { type: ['application/json', 'application/webhook+json'] });
 
   // Browser origin policy (T14). Applied as middleware, so a preflight OPTIONS
   // is answered before any guard runs — a guard rejecting the preflight would

@@ -50,6 +50,8 @@ import type {
   CreateSessionInput,
   ClaimableSessionRow,
   AgentWorkRow,
+  CallSessionRow,
+  EndedCallRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
@@ -126,6 +128,7 @@ const defaultConfig = (tenantId: string): TenantConfig => ({
   minStabilityScore: 30,
   gpsMaxAccuracyM: 100,
   offerTimeoutSeconds: 30,
+  agentReconnectTimeoutSeconds: 60,
 });
 
 class FakeTenantConfigStore implements TenantConfigStore {
@@ -291,6 +294,22 @@ class InMemorySessionRepository implements SessionRepository {
       payload: command.event.payload,
     });
     return updated;
+  }
+
+  findForCallEvent(): Promise<CallSessionRow | null> {
+    throw new Error('the customer lifecycle must not drive call lifecycle');
+  }
+
+  appendCallEvent(): Promise<boolean> {
+    throw new Error('the customer lifecycle must not drive call lifecycle');
+  }
+
+  hasEvent(): Promise<boolean> {
+    throw new Error('the customer lifecycle must not drive call lifecycle');
+  }
+
+  endCall(): Promise<EndedCallRow | null> {
+    throw new Error('the customer lifecycle must not drive call lifecycle');
   }
 
   findActiveWork(): Promise<readonly AgentWorkRow[]> {
