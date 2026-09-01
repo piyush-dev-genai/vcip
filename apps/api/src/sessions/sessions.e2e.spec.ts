@@ -49,6 +49,7 @@ import { TenantsService } from '../tenants/tenants.service.js';
 import type {
   CreateSessionInput,
   ClaimableSessionRow,
+  MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
   SessionAcceptOutcome,
@@ -289,6 +290,10 @@ class InMemorySessionRepository implements SessionRepository {
       payload: command.event.payload,
     });
     return updated;
+  }
+
+  findForMediaToken(): Promise<MediaTokenSessionRow | null> {
+    throw new Error('the customer lifecycle must not mint a media token');
   }
 
   findClaimable(): Promise<ClaimableSessionRow | null> {

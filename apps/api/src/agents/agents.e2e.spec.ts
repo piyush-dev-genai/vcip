@@ -55,6 +55,7 @@ import type {
   CreateSessionInput,
   AcceptCommand,
   ClaimableSessionRow,
+  MediaTokenSessionRow,
   ClaimCommand,
   ExpireOffersCommand,
   ExpiredOfferRow,
@@ -375,6 +376,10 @@ class FakeSessionStore implements SessionRepository {
     this.singleReads += 1;
     const row = this.rows.get(sessionId);
     return Promise.resolve(row === undefined ? null : asSessionRow(row));
+  }
+
+  findForMediaToken(): Promise<MediaTokenSessionRow | null> {
+    throw new Error('no agent route mints a media token; T24 has its own controller');
   }
 
   findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null> {

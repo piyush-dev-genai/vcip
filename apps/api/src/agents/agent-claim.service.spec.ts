@@ -30,6 +30,7 @@ import { TenantScope } from '../common/auth/tenant-scope.js';
 import { createLogger } from '../common/logging/logger.js';
 import type {
   ClaimableSessionRow,
+  MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
   SessionAcceptOutcome,
@@ -130,6 +131,10 @@ class FakeSessionRepository implements SessionRepository {
       createdAt: new Date(NOW - 120_000),
       updatedAt: new Date(NOW - 60_000),
     });
+  }
+
+  findForMediaToken(): Promise<MediaTokenSessionRow | null> {
+    throw new Error('claiming a session must not mint a media token');
   }
 
   findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null> {

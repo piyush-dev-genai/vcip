@@ -271,7 +271,7 @@ gate and report.
 | T21 | 2 | Agent portal shell + queue view, claim and accept | done |
 | T22 | 2 | (!) Two concurrent claims -> one 200, one 409 | done |
 | T23 | 2 | (!) Offer timeout -> back to QUEUED, unbilled | done |
-| T24 | 3 | `room_name` at creation; media-token endpoints, both paths | todo |
+| T24 | 3 | `room_name` at creation; media-token endpoints, both paths | done |
 | T25 | 3 | Customer + agent join LiveKit, role-scoped publish/subscribe | todo |
 | T26 | 3 | `POST /internal/livekit/webhook` -> agent.joined, timestamps, DROPPED_IN_CALL, AGENT_DISCONNECTED | todo |
 | T27 | 3 | WS gateway + connection tokens + canonical event enum | todo |

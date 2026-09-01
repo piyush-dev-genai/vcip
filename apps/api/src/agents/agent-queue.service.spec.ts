@@ -29,6 +29,7 @@ import type {
 import type {
   CreateSessionInput,
   ClaimableSessionRow,
+  MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
   SessionAcceptOutcome,
@@ -177,6 +178,10 @@ class FakeSessionRepository implements SessionRepository {
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the queue view must not claim sessions');
+  }
+
+  findForMediaToken(): Promise<MediaTokenSessionRow | null> {
+    throw new Error('the queue view must not read the media-token projection');
   }
 
   findClaimable(): Promise<ClaimableSessionRow | null> {

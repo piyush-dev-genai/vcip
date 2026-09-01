@@ -19,6 +19,7 @@
     "db:verify-agent-queue": "tsx scripts/verify-agent-queue.ts",
     "db:verify-agent-claim": "tsx scripts/verify-agent-claim.ts",
     "db:verify-agent-accept": "tsx scripts/verify-agent-accept.ts",
+    "db:verify-media-token": "tsx scripts/verify-media-token.ts",
     "db:verify-day2-gate": "nest build && tsx scripts/verify-day2-gate.ts"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@vcip/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "ioredis": "^6.0.0",
+    "livekit-server-sdk": "^2.18.0",
     "pino": "^10.3.1",
     "postgres": "^3.4.9",
     "reflect-metadata": "^0.2.2",

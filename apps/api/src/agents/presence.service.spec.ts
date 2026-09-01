@@ -4,6 +4,7 @@ import type { AgentActor } from '../common/auth/auth-context.js';
 import { createLogger } from '../common/logging/logger.js';
 import type {
   ClaimableSessionRow,
+  MediaTokenSessionRow,
   ExpiredOfferRow,
   QueuedSessionRow,
   SessionAcceptOutcome,
@@ -153,6 +154,10 @@ class FakeSessionRepository implements SessionRepository {
   findById(): Promise<SessionRow | null> {
     throw new Error('presence must not read a session');
   }
+  findForMediaToken(): Promise<MediaTokenSessionRow | null> {
+    throw new Error('presence must not read the media-token projection');
+  }
+
   findClaimable(): Promise<ClaimableSessionRow | null> {
     throw new Error('presence must not read the claim projection');
   }

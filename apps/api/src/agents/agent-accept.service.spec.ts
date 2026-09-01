@@ -28,6 +28,7 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   AcceptCommand,
   ClaimableSessionRow,
+  MediaTokenSessionRow,
   ClaimCommand,
   CreateSessionInput,
   ExpiredOfferRow,
@@ -97,6 +98,10 @@ class FakeSessions implements SessionRepository {
 
   seed(row: Stored): void {
     this.rows.set(row.id, row);
+  }
+
+  findForMediaToken(): Promise<MediaTokenSessionRow | null> {
+    throw new Error('accepting a session must not mint a media token');
   }
 
   findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null> {

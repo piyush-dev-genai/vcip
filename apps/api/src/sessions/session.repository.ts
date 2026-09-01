@@ -259,6 +259,32 @@ export type SessionClaimOutcome =
   | { readonly kind: 'AT_CAPACITY'; readonly active: number };
 
 /**
+ * One session, as minting a media token needs to see it (T24).
+ *
+ * Five columns, and the narrowness is the authorization boundary. Deciding
+ * whether a caller may hold room credentials needs the status, the room, and
+ * who the session was assigned to — nothing about consent, geo, the customer's
+ * IP country, or the enterprise's own reference. A projection carrying those
+ * would put customer detail into a code path whose only output is a JWT.
+ *
+ * `agentId` appears in no other read type in this file. It is the column that
+ * separates "an agent of this tenant" from "the agent on this call", and a
+ * media token is precisely the thing the first must not get.
+ *
+ * `tenantId` is present for the reason `ClaimableSessionRow` carries it: the
+ * read is already tenant-scoped in SQL, and `TenantScope` still gets to be the
+ * single place a 404 is decided.
+ */
+export interface MediaTokenSessionRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly status: SessionStatus;
+  readonly roomName: string | null;
+  /** `sessions.agent_id` — set on accept (T19), null until then. */
+  readonly agentId: string | null;
+}
+
+/**
  * An agent taking up the offer they hold (T19): `OFFERED -> IN_CALL`.
  *
  * A third narrow command rather than a wider shared one, for the reason
@@ -386,6 +412,20 @@ export interface SessionRepository {
    * session by id.
    */
   findClaimable(tenantId: string, sessionId: string): Promise<ClaimableSessionRow | null>;
+
+  /**
+   * One session, as the media-token path needs to see it (T24, contract §13).
+   *
+   * Tenant-scoped in SQL for the reason `findClaimable` is: another tenant's
+   * row is never loaded, so the 404 it produces is a property of the query
+   * rather than of a check someone has to remember to write.
+   *
+   * A separate read rather than `findById`, because the two answer different
+   * questions. `findById` returns every column of any session by id and is
+   * right for the polling view; this returns the five a token decision is made
+   * from, and returning fewer columns is the point.
+   */
+  findForMediaToken(tenantId: string, sessionId: string): Promise<MediaTokenSessionRow | null>;
 
   /**
    * Take up an offer: `OFFERED -> IN_CALL` (T19, §17.2).
@@ -641,6 +681,30 @@ export class DrizzleSessionRepository implements SessionRepository {
       .from(sessions)
       // Both predicates in the WHERE clause: a foreign id yields no row rather
       // than a row a later check has to remember to reject.
+      .where(and(eq(sessions.id, sessionId), eq(sessions.tenantId, tenantId)))
+      .limit(1);
+
+    const row = rows[0];
+    if (row === undefined) return null;
+    return { ...row, status: row.status as SessionStatus };
+  }
+
+  async findForMediaToken(
+    tenantId: string,
+    sessionId: string,
+  ): Promise<MediaTokenSessionRow | null> {
+    const rows = await this.db
+      .select({
+        id: sessions.id,
+        tenantId: sessions.tenantId,
+        status: sessions.status,
+        roomName: sessions.roomName,
+        agentId: sessions.agentId,
+      })
+      .from(sessions)
+      // Both predicates in the WHERE clause, as `findClaimable` does it: a
+      // foreign id yields no row rather than a row a later check has to
+      // remember to reject (I8).
       .where(and(eq(sessions.id, sessionId), eq(sessions.tenantId, tenantId)))
       .limit(1);
 
