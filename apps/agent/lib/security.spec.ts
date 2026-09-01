@@ -212,6 +212,7 @@ describe('every request goes through the API client', () => {
       "'/login'",
       "'/media-token'",
       "'/queue'",
+      "'/work'",
     ]);
   });
 
@@ -227,12 +228,13 @@ describe('every request goes through the API client', () => {
 
   it('reads with GET and acts with POST, and never the other way round', () => {
     const client = sources.find((file) => file.path === 'lib/api.ts');
-    // Three GETs: the queue, one session, and the media token. All three are
-    // reads in the API contract too, so no mutation can be smuggled onto the
-    // read verb. The media token is a read in the strongest sense — T24 mints
-    // it without writing a row, an event, or a billing entry.
+    // Four GETs: the queue, one session, the media token, and the agent's own
+    // work. All four are reads in the API contract too, so no mutation can be
+    // smuggled onto the read verb. The media token is a read in the strongest
+    // sense — T24 mints it without writing a row, an event, or a billing entry —
+    // and so is the work listing, which reports rows that already exist.
     const gets = [...(client?.text.matchAll(/method: 'GET'/g) ?? [])];
-    expect(gets).toHaveLength(3);
+    expect(gets).toHaveLength(4);
     // And a GET never carries a body: the client only attaches one for POST.
     expect(client?.text).toMatch(/method === 'POST' \? \{ body:/);
   });

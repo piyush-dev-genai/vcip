@@ -8,6 +8,7 @@ import { AGENT_REPOSITORY, DrizzleAgentRepository } from './agent.repository.js'
 import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
+import { AgentWorkService } from './agent-work.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
 import { PRESENCE_REPOSITORY, RedisPresenceRepository } from './presence.repository.js';
@@ -46,6 +47,10 @@ import { PresenceService } from './presence.service.js';
  * `QueueModule` is still read-only here — nothing in T18 removes, re-scores, or
  * repairs a queue member.
  *
+ * `AgentWorkService` adds no imports either. It answers "what am I holding"
+ * from the same `SESSION_REPOSITORY` and the same predicate the capacity check
+ * counts, so the two cannot disagree about what holding work means.
+ *
  * T19 and T20 add no imports. Accept is another conditional UPDATE through the
  * same repository port, and the offer sweeper needs only that port and
  * presence. The sweeper is the module's one non-request component: it has no
@@ -61,6 +66,7 @@ import { PresenceService } from './presence.service.js';
     AgentsService,
     PresenceService,
     AgentQueueService,
+    AgentWorkService,
     AgentClaimService,
     AgentAcceptService,
     // The timer runs in the application; test modules build their own graph

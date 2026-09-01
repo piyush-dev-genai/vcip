@@ -30,6 +30,7 @@ import { TenantScope } from '../common/auth/tenant-scope.js';
 import { createLogger } from '../common/logging/logger.js';
 import type {
   ClaimableSessionRow,
+  AgentWorkRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
@@ -131,6 +132,10 @@ class FakeSessionRepository implements SessionRepository {
       createdAt: new Date(NOW - 120_000),
       updatedAt: new Date(NOW - 60_000),
     });
+  }
+
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('claiming a session must not ask what the agent holds');
   }
 
   findForMediaToken(): Promise<MediaTokenSessionRow | null> {

@@ -29,6 +29,7 @@ import type {
 import type {
   CreateSessionInput,
   ClaimableSessionRow,
+  AgentWorkRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
@@ -178,6 +179,10 @@ class FakeSessionRepository implements SessionRepository {
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the queue view must not claim sessions');
+  }
+
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('the queue view lists what an agent could take, not what they hold');
   }
 
   findForMediaToken(): Promise<MediaTokenSessionRow | null> {

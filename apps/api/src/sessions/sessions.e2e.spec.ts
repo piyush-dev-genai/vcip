@@ -49,6 +49,7 @@ import { TenantsService } from '../tenants/tenants.service.js';
 import type {
   CreateSessionInput,
   ClaimableSessionRow,
+  AgentWorkRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpiredOfferRow,
@@ -290,6 +291,10 @@ class InMemorySessionRepository implements SessionRepository {
       payload: command.event.payload,
     });
     return updated;
+  }
+
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('the customer lifecycle must not read an agent’s work');
   }
 
   findForMediaToken(): Promise<MediaTokenSessionRow | null> {

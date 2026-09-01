@@ -35,6 +35,7 @@ import { LoggingModule } from '../common/logging/logging.module.js';
 import { LOGGER } from '../common/logging/logging.tokens.js';
 import type {
   AcceptCommand,
+  AgentWorkRow,
   ClaimCommand,
   ClaimableSessionRow,
   CreateSessionInput,
@@ -135,6 +136,10 @@ class FakeSessions implements SessionRepository {
 
   findQueued(): Promise<readonly QueuedSessionRow[]> {
     throw new Error('the media-token routes must not read the queue projection');
+  }
+
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('the media-token routes must not read an agent’s work');
   }
 
   countActiveWork(): Promise<number> {

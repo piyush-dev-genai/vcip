@@ -2070,6 +2070,138 @@ and for operations, not because the sweeper needs a caller. It is naturally
 idempotent: a second pass finds the same offers already `QUEUED`.
 
 
+\## 17.4 Agent Work [IMPLEMENTED]
+
+
+
+\### Endpoint
+
+
+
+```http
+
+GET /v1/agent/work
+
+```
+
+
+
+\### Authentication
+
+
+
+Agent JWT. Takes no parameters: the agent and the tenant come from the
+
+credential, so there is no field through which one agent could ask what another
+
+is holding.
+
+
+
+\### Why it exists
+
+
+
+No other endpoint answers "what am I working on". `GET /v1/agent/queue` lists
+
+what an agent *could* take, and a session assigned to them has by definition
+
+left the queue; `GET /v1/sessions/{id}` needs an id the caller may not have;
+
+the login response carries a credential and nothing else.
+
+
+
+Without it the agent portal's only record of its own work was browser storage,
+
+which is per-tab. A fresh login lost it, and the agent landed on the queue
+
+screen while `POST /v1/agent/availability` refused them with `409` for holding
+
+a session no response would name. Nothing frees an `IN_CALL` session — the
+
+expiry sweeper handles `OFFERED` only — so the agent stayed stuck until the
+
+customer aborted.
+
+
+
+\### Response
+
+
+
+```json
+
+{
+
+&#x20; "data": {
+
+&#x20;   "sessions": [
+
+&#x20;     {
+
+&#x20;       "session\_id": "session-uuid",
+
+&#x20;       "status": "IN\_CALL",
+
+&#x20;       "room\_name": "vcip\_session-uuid",
+
+&#x20;       "offer\_expires\_at": null
+
+&#x20;     }
+
+&#x20;   ]
+
+&#x20; }
+
+}
+
+```
+
+
+
+A list, because `agent\_profiles.max\_concurrent` may exceed one. An agent
+
+holding nothing gets `{ "sessions": [] }` — a `200`, not a `404`: holding
+
+nothing is a true answer.
+
+
+
+`status` is `OFFERED` or `IN\_CALL`, the two states that count as held work.
+
+That is the same definition the claim's capacity check and the availability
+
+guard use, so what this lists and what makes availability refuse can never
+
+disagree.
+
+
+
+`offer\_expires\_at` is non-null only for an `OFFERED` session, where it is the
+
+window the claim issued. It is reported because `GET /v1/sessions/{id}` does
+
+not carry it, and an agent recovering an offer needs a real countdown rather
+
+than an invented one.
+
+
+
+\### Side effects
+
+
+
+None. No session moves, no presence changes, no offer is extended, and no
+
+event is appended. It reports rows that already exist.
+
+
+
+---
+
+
+
 \# 18. Submit Verdict
 
 
@@ -2945,6 +3077,7 @@ POST /v1/agent/login
 POST /v1/agent/availability
 POST /v1/agent/heartbeat
 GET  /v1/agent/queue
+GET  /v1/agent/work
 POST /v1/agent/sessions/:id/claim
 POST /v1/agent/sessions/:id/accept
 GET  /v1/agent/sessions/:id/checklist

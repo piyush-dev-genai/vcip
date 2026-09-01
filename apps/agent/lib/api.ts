@@ -99,6 +99,26 @@ export interface SessionState {
 }
 
 /**
+ * One session this agent is holding — `GET /v1/agent/work` (contract §17.4).
+ *
+ * Shaped like the accept response the portal already understands, because it
+ * answers the same question after the fact: which session, what state, which
+ * room, and how long an offer has left.
+ */
+export interface AgentWorkItem {
+  readonly session_id: string;
+  readonly status: string;
+  readonly room_name: string | null;
+  /** Non-null only for an offer. A call has no window. */
+  readonly offer_expires_at: string | null;
+}
+
+/** `GET /v1/agent/work`. A list: `max_concurrent` may exceed one. */
+export interface AgentWorkResult {
+  readonly sessions: readonly AgentWorkItem[];
+}
+
+/**
  * `GET /v1/agent/sessions/{id}/media-token` (contract §13).
  *
  * Exactly the three documented fields. Where the SFU lives is not among them
@@ -168,6 +188,17 @@ export interface AgentApi {
    * only when this agent is the one `sessions.agent_id` names.
    */
   mediaToken(sessionId: string): Promise<MediaTokenResult>;
+
+  /**
+   * What this agent is currently holding.
+   *
+   * Takes no arguments: the agent and the tenant are the JWT's. This is how the
+   * portal finds its own work after a fresh login, which `sessionStorage` alone
+   * could never survive — a new tab, a different browser, or a sign-out left an
+   * agent on the queue screen while the server refused their availability for
+   * holding a session they had no way to name.
+   */
+  work(): Promise<AgentWorkResult>;
 }
 
 /** The success envelope: every 2xx body is `{ "data": ... }`. */
@@ -340,6 +371,13 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
 
     async session(sessionId) {
       return request<SessionState>(sessionUrl(deps.baseUrl, sessionId), {
+        method: 'GET',
+        authenticated: true,
+      });
+    },
+
+    async work() {
+      return request<AgentWorkResult>(buildUrl(deps.baseUrl, '/work'), {
         method: 'GET',
         authenticated: true,
       });

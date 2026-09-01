@@ -59,6 +59,9 @@ import { AgentClaimService } from './agent-claim.service.js';
 import type { AgentQueueResult } from './agent-queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentQueueService } from './agent-queue.service.js';
+import type { AgentWorkResult } from './agent-work.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AgentWorkService } from './agent-work.service.js';
 import type { AgentLoginResult } from './agents.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentsService } from './agents.service.js';
@@ -85,6 +88,7 @@ export class AgentsController {
     private readonly agents: AgentsService,
     private readonly presence: PresenceService,
     private readonly queue: AgentQueueService,
+    private readonly work: AgentWorkService,
     private readonly claims: AgentClaimService,
     private readonly accepts: AgentAcceptService,
   ) {}
@@ -153,6 +157,27 @@ export class AgentsController {
   @UseGuards(AgentJwtGuard, TenantGuard)
   async queueView(@Auth() actor: Actor): Promise<ApiData<AgentQueueResult>> {
     return data(await this.queue.view(asAgent(actor)));
+  }
+
+  /**
+   * What this agent is currently holding.
+   *
+   * The counterpart to the queue view, and a different question: the queue
+   * lists what an agent *could* take, while this lists what they already have.
+   * A session assigned to an agent has left the queue, so no amount of reading
+   * `/queue` could ever have found it — which is why an agent who lost their
+   * browser state was stranded, refused availability for holding a session no
+   * response would name.
+   *
+   * Takes no arguments. The agent and the tenant are the JWT's, so there is no
+   * parameter through which one agent could ask what another is holding.
+   *
+   * A read: no session moves, no presence changes, and no offer is extended.
+   */
+  @Get('work')
+  @UseGuards(AgentJwtGuard, TenantGuard)
+  async workView(@Auth() actor: Actor): Promise<ApiData<AgentWorkResult>> {
+    return data(await this.work.work(asAgent(actor)));
   }
 
   /**

@@ -28,6 +28,7 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   AcceptCommand,
   ClaimableSessionRow,
+  AgentWorkRow,
   MediaTokenSessionRow,
   ClaimCommand,
   CreateSessionInput,
@@ -98,6 +99,10 @@ class FakeSessions implements SessionRepository {
 
   seed(row: Stored): void {
     this.rows.set(row.id, row);
+  }
+
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('accepting a session must not ask what the agent holds');
   }
 
   findForMediaToken(): Promise<MediaTokenSessionRow | null> {

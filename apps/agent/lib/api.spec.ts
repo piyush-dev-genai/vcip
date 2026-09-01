@@ -514,3 +514,64 @@ describe('mediaToken', () => {
     await expect(api.mediaToken(SESSION)).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe('work', () => {
+  const SESSION = '44444444-4444-4444-8444-444444444444';
+
+  it('reads the documented route', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [] }));
+    await api.work();
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agent/work`);
+    expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('names no agent id or tenant id — the server reads both from the JWT', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [] }));
+    await api.work();
+    expect(calls[0]?.url).not.toMatch(/[?&]/);
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(headersOf(calls[0]).Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('carries no Idempotency-Key, because it is a read', async () => {
+    const { api, calls } = harness(() => ok({ sessions: [] }));
+    await api.work();
+    expect(headersOf(calls[0])['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('reports an empty list for an agent holding nothing', async () => {
+    const { api } = harness(() => ok({ sessions: [] }));
+    await expect(api.work()).resolves.toEqual({ sessions: [] });
+  });
+
+  it('reports a held call with its room', async () => {
+    const item = {
+      session_id: SESSION,
+      status: 'IN_CALL',
+      room_name: `vcip_${SESSION}`,
+      offer_expires_at: null,
+    };
+    const { api } = harness(() => ok({ sessions: [item] }));
+    const result = await api.work();
+    expect(result.sessions).toEqual([item]);
+  });
+
+  it('reports a held offer with its window', async () => {
+    const item = {
+      session_id: SESSION,
+      status: 'OFFERED',
+      room_name: `vcip_${SESSION}`,
+      offer_expires_at: '2026-09-01T12:00:30.000Z',
+    };
+    const { api } = harness(() => ok({ sessions: [item] }));
+    const result = await api.work();
+    expect(result.sessions[0]?.offer_expires_at).toBe('2026-09-01T12:00:30.000Z');
+  });
+
+  it('surfaces a failure as an ApiError rather than an empty list', async () => {
+    // An outage must not read as "you hold nothing" — that is how an agent
+    // gets sent back to the queue while a customer waits on their call.
+    const { api } = harness(() => json(500, { error: { code: 'INTERNAL_ERROR', message: 'no' } }));
+    await expect(api.work()).rejects.toBeInstanceOf(ApiError);
+  });
+});

@@ -63,6 +63,28 @@ export function workScreen(work: Work | null): WorkScreen {
   return WorkScreen.CHECKING;
 }
 
+/**
+ * Work the server says this agent is holding (`GET /v1/agent/work`).
+ *
+ * The authoritative answer, and the one that ends the stranding: unlike a
+ * recovered `sessionStorage` entry this arrives already confirmed, so the
+ * portal can go straight to the offer or call screen instead of showing
+ * "checking" while it verifies a remembered id.
+ */
+export function afterWorkRead(item: {
+  readonly session_id: string;
+  readonly status: string;
+  readonly room_name: string | null;
+  readonly offer_expires_at: string | null;
+}): Work {
+  return {
+    sessionId: item.session_id,
+    status: item.status,
+    offerExpiresAt: item.offer_expires_at,
+    roomName: item.room_name,
+  };
+}
+
 /** A successful claim. The offer window is the server's, reported verbatim. */
 export function afterClaim(result: {
   readonly session_id: string;

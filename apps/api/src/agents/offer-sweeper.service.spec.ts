@@ -18,6 +18,7 @@ import { createLogger } from '../common/logging/logger.js';
 import type {
   AcceptCommand,
   ClaimableSessionRow,
+  AgentWorkRow,
   MediaTokenSessionRow,
   ClaimCommand,
   CreateSessionInput,
@@ -98,6 +99,10 @@ class FakeSessions implements SessionRepository {
   findById(): Promise<SessionRow | null> {
     throw new Error('the sweeper must not read sessions one at a time');
   }
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('the sweeper must not read the active-work projection');
+  }
+
   findForMediaToken(): Promise<MediaTokenSessionRow | null> {
     throw new Error('the sweeper must not read the media-token projection');
   }

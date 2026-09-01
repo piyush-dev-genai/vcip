@@ -55,6 +55,7 @@ import type {
   CreateSessionInput,
   AcceptCommand,
   ClaimableSessionRow,
+  AgentWorkRow,
   MediaTokenSessionRow,
   ClaimCommand,
   ExpireOffersCommand,
@@ -72,6 +73,7 @@ import { AGENT_REPOSITORY } from './agent.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
+import { AgentWorkService } from './agent-work.service.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
 import { OfferSweeperController } from './offer-sweeper.controller.js';
@@ -378,6 +380,31 @@ class FakeSessionStore implements SessionRepository {
     return Promise.resolve(row === undefined ? null : asSessionRow(row));
   }
 
+  /**
+   * The same predicate the real query uses: offered to this agent, or in call
+   * with them, within their tenant. Reproduced rather than stubbed because the
+   * work route is exercised over HTTP here, and a stub would test nothing.
+   */
+  findActiveWork(tenantId: string, agentId: string): Promise<readonly AgentWorkRow[]> {
+    this.singleReads += 1;
+    const held = [...this.rows.values()].filter(
+      (row) =>
+        row.tenantId === tenantId &&
+        ((row.status === SessionStatus.OFFERED && row.offeredToAgentId === agentId) ||
+          (row.status === SessionStatus.IN_CALL && row.agentId === agentId)),
+    );
+    return Promise.resolve(
+      held.map((row) => ({
+        id: row.id,
+        tenantId: row.tenantId,
+        status: row.status,
+        roomName: `vcip_${row.id}`,
+        offerExpiresAt: row.offerExpiresAt ?? null,
+        heldSince: row.connectedAt ?? row.offeredAt ?? row.queuedAt,
+      })),
+    );
+  }
+
   findForMediaToken(): Promise<MediaTokenSessionRow | null> {
     throw new Error('no agent route mints a media token; T24 has its own controller');
   }
@@ -653,6 +680,11 @@ const tenantStore = new FakeTenantConfigStore();
         logger,
       ) => new AgentQueueService(queue, sessions, agents, logger, () => new Date(clockMs)),
       inject: [QUEUE_REPOSITORY, SESSION_REPOSITORY, AGENT_REPOSITORY, LOGGER],
+    },
+    {
+      provide: AgentWorkService,
+      useFactory: (sessions: SessionRepository) => new AgentWorkService(sessions),
+      inject: [SESSION_REPOSITORY],
     },
     { provide: REDIS, useValue: idempotencyRedis },
     IdempotencyStore,
@@ -2769,6 +2801,165 @@ describe('agent identity and presence over HTTP', () => {
       const response = await bearer('/availability', other).send({ status: 'AVAILABLE' });
 
       expect(response.status).toBe(200);
+    });
+  });
+
+  // -------------------------------------------------------------- work
+
+  describe('GET /v1/agent/work', () => {
+    const SESSION_W = '00000000-0000-4000-8000-0000000000w1'.replace('w1', 'f1');
+    const QUEUED_AT = new Date(clockMs - 60_000);
+
+    const held = (over: Partial<StoredSession> = {}): StoredSession => ({
+      id: SESSION_W,
+      tenantId: TENANT_A,
+      status: SessionStatus.IN_CALL,
+      language: 'en',
+      priority: 0,
+      queuedAt: QUEUED_AT,
+      version: 3,
+      agentId: AGENT_A1,
+      connectedAt: new Date(clockMs),
+      // The accept keeps the offer columns as history (T19), so a real IN_CALL
+      // row carries these. The fixture carries them too, or the work route
+      // would be tested against a tidier row than the database ever produces.
+      offeredToAgentId: AGENT_A1,
+      offeredAt: new Date(clockMs - 5_000),
+      offerExpiresAt: new Date(clockMs + 25_000),
+      ...over,
+    });
+
+    const work = (token: string) =>
+      request(app.getHttpServer()).get('/v1/agent/work').set('Authorization', `Bearer ${token}`);
+
+    /**
+     * The endpoint that ends the stranding. Before it existed, an agent whose
+     * browser state was gone landed on the queue screen while the server
+     * refused their availability with a 409 for holding a session no response
+     * would name — and nothing frees an IN_CALL session, so it never resolved.
+     */
+    it('reports the session an agent is in call with', async () => {
+      sessionStore.seed(held());
+      const token = await loginAs();
+
+      const response = await work(token);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toHaveLength(1);
+      expect(response.body.data.sessions[0].session_id).toBe(SESSION_W);
+      expect(response.body.data.sessions[0].status).toBe(SessionStatus.IN_CALL);
+      expect(response.body.data.sessions[0].room_name).toBe(`vcip_${SESSION_W}`);
+    });
+
+    it('reports an outstanding offer with its window', async () => {
+      const expires = new Date(clockMs + 30_000);
+      sessionStore.seed(
+        held({
+          status: SessionStatus.OFFERED,
+          agentId: null,
+          connectedAt: null,
+          offeredToAgentId: AGENT_A1,
+          offeredAt: new Date(clockMs),
+          offerExpiresAt: expires,
+        }),
+      );
+      const token = await loginAs();
+
+      const response = await work(token);
+
+      expect(response.body.data.sessions[0].status).toBe(SessionStatus.OFFERED);
+      expect(response.body.data.sessions[0].offer_expires_at).toBe(expires.toISOString());
+    });
+
+    /**
+     * The fixture deliberately carries an offer window, because a real IN_CALL
+     * row does: T19 keeps the offer columns as history. Reporting it would put
+     * a running countdown on a call that has no deadline.
+     */
+    it('hides the offer window a call inherited from its claim', async () => {
+      sessionStore.seed(held());
+      const token = await loginAs();
+      const response = await work(token);
+      expect(response.body.data.sessions[0].status).toBe(SessionStatus.IN_CALL);
+      expect(response.body.data.sessions[0].offer_expires_at).toBeNull();
+    });
+
+    it('returns an empty list for an agent holding nothing', async () => {
+      const token = await loginAs();
+      const response = await work(token);
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    it('never reports another agent’s work', async () => {
+      sessionStore.seed(held({ agentId: AGENT_A1 }));
+      const token = await loginAs('agent.two@demo.local');
+
+      const response = await work(token);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    it('never reports another tenant’s session', async () => {
+      sessionStore.seed(held({ tenantId: TENANT_A, agentId: AGENT_B1 }));
+      const token = await loginAs('agent.one@other.local', 'other-bank');
+
+      const response = await work(token);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    it('does not report a queued session, which nobody holds', async () => {
+      sessionStore.seed(held({ status: SessionStatus.QUEUED, agentId: null, connectedAt: null }));
+      const token = await loginAs();
+      const response = await work(token);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    it('does not report a finished session', async () => {
+      sessionStore.seed(held({ status: SessionStatus.APPROVED }));
+      const token = await loginAs();
+      const response = await work(token);
+      expect(response.body.data.sessions).toEqual([]);
+    });
+
+    it('401s without an agent credential', async () => {
+      const response = await request(app.getHttpServer()).get('/v1/agent/work');
+      expect(response.status).toBe(401);
+    });
+
+    it('401s with a customer token', async () => {
+      const response = await work(customerToken(TENANT_A, SESSION_W));
+      expect(response.status).toBe(401);
+    });
+
+    it('writes nothing', async () => {
+      sessionStore.seed(held());
+      const token = await loginAs();
+      const before = sessionStore.writes;
+
+      await work(token);
+
+      expect(sessionStore.writes).toBe(before);
+    });
+
+    /**
+     * The two halves of the bug, asserted together: the availability refusal
+     * and the work listing must agree about what holding a session means, or
+     * an agent is refused for work that no endpoint will show them.
+     */
+    it('shows exactly the work that makes availability refuse', async () => {
+      sessionStore.seed(held());
+      const token = await loginAs();
+
+      const availability = await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      expect(availability.status).toBe(409);
+
+      const response = await work(token);
+      expect(response.body.data.sessions).toHaveLength(1);
+      expect(response.body.data.sessions[0].session_id).toBe(SESSION_W);
     });
   });
 });

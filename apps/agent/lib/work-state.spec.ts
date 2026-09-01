@@ -19,6 +19,7 @@ import {
   afterAccept,
   afterClaim,
   afterRead,
+  afterWorkRead,
   workScreen,
 } from './work-state';
 
@@ -186,5 +187,49 @@ describe('afterRead', () => {
   it('drops the offer window once the session is in a call', () => {
     const next = afterRead(offered, { status: SessionStatus.IN_CALL, room_name: null });
     expect(next?.offerExpiresAt).toBeNull();
+  });
+});
+
+describe('afterWorkRead', () => {
+  it('takes the server answer verbatim, already confirmed', () => {
+    const work = afterWorkRead({
+      session_id: 'session-1',
+      status: 'IN_CALL',
+      room_name: 'vcip_session-1',
+      offer_expires_at: null,
+    });
+    expect(work).toEqual({
+      sessionId: 'session-1',
+      status: 'IN_CALL',
+      offerExpiresAt: null,
+      roomName: 'vcip_session-1',
+    });
+  });
+
+  /**
+   * The difference from a recovered storage entry: that arrives UNCONFIRMED and
+   * sends the portal to the checking screen. This is the server's own word, so
+   * it routes straight to the call.
+   */
+  it('lands the portal on a real screen, not on checking', () => {
+    const work = afterWorkRead({
+      session_id: 'session-1',
+      status: 'IN_CALL',
+      room_name: null,
+      offer_expires_at: null,
+    });
+    expect(work.status).not.toBe(UNCONFIRMED);
+    expect(workScreen(work)).toBe(WorkScreen.CALL);
+  });
+
+  it('routes a held offer to the offer screen, with its window', () => {
+    const work = afterWorkRead({
+      session_id: 'session-1',
+      status: 'OFFERED',
+      room_name: null,
+      offer_expires_at: '2026-09-01T12:00:30.000Z',
+    });
+    expect(workScreen(work)).toBe(WorkScreen.OFFER);
+    expect(work.offerExpiresAt).toBe('2026-09-01T12:00:30.000Z');
   });
 });

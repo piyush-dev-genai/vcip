@@ -259,6 +259,31 @@ export type SessionClaimOutcome =
   | { readonly kind: 'AT_CAPACITY'; readonly active: number };
 
 /**
+ * One session an agent is currently holding.
+ *
+ * The answer to "what am I working on", which nothing in the contract could
+ * answer before: the queue view lists what an agent *could* take, and a session
+ * assigned to them has by definition left it. Without this the portal's only
+ * memory of its own work was `sessionStorage`, so a fresh login stranded an
+ * agent on the queue screen while the server refused their availability for
+ * holding a session they could not reach.
+ *
+ * Carries the offer window because `GET /v1/sessions/{id}` does not: an agent
+ * recovering an `OFFERED` session needs to know how long is left, and deriving
+ * it a second way would be a second answer to a question the claim already
+ * answered.
+ */
+export interface AgentWorkRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly status: SessionStatus;
+  readonly roomName: string | null;
+  readonly offerExpiresAt: Date | null;
+  /** Ordering key: when this session became this agent's. */
+  readonly heldSince: Date;
+}
+
+/**
  * One session, as minting a media token needs to see it (T24).
  *
  * Five columns, and the narrowness is the authorization boundary. Deciding
@@ -446,6 +471,18 @@ export interface SessionRepository {
    * database.
    */
   countActiveWork(tenantId: string, agentId: string): Promise<number>;
+
+  /**
+   * The sessions this agent is currently holding, oldest first.
+   *
+   * The same definition `countActiveWork` counts and the claim's capacity check
+   * uses — one predicate, so "how many do I hold" and "which ones" can never
+   * disagree. A list rather than one row because `agent_profiles.max_concurrent`
+   * may exceed one; the portal is single-session and takes the first, and
+   * saying so honestly is better than a signature that pretends there can only
+   * ever be one.
+   */
+  findActiveWork(tenantId: string, agentId: string): Promise<readonly AgentWorkRow[]>;
 
   /**
    * Return lapsed offers to the queue: `OFFERED -> QUEUED` (T20, §17.3).
@@ -719,6 +756,30 @@ export class DrizzleSessionRepository implements SessionRepository {
       .from(sessions)
       .where(holdsActiveWork(tenantId, agentId));
     return Number(row?.active ?? 0);
+  }
+
+  async findActiveWork(tenantId: string, agentId: string): Promise<readonly AgentWorkRow[]> {
+    const rows = await this.db
+      .select({
+        id: sessions.id,
+        tenantId: sessions.tenantId,
+        status: sessions.status,
+        roomName: sessions.roomName,
+        offerExpiresAt: sessions.offerExpiresAt,
+        // When the session became this agent's: the accept for a call, the
+        // claim for an outstanding offer. Coalesced so one column orders both.
+        heldSince: sql<Date>`coalesce(${sessions.connectedAt}, ${sessions.offeredAt}, ${sessions.updatedAt})`,
+      })
+      .from(sessions)
+      // The same predicate the capacity count and the claim use.
+      .where(holdsActiveWork(tenantId, agentId))
+      .orderBy(sessions.createdAt);
+
+    return rows.map((row) => ({
+      ...row,
+      status: row.status as SessionStatus,
+      heldSince: new Date(row.heldSince as unknown as string),
+    }));
   }
 
   async expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {

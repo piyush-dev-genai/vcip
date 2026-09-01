@@ -23,6 +23,7 @@ import { TenantScope } from '../common/auth/tenant-scope.js';
 import { createLogger } from '../common/logging/logger.js';
 import type {
   AcceptCommand,
+  AgentWorkRow,
   ClaimCommand,
   ClaimableSessionRow,
   CreateSessionInput,
@@ -135,6 +136,10 @@ class FakeSessions implements SessionRepository {
 
   findQueued(): Promise<readonly QueuedSessionRow[]> {
     throw new Error('the media-token path must not read the queue projection');
+  }
+
+  findActiveWork(): Promise<readonly AgentWorkRow[]> {
+    throw new Error('the media-token path must not read an agent’s work');
   }
 
   countActiveWork(): Promise<number> {

@@ -23,6 +23,7 @@ import {
   afterAccept,
   afterClaim,
   afterRead,
+  afterWorkRead,
   UNCONFIRMED,
   WorkScreen,
   workScreen,
@@ -120,6 +121,52 @@ export function AgentPortal() {
     [],
   );
 
+  /**
+   * Ask the server what this agent is holding.
+   *
+   * The authority for the portal's own work, and the fix for a real deadlock:
+   * `sessionStorage` is per-tab, so a fresh login — a new tab, another browser,
+   * cleared storage, or a deliberate sign-out — used to lose the pointer
+   * entirely. The agent then sat on the queue screen while
+   * `POST /v1/agent/availability` refused them with a 409 for holding a session
+   * no response would name, and nothing frees an `IN_CALL` session: the expiry
+   * sweeper only handles `OFFERED`. The agent was stuck until the customer
+   * aborted.
+   *
+   * The server's answer replaces whatever was remembered, never merges with it.
+   * Storage stays as a fast path that avoids a flash of the queue screen on
+   * reload, and as the home of the idempotency keys a retry needs — but it is
+   * no longer the only record, and it no longer decides anything.
+   *
+   * Failure is not fatal and not an error the agent must act on: the portal
+   * simply shows what it already knew. A queue view is a safe thing to be
+   * looking at.
+   */
+  const syncWork = useCallback(async (): Promise<void> => {
+    try {
+      const result = await api.work();
+      const [first] = result.sessions;
+      if (first === undefined) {
+        // The server says this agent holds nothing. Any remembered pointer is
+        // stale — a session that ended while the tab was closed — so it goes,
+        // rather than sending the portal to a screen the server disagrees with.
+        forgetWork(workHost, workRef.current?.sessionId);
+        setWork(null);
+        return;
+      }
+      const confirmed = afterWorkRead(first);
+      setWork(confirmed);
+      rememberWork(workHost, {
+        sessionId: confirmed.sessionId,
+        offerExpiresAt: confirmed.offerExpiresAt,
+        roomName: confirmed.roomName,
+      });
+    } catch {
+      // Left deliberately silent. This runs on entering the portal, and a
+      // failure here must not stand between an agent and their queue.
+    }
+  }, [api, workHost]);
+
   /** Restore a session from a previous page load, if it is still usable. */
   useEffect(() => {
     const stored = readToken(host);
@@ -141,17 +188,23 @@ export function AgentPortal() {
     // and the offer window the server previously issued; the status comes from
     // re-reading the session, so a reload cannot resurrect a screen the server
     // no longer agrees with.
+    // The remembered id, if there is one, only to avoid a flash of the queue
+    // screen while the server is asked. It is unconfirmed and decides nothing.
     const remembered = recallWork(workHost);
-    if (remembered === null) return;
-    setWork({
-      sessionId: remembered.sessionId,
-      // Not yet confirmed. The poll's first read replaces this, and until it
-      // does the portal shows "checking" rather than a screen it guessed.
-      status: UNCONFIRMED,
-      offerExpiresAt: remembered.offerExpiresAt,
-      roomName: remembered.roomName,
-    });
-  }, [host, workHost]);
+    if (remembered !== null) {
+      setWork({
+        sessionId: remembered.sessionId,
+        status: UNCONFIRMED,
+        offerExpiresAt: remembered.offerExpiresAt,
+        roomName: remembered.roomName,
+      });
+    }
+
+    // The server is the authority, and it is asked whether or not anything was
+    // remembered — which is what lets a tab with no memory at all find its way
+    // back to a live call.
+    void syncWork();
+  }, [host, workHost, syncWork]);
 
   const signOut = useCallback((): void => {
     token.current = null;
@@ -187,13 +240,16 @@ export function AgentPortal() {
         setScreen('portal');
         // Logging in does not make an agent available (§17). They choose.
         setStatus('UNAVAILABLE');
+        // But it does ask what they are already holding. An agent who logs in
+        // mid-call belongs on the call screen, not on the queue.
+        void syncWork();
       } catch (caught) {
         setError(toLoginMessage(caught));
       } finally {
         setBusy(false);
       }
     },
-    [api, host],
+    [api, host, syncWork],
   );
 
   const changeAvailability = useCallback(
