@@ -98,6 +98,18 @@ export interface SessionState {
   readonly room_name: string | null;
 }
 
+/**
+ * `GET /v1/agent/sessions/{id}/media-token` (contract §13).
+ *
+ * Exactly the three documented fields. Where the SFU lives is not among them
+ * and is not expected to be — that is `livekitUrl()` in `lib/config.ts`.
+ */
+export interface MediaTokenResult {
+  readonly room_name: string;
+  readonly token: string;
+  readonly expires_at: string;
+}
+
 /** `POST /v1/agent/heartbeat`. */
 export interface HeartbeatResult {
   readonly agent_id: string;
@@ -141,6 +153,21 @@ export interface AgentApi {
    * portal renders what this returns rather than what it last believed.
    */
   session(sessionId: string): Promise<SessionState>;
+
+  /**
+   * Credentials for the session's LiveKit room (T24, contract §13).
+   *
+   * The agent path, `/v1/agent/sessions/{id}/media-token`. R1 records that the
+   * customer path serves an agent JWT too and delegates to the same handler;
+   * this app uses the one under `/v1/agent` because that is the route named
+   * for this caller, and the answer is identical either way.
+   *
+   * A read: it mints a token but writes nothing, so it carries no idempotency
+   * key and a repeat costs nothing. There is no role, room, or identity in the
+   * signature — the server takes all three from the JWT, and issues a token
+   * only when this agent is the one `sessions.agent_id` names.
+   */
+  mediaToken(sessionId: string): Promise<MediaTokenResult>;
 }
 
 /** The success envelope: every 2xx body is `{ "data": ... }`. */
@@ -313,6 +340,13 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
 
     async session(sessionId) {
       return request<SessionState>(sessionUrl(deps.baseUrl, sessionId), {
+        method: 'GET',
+        authenticated: true,
+      });
+    },
+
+    async mediaToken(sessionId) {
+      return request<MediaTokenResult>(agentSessionUrl(deps.baseUrl, sessionId, '/media-token'), {
         method: 'GET',
         authenticated: true,
       });

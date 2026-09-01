@@ -454,3 +454,63 @@ describe('no request names an agent, a tenant, or a status', () => {
     }
   });
 });
+
+describe('mediaToken', () => {
+  const SESSION = '33333333-3333-4333-8333-333333333333';
+  const DATA = {
+    room_name: `vcip_${SESSION}`,
+    token: 'FAKE-MEDIA-TOKEN',
+    expires_at: '2026-09-01T10:15:00.000Z',
+  };
+
+  it('reads the agent path, with the session id encoded', async () => {
+    const { api, calls } = harness(() => ok(DATA));
+    await api.mediaToken(SESSION);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agent/sessions/${SESSION}/media-token`);
+  });
+
+  it('is a GET, because issuing a token writes nothing', async () => {
+    const { api, calls } = harness(() => ok(DATA));
+    await api.mediaToken(SESSION);
+    expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('sends no body and no Idempotency-Key', async () => {
+    // D13 protects operations that must happen at most once. This is a read.
+    const { api, calls } = harness(() => ok(DATA));
+    await api.mediaToken(SESSION);
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(headersOf(calls[0])['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('carries the agent JWT as an Authorization header, never in the URL', async () => {
+    const { api, calls } = harness(() => ok(DATA));
+    await api.mediaToken(SESSION);
+    expect(headersOf(calls[0]).Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]?.url).not.toContain(TOKEN);
+  });
+
+  it('names no agent id or room in the request', async () => {
+    // The server takes the agent from the JWT and the room from the session
+    // row. There is no parameter here through which a portal could name either.
+    const { api, calls } = harness(() => ok(DATA));
+    await api.mediaToken(SESSION);
+    expect(calls[0]?.url).not.toMatch(/agent_id|room/);
+  });
+
+  it('returns the three documented fields', async () => {
+    const { api } = harness(() => ok(DATA));
+    const result = await api.mediaToken(SESSION);
+    expect(result).toEqual(DATA);
+  });
+
+  it('surfaces a refusal as an ApiError', async () => {
+    // 409 SESSION_ALREADY_ASSIGNED is another agent's call; 409
+    // SESSION_INVALID_STATE is a session that left IN_CALL. Both are the
+    // server refusing, and the portal's re-read is what says which.
+    const { api } = harness(() =>
+      json(409, { error: { code: 'SESSION_ALREADY_ASSIGNED', message: 'no' } }),
+    );
+    await expect(api.mediaToken(SESSION)).rejects.toBeInstanceOf(ApiError);
+  });
+});

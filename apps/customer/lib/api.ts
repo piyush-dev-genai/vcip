@@ -20,6 +20,7 @@
 import { consentSchema, locationSchema, preflightSchema } from '@vcip/shared';
 import type { ConsentRequest, LocationRequest, PreflightRequest } from '@vcip/shared';
 import { ApiError, NetworkError } from './errors';
+import type { MediaToken } from './media-token';
 import type {
   AbortResult,
   ConsentResult,
@@ -41,7 +42,7 @@ export interface SessionApiDeps {
 }
 
 /**
- * The five customer operations.
+ * The customer operations.
  *
  * The three validating methods are `async` so that a schema rejection arrives
  * as a rejected promise rather than a synchronous throw. A method that
@@ -55,6 +56,17 @@ export interface SessionApi {
   submitLocation(sessionId: string, body: LocationRequest): Promise<LocationResult>;
   joinQueue(sessionId: string): Promise<QueueResult>;
   abortSession(sessionId: string): Promise<AbortResult>;
+
+  /**
+   * Credentials for the session's LiveKit room (T24, contract §13).
+   *
+   * A read, and genuinely one: it mints a token but writes nothing, so a
+   * repeat costs nothing and carries no idempotency key. The customer token in
+   * the `Authorization` header is what scopes it — there is no role, no room
+   * and no identity in this signature, because all three are the server's to
+   * decide from the credential.
+   */
+  getMediaToken(sessionId: string): Promise<MediaToken>;
 }
 
 /** The success envelope: every 2xx body is `{ "data": ... }` (§5). */
@@ -206,6 +218,12 @@ export function createSessionApi(deps: SessionApiDeps): SessionApi {
       return request<QueueResult>(buildUrl(deps.baseUrl, sessionId, '/queue'), {
         method: 'POST',
         idempotencyKey: keyFor('queue', sessionId),
+      });
+    },
+
+    getMediaToken(sessionId) {
+      return request<MediaToken>(buildUrl(deps.baseUrl, sessionId, '/media-token'), {
+        method: 'GET',
       });
     },
 

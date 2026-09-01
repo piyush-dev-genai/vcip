@@ -584,7 +584,7 @@ export function AgentPortal() {
           ) : null}
 
           {screenForWork === WorkScreen.CALL && work !== null ? (
-            <CallPanel sessionId={work.sessionId} roomName={work.roomName} />
+            <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
           ) : null}
 
           {screenForWork === WorkScreen.CHECKING ? (

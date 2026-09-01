@@ -1,10 +1,18 @@
 /**
  * Browser-visible configuration for the agent portal.
  *
- * Exactly one value is public: where the Control API lives. The agent app holds
- * no server-side secret at all — unlike the customer app, it has no D14
- * bootstrap route, because an agent authenticates as themselves with a password
- * they type. There is nothing here for a `NEXT_PUBLIC_` prefix to leak.
+ * Two values are public, and both are addresses: where the Control API lives
+ * and where the LiveKit SFU lives. The agent app holds no server-side secret at
+ * all — unlike the customer app, it has no D14 bootstrap route, because an
+ * agent authenticates as themselves with a password they type. There is nothing
+ * here for a `NEXT_PUBLIC_` prefix to leak.
+ *
+ * The SFU address is public because a browser cannot connect to a server whose
+ * address it does not know, and because the address authorises nothing: the
+ * media token does (T24), it is minted per session and per role, and T24 issues
+ * an agent one only for a session that agent is assigned to.
+ * `LIVEKIT_API_SECRET` — the value that would authorise — is server-only and is
+ * named nowhere in this app.
  *
  * Read through a function rather than a module-level constant because Next
  * inlines `process.env.NEXT_PUBLIC_*` at build time, and a constant evaluated
@@ -20,6 +28,26 @@ const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
 export function apiBaseUrl(): string {
   const configured = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (configured === undefined || configured.trim().length === 0) return DEFAULT_API_BASE_URL;
+  return trimTrailingSlash(configured.trim());
+}
+
+/** Local development default: the `livekit` service in `infra/docker-compose.yml`. */
+const DEFAULT_LIVEKIT_URL = 'ws://localhost:7880';
+
+/**
+ * Where the browser opens its media connection.
+ *
+ * Per D24 the deployment differs by environment and not by code: this is
+ * `ws://localhost:7880` against the local Docker Compose stack and a `wss://`
+ * LiveKit Cloud URL for the demo, with no conditional path between them.
+ *
+ * Deliberately not returned by the Control API. Contract §13 defines the
+ * media-token response as exactly `room_name`, `token` and `expires_at`, and
+ * the SFU address is deployment configuration rather than part of a credential.
+ */
+export function livekitUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_LIVEKIT_URL;
+  if (configured === undefined || configured.trim().length === 0) return DEFAULT_LIVEKIT_URL;
   return trimTrailingSlash(configured.trim());
 }
 

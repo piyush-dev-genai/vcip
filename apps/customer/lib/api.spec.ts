@@ -372,3 +372,61 @@ describe('failures', () => {
     await expect(client(fetchImpl).getSession(SESSION)).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe('getMediaToken', () => {
+  const body = {
+    data: {
+      room_name: `vcip_${SESSION}`,
+      token: 'FAKE-MEDIA-TOKEN',
+      expires_at: '2026-09-01T10:15:00.000Z',
+    },
+  };
+
+  it('reads the customer path with the session id encoded', async () => {
+    const { calls, fetchImpl } = recorder({ body });
+    await client(fetchImpl).getMediaToken(SESSION);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/sessions/${SESSION}/media-token`);
+  });
+
+  it('is a GET, because issuing a token writes nothing', async () => {
+    const { calls, fetchImpl } = recorder({ body });
+    await client(fetchImpl).getMediaToken(SESSION);
+    expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('sends no body and no Idempotency-Key', async () => {
+    // D13 protects operations that must happen at most once. This is a read:
+    // asking twice mints two tokens, which is correct and harmless.
+    const { calls, fetchImpl } = recorder({ body });
+    await client(fetchImpl).getMediaToken(SESSION);
+    expect(calls[0]?.init?.body).toBeUndefined();
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('carries the customer token as an Authorization header', async () => {
+    const { calls, fetchImpl } = recorder({ body });
+    await client(fetchImpl).getMediaToken(SESSION);
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]?.url).not.toContain(TOKEN);
+  });
+
+  it('returns the three documented fields', async () => {
+    const { fetchImpl } = recorder({ body });
+    const result = await client(fetchImpl).getMediaToken(SESSION);
+    expect(result.room_name).toBe(`vcip_${SESSION}`);
+    expect(result.token).toBe('FAKE-MEDIA-TOKEN');
+    expect(result.expires_at).toBe('2026-09-01T10:15:00.000Z');
+  });
+
+  it('surfaces a refusal as an ApiError the screen can act on', async () => {
+    // 409 is the session having left the call state. The call screen reports
+    // that the room could not be prepared; the status poll says where it went.
+    const { fetchImpl } = recorder({
+      status: 409,
+      body: { error: { code: 'SESSION_INVALID_STATE', message: 'no' } },
+    });
+    await expect(client(fetchImpl).getMediaToken(SESSION)).rejects.toBeInstanceOf(ApiError);
+  });
+});

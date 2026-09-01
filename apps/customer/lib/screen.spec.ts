@@ -76,12 +76,47 @@ describe('screenFor', () => {
     ).toBe(Screen.CHECKS_FAILED);
   });
 
-  it('shows the status screen for a session past the customer gates', () => {
-    // T15 onward. Unreachable from the T14 flow, but a stale tab can see it.
-    for (const status of [SessionStatus.QUEUED, SessionStatus.OFFERED, SessionStatus.IN_CALL]) {
+  it('shows the status screen while the customer is waiting', () => {
+    // Queued or offered to an agent: the customer waits, and the status screen
+    // is where they wait. Unreachable from the T14 flow, but a stale tab can
+    // see it.
+    for (const status of [SessionStatus.QUEUED, SessionStatus.OFFERED]) {
       expect(screenFor(view({ status, consent_ok: true, preflight_ok: true, geo_ok: true }))).toBe(
         Screen.SESSION_STATE,
       );
+    }
+  });
+
+  /**
+   * T25. An agent accepted, so both parties belong in the room — and the call
+   * gets its own screen rather than a branch of the status view, because it is
+   * the only screen that holds a camera and leaving it has to tear that down.
+   */
+  it('shows the call screen once an agent has accepted', () => {
+    expect(
+      screenFor(
+        view({
+          status: SessionStatus.IN_CALL,
+          consent_ok: true,
+          preflight_ok: true,
+          geo_ok: true,
+        }),
+      ),
+    ).toBe(Screen.CALL);
+  });
+
+  it('leaves the call screen the moment the session is no longer IN_CALL', () => {
+    // The status poll is what notices. A verdict (T35) or a drop (T26) ends the
+    // call from the other side, and the screen must not outlive it.
+    for (const status of [
+      SessionStatus.APPROVED,
+      SessionStatus.REJECTED,
+      SessionStatus.ABORTED,
+      SessionStatus.DROPPED_IN_CALL,
+    ]) {
+      expect(
+        screenFor(view({ status, consent_ok: true, preflight_ok: true, geo_ok: true })),
+      ).not.toBe(Screen.CALL);
     }
   });
 

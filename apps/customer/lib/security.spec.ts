@@ -128,13 +128,18 @@ describe('no server credential reaches the browser', () => {
   });
 });
 
-describe('NEXT_PUBLIC_ exposes exactly one value', () => {
-  it('is only ever the API base URL', () => {
+describe('NEXT_PUBLIC_ exposes exactly two values', () => {
+  it('is only ever the two addresses', () => {
+    // T25 added the second. Both say *where* a server is; neither says who may
+    // do anything there. The media token is the credential (T24), it is minted
+    // per session and per role, and `LIVEKIT_API_SECRET` — asserted absent
+    // above — is what would actually authorise. A third entry here would need
+    // the same argument made about it.
     const found = new Set<string>();
     for (const file of sources) {
       for (const match of file.text.matchAll(/NEXT_PUBLIC_[A-Z0-9_]+/g)) found.add(match[0]);
     }
-    expect([...found]).toEqual(['NEXT_PUBLIC_API_BASE_URL']);
+    expect([...found].sort()).toEqual(['NEXT_PUBLIC_API_BASE_URL', 'NEXT_PUBLIC_LIVEKIT_URL']);
   });
 
   it('is nearly the only environment variable client code reads', () => {
@@ -151,7 +156,11 @@ describe('NEXT_PUBLIC_ exposes exactly one value', () => {
         reads.add(match[1] ?? '');
       }
     }
-    expect([...reads].sort()).toEqual(['NEXT_PUBLIC_API_BASE_URL', 'npm_package_version']);
+    expect([...reads].sort()).toEqual([
+      'NEXT_PUBLIC_API_BASE_URL',
+      'NEXT_PUBLIC_LIVEKIT_URL',
+      'npm_package_version',
+    ]);
   });
 });
 
@@ -208,7 +217,7 @@ describe('coordinates are handled in one place and kept out of storage', () => {
 
 // -------------------------------------------------------------- scope
 
-describe('T14 scope', () => {
+describe('scope', () => {
   it('calls the queue endpoint from the API client and nowhere else', () => {
     // T15 wires the Join Queue action. The route belongs in `lib/api.ts` with
     // every other request — a component reaching for it directly would be the
@@ -220,20 +229,50 @@ describe('T14 scope', () => {
     // Routes, not words. `verdict` appears in `lib/session.ts` because
     // `GET /v1/sessions/{id}` returns one and the status screen renders it —
     // reading an outcome is T14's, submitting one is T35's.
-    for (const pattern of [
-      /\/verdict\b/,
-      /\/checklist\b/,
-      /\/media-token\b/,
-      /\/agent\//,
-      /\/internal\//,
-    ]) {
+    //
+    // The media token left this list with T25. `/agent/` has not: the customer
+    // app uses the customer path, and R1's agent door is the agent portal's.
+    for (const pattern of [/\/verdict\b/, /\/checklist\b/, /\/agent\//, /\/internal\//]) {
       expect(offenders(sources, pattern)).toEqual([]);
     }
   });
 
-  it('contains no LiveKit, WebSocket, AI, or webhook code', () => {
-    for (const pattern of [/livekit/i, /new WebSocket|ws:\/\/|wss:\/\//, /webhook/i]) {
+  it('calls the media-token endpoint from the API client and nowhere else', () => {
+    expect(offenders(sources, /'\/media-token'/)).toEqual(['lib/api.ts']);
+  });
+
+  it('contains no AI or webhook code', () => {
+    for (const pattern of [/webhook/i, /liveness|face_match|ocr/i]) {
       expect(offenders(sources, pattern)).toEqual([]);
+    }
+  });
+
+  it('opens no WebSocket of its own — the realtime feed is T27', () => {
+    // The SFU connection is not this: it is made by the SDK, from a URL this
+    // app only reads, and `lib/room.ts` is the one file that talks to it.
+    expect(offenders(sources, /new WebSocket/)).toEqual([]);
+  });
+
+  it('imports the LiveKit SDK in exactly one module', () => {
+    // The port. Everything else in the app talks to `RoomPort`, so the SDK is
+    // swappable and the logic above it is testable without a browser.
+    expect(offenders(sources, /from 'livekit-client'/)).toEqual(['lib/room.ts']);
+  });
+
+  it('names an SFU address in exactly one module', () => {
+    // `lib/config.ts` reads it; nothing else builds or hardcodes one, so there
+    // is no second place a deployment could be pointed at the wrong server.
+    expect(offenders(sources, /wss?:\/\//)).toEqual(['lib/config.ts']);
+  });
+
+  it('never puts a media token in a URL or in storage', () => {
+    // It is a bearer credential to publish into a KYC call. It travels in a
+    // response body, lives in a ref for the life of the screen, and is handed
+    // straight to the SDK.
+    expect(offenders(sources, /[?&](access_token|jwt)=/)).toEqual([]);
+    const storageWriters = sources.filter((file) => /setItem\(/.test(file.text));
+    for (const file of storageWriters) {
+      expect(file.text).not.toMatch(/media.?token/i);
     }
   });
 

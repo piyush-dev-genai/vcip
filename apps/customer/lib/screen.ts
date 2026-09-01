@@ -32,6 +32,15 @@ export const Screen = {
   LOCATION: 'location',
   /** All three gates passed. T14 stops here; T15 adds the queue. */
   READY_FOR_QUEUE: 'ready_for_queue',
+  /**
+   * `IN_CALL` — an agent accepted and both parties belong in the room (T25).
+   *
+   * Its own screen rather than a branch of the status view, because it is the
+   * only screen that holds a camera. Leaving it has to tear that down, and a
+   * conditional inside the status screen would make "when does the camera
+   * stop" a question about render order.
+   */
+  CALL: 'call',
   /** `PREFLIGHT_FAILED` — terminal, unbilled (I5). Preflight or location. */
   CHECKS_FAILED: 'checks_failed',
   /** Any other terminal status, or a session already past the customer gates. */
@@ -55,7 +64,12 @@ export function screenFor(session: SessionView): Screen {
   // the T14 flow reaches these, but a stale tab can observe one.
   if (isTerminalSessionStatus(session.status)) return Screen.SESSION_STATE;
 
-  // Past the customer's own gates: queued, offered, or in the call. T15 onward.
+  // An agent has accepted: the customer belongs in the room (T25). Checked
+  // before the general "past the gates" case below, which would otherwise
+  // route a live call to the status screen.
+  if (session.status === SessionStatus.IN_CALL) return Screen.CALL;
+
+  // Past the customer's own gates: queued or offered. T15 onward.
   if (session.status !== SessionStatus.CREATED) return Screen.SESSION_STATE;
 
   if (!session.consent_ok) return Screen.CONSENT;

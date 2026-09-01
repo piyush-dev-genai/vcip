@@ -90,12 +90,17 @@ describe('no server credential reaches this app', () => {
     }
   });
 
-  it('exposes exactly one NEXT_PUBLIC_ value', () => {
+  it('exposes exactly two NEXT_PUBLIC_ values, both addresses', () => {
+    // T25 added the second. Both say *where* a server is; neither says who may
+    // do anything there. The media token is the credential (T24), it is minted
+    // per session and per role, and `LIVEKIT_API_SECRET` — asserted absent
+    // above — is what would actually authorise. A third entry here would need
+    // the same argument made about it.
     const found = new Set<string>();
     for (const file of sources) {
       for (const match of file.text.matchAll(/NEXT_PUBLIC_[A-Z0-9_]+/g)) found.add(match[0]);
     }
-    expect([...found]).toEqual(['NEXT_PUBLIC_API_BASE_URL']);
+    expect([...found].sort()).toEqual(['NEXT_PUBLIC_API_BASE_URL', 'NEXT_PUBLIC_LIVEKIT_URL']);
   });
 
   it('reads almost no environment variable', () => {
@@ -110,7 +115,11 @@ describe('no server credential reaches this app', () => {
         reads.add(match[1] ?? '');
       }
     }
-    expect([...reads].sort()).toEqual(['NEXT_PUBLIC_API_BASE_URL', 'npm_package_version']);
+    expect([...reads].sort()).toEqual([
+      'NEXT_PUBLIC_API_BASE_URL',
+      'NEXT_PUBLIC_LIVEKIT_URL',
+      'npm_package_version',
+    ]);
   });
 
   it('contains no literal that looks like a seeded credential', () => {
@@ -188,7 +197,7 @@ describe('every request goes through the API client', () => {
     expect(offenders(/\bfetch\s*\(/)).toEqual(['lib/api.ts']);
   });
 
-  it('names the six routes Day 2 defines, and no others', () => {
+  it('names the routes this portal calls, and no others', () => {
     const routes = new Set<string>();
     for (const file of sources) {
       for (const match of file.text.matchAll(/'\/(login|availability|heartbeat|[a-z-]+)'/g)) {
@@ -201,6 +210,7 @@ describe('every request goes through the API client', () => {
       "'/claim'",
       "'/heartbeat'",
       "'/login'",
+      "'/media-token'",
       "'/queue'",
     ]);
   });
@@ -217,10 +227,12 @@ describe('every request goes through the API client', () => {
 
   it('reads with GET and acts with POST, and never the other way round', () => {
     const client = sources.find((file) => file.path === 'lib/api.ts');
-    // Two GETs: the queue and one session. Both are reads in the API contract
-    // too, so no mutation can be smuggled onto the read verb.
+    // Three GETs: the queue, one session, and the media token. All three are
+    // reads in the API contract too, so no mutation can be smuggled onto the
+    // read verb. The media token is a read in the strongest sense — T24 mints
+    // it without writing a row, an event, or a billing entry.
     const gets = [...(client?.text.matchAll(/method: 'GET'/g) ?? [])];
-    expect(gets).toHaveLength(2);
+    expect(gets).toHaveLength(3);
     // And a GET never carries a body: the client only attaches one for POST.
     expect(client?.text).toMatch(/method === 'POST' \? \{ body:/);
   });
@@ -241,23 +253,35 @@ describe('every request goes through the API client', () => {
   });
 
   it('calls none of the endpoints later tasks add', () => {
-    // Claim and accept have left this list: T21 owns them. Everything still on
-    // it is scope, asserted rather than promised.
-    for (const pattern of [
-      /\/verdict\b/,
-      /\/checklist\b/,
-      /\/media-token\b/,
-      /\/internal\//,
-      /\/ws-token\b/,
-    ]) {
+    // Claim and accept left this list with T21; the media token left it with
+    // T25. Everything still on it is scope, asserted rather than promised.
+    for (const pattern of [/\/verdict\b/, /\/checklist\b/, /\/internal\//, /\/ws-token\b/]) {
       expect(offenders(pattern)).toEqual([]);
     }
   });
 
-  it('contains no LiveKit, WebSocket, AI, or webhook code', () => {
-    for (const pattern of [/livekit/i, /new WebSocket|ws:\/\/|wss:\/\//, /webhook/i]) {
+  it('contains no AI or webhook code', () => {
+    for (const pattern of [/webhook/i, /liveness|face_match|ocr/i]) {
       expect(offenders(pattern)).toEqual([]);
     }
+  });
+
+  it('opens no WebSocket of its own — the realtime feed is T27', () => {
+    // The SFU connection is not this: it is made by the SDK, from a URL this
+    // app only reads, and `lib/room.ts` is the one file that talks to it.
+    expect(offenders(/new WebSocket/)).toEqual([]);
+  });
+
+  it('imports the LiveKit SDK in exactly one module', () => {
+    // The port. Everything else in the app talks to `RoomPort`, so the SDK is
+    // swappable and the logic above it is testable without a browser.
+    expect(offenders(/from 'livekit-client'/)).toEqual(['lib/room.ts']);
+  });
+
+  it('names an SFU address in exactly one module', () => {
+    // `lib/config.ts` reads it; nothing else builds or hardcodes one, so there
+    // is no second place a deployment could be pointed at the wrong server.
+    expect(offenders(/wss?:\/\//)).toEqual(['lib/config.ts']);
   });
 });
 

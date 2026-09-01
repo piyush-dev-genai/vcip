@@ -9,6 +9,8 @@ import { ApiError, toCustomerMessage } from '@/lib/errors';
 import { Screen, screenFor } from '@/lib/screen';
 import type { AbortResult, SessionView } from '@/lib/session';
 import { browserTokenHost, clearToken, consumeToken } from '@/lib/token';
+import { STATUS_POLL_INTERVAL_MS, shouldPoll } from '@/lib/waiting';
+import { Call } from './Call';
 import { ChecksFailed } from './ChecksFailed';
 import { Consent } from './Consent';
 import { ErrorNotice } from './ErrorNotice';
@@ -32,6 +34,15 @@ import { Status } from './Status';
  *
  * That split is what makes a refresh unremarkable. There is no resume logic: on
  * mount the component asks the server where the session is and renders it.
+ *
+ * T25 adds one loop, and it changes neither rule. While the session is in a
+ * state the server can leave on its own — queued, offered, or in the call — the
+ * component re-reads on a timer, because an agent claiming and accepting is a
+ * change the customer causes nothing about and a call they had to discover by
+ * pressing Refresh would not be a call. The poll is the fallback the product
+ * flow already names (§5.6), it goes through the same `refresh` every other
+ * path uses, and it holds no state of its own: the answer replaces what the
+ * screen believed rather than being merged into it.
  */
 export function SessionFlow({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionView | null>(null);
@@ -116,6 +127,25 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
     }
     void refresh();
   }, [sessionId, refresh]);
+
+  /**
+   * Re-read while the server can move this session without the customer.
+   *
+   * Keyed on the status rather than on the session object, so a poll that
+   * returns an identical session does not tear down and rebuild the interval.
+   * It stops the moment the session reaches a state only the customer can
+   * leave, which includes every terminal one.
+   */
+  const pollable = shouldPoll(session);
+  useEffect(() => {
+    if (!pollable) return;
+    const timer = setInterval(() => {
+      void refresh();
+    }, STATUS_POLL_INTERVAL_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [pollable, refresh]);
 
   /** Run one mutation, then re-read. `busy` disables every action meanwhile. */
   const submit = useCallback(
@@ -232,6 +262,10 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
       {screen === Screen.LOCATION ? <LocationStep busy={busy} onSubmit={onLocation} /> : null}
 
       {screen === Screen.CHECKS_FAILED ? <ChecksFailed failedChecks={failedChecks} /> : null}
+
+      {screen === Screen.CALL ? (
+        <Call session={session} api={api} busy={busy} onAbort={onAbort} />
+      ) : null}
 
       {screen === Screen.READY_FOR_QUEUE || screen === Screen.SESSION_STATE ? (
         <Status
