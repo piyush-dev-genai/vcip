@@ -27,6 +27,7 @@ import type {
   SessionClaimOutcome,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import { AgentWorkService } from './agent-work.service.js';
 
@@ -58,6 +59,10 @@ const row = (over: Partial<AgentWorkRow> = {}): AgentWorkRow => ({
 class FakeSessions implements SessionRepository {
   rows: readonly AgentWorkRow[] = [];
   readonly asked: { tenantId: string; agentId: string }[] = [];
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('reading work must not look for unrecorded calls');
+  }
 
   findForCallEvent(): Promise<CallSessionRow | null> {
     throw new Error('reading work must not drive call lifecycle');

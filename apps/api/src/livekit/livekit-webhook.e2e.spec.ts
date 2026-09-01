@@ -49,6 +49,7 @@ import type {
   SessionEventInput,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import { SESSION_REPOSITORY } from '../sessions/session.repository.js';
 import type { TenantConfig, TenantConfigStore } from '../tenants/tenant-config.store.js';
@@ -61,6 +62,9 @@ import { deadlineMember } from './call.keys.js';
 import { LiveKitWebhookController } from './livekit-webhook.controller.js';
 import type { LiveKitConfig } from './livekit.config.js';
 import { LIVEKIT_CONFIG } from './livekit.config.js';
+import { RecordingService } from './recording.service.js';
+import { RECORDING_STARTER } from './recording.client.js';
+import type { RecordingStarter } from './recording.client.js';
 import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
 import { NOTIFICATIONS } from '../realtime/notifications.js';
 import { RecordingNotifications } from '../realtime/notifications.testing.js';
@@ -164,12 +168,17 @@ class FakeSessions implements SessionRepository {
   exists = true;
   readonly appended: SessionEventInput[] = [];
 
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the webhook route must not look for unrecorded calls');
+  }
+
   findForCallEvent(sessionId: string): Promise<CallSessionRow | null> {
     if (!this.exists) return Promise.resolve(null);
     return Promise.resolve({
       id: sessionId,
       tenantId: TENANT,
       status: this.status,
+      roomName: `vcip_${sessionId}`,
       agentId: AGENT,
       queuedAt: new Date(Date.now() - 60_000),
       connectedAt: new Date(),
@@ -226,6 +235,12 @@ class FakeSessions implements SessionRepository {
   }
 }
 
+/** Records what it was asked to record; starts nothing. */
+const recordingStarter: RecordingStarter = {
+  start: (roomName: string, sessionId: string) =>
+    Promise.resolve({ egressId: `EG_${sessionId.slice(0, 8)}`, key: `raw/${sessionId}.mp4` }),
+};
+
 const calls = new FakeCalls();
 const sessions = new FakeSessions();
 
@@ -260,6 +275,11 @@ const tenantStore: TenantConfigStore = {
     { provide: SESSION_REPOSITORY, useValue: sessions },
     { provide: TENANT_CONFIG_STORE, useValue: tenantStore },
     TenantsService,
+    // T28: the lifecycle starts a recording once both participants are in the
+    // room. The starter is a double — this suite is about the webhook, and an
+    // egress container is not part of it.
+    { provide: RECORDING_STARTER, useValue: recordingStarter },
+    RecordingService,
     CallLifecycleService,
   ],
 })

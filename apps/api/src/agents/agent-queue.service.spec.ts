@@ -41,6 +41,7 @@ import type {
   QueuedSessionRow,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { AgentProfileRow, AgentRepository, AgentCredentialRow } from './agent.repository.js';
 import { AGENT_QUEUE_LIMIT } from './agent-queue.rules.js';
@@ -181,6 +182,10 @@ class FakeSessionRepository implements SessionRepository {
 
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the queue view must not claim sessions');
+  }
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the queue view must not look for unrecorded calls');
   }
 
   findForCallEvent(): Promise<CallSessionRow | null> {

@@ -277,6 +277,8 @@ export interface CallSessionRow {
   readonly id: string;
   readonly tenantId: string;
   readonly status: SessionStatus;
+  /** The room to record (T28). Assigned at creation (R2). */
+  readonly roomName: string | null;
   /** The assigned agent, so a terminal transition can free them. */
   readonly agentId: string | null;
   readonly queuedAt: Date | null;
@@ -344,6 +346,21 @@ export interface AgentWorkRow {
   readonly offerExpiresAt: Date | null;
   /** Ordering key: when this session became this agent's. */
   readonly heldSince: Date;
+}
+
+/**
+ * A call that began but whose recording did not (T28).
+ *
+ * The retry sweeper's input. "Began" is `CALL_STARTED` — both participants in
+ * the room — and "did not" is the absence of `EGRESS_STARTED`, so a session
+ * appears here only while there is a live room to record and nothing recording
+ * it. Both facts live in `session_events` (D25), which is why this is a read
+ * over the log rather than over a column.
+ */
+export interface UnrecordedCallRow {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly roomName: string | null;
 }
 
 /**
@@ -586,6 +603,18 @@ export interface SessionRepository {
    * The billing row and the event are written in the same transaction.
    */
   endCall(command: EndCallCommand): Promise<EndedCallRow | null>;
+
+  /**
+   * Calls that are under way with no recording running (T28).
+   *
+   * Cross-tenant, like the offer sweeper's read and for the same reason: a
+   * recovery pass has no caller and acts as the system, so there is no
+   * authenticated tenant to scope it by.
+   *
+   * Bounded by `limit`, so one pass costs the batch rather than however many
+   * recordings failed while the egress container was down.
+   */
+  findUnrecordedCalls(limit: number): Promise<readonly UnrecordedCallRow[]>;
 
   /**
    * Return lapsed offers to the queue: `OFFERED -> QUEUED` (T20, §17.3).
@@ -893,6 +922,7 @@ export class DrizzleSessionRepository implements SessionRepository {
       id: string;
       tenant_id: string;
       status: string;
+      room_name: string | null;
       agent_id: string | null;
       queued_at: Date | null;
       connected_at: Date | null;
@@ -901,6 +931,7 @@ export class DrizzleSessionRepository implements SessionRepository {
       SELECT s.id,
              s.tenant_id,
              s.status,
+             s.room_name,
              s.agent_id,
              s.queued_at,
              s.connected_at,
@@ -918,6 +949,7 @@ export class DrizzleSessionRepository implements SessionRepository {
       id: row.id,
       tenantId: row.tenant_id,
       status: row.status as SessionStatus,
+      roomName: row.room_name,
       agentId: row.agent_id,
       queuedAt: row.queued_at === null ? null : new Date(row.queued_at),
       connectedAt: row.connected_at === null ? null : new Date(row.connected_at),
@@ -1036,6 +1068,41 @@ export class DrizzleSessionRepository implements SessionRepository {
         agentId: updated.agentId,
       };
     });
+  }
+
+  async findUnrecordedCalls(limit: number): Promise<readonly UnrecordedCallRow[]> {
+    if (limit <= 0) return [];
+
+    // Two EXISTS clauses rather than joins: a session qualifies on the presence
+    // of one event type and the absence of another, and a join would have to be
+    // de-duplicated to say that.
+    const rows = await this.db.execute<{
+      id: string;
+      tenant_id: string;
+      room_name: string | null;
+    }>(sql`
+      SELECT s.id, s.tenant_id, s.room_name
+        FROM sessions s
+       WHERE s.status = ${SessionStatus.IN_CALL}::text
+         AND EXISTS (
+           SELECT 1 FROM session_events e
+            WHERE e.session_id = s.id
+              AND e.event_type = ${SessionEventType.CALL_STARTED}::text
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM session_events e
+            WHERE e.session_id = s.id
+              AND e.event_type = ${SessionEventType.EGRESS_STARTED}::text
+         )
+       ORDER BY s.updated_at
+       LIMIT ${limit}::int
+    `);
+
+    return rows.map((row) => ({
+      id: row.id,
+      tenantId: row.tenant_id,
+      roomName: row.room_name,
+    }));
   }
 
   async expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {

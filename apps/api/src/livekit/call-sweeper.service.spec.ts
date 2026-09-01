@@ -41,6 +41,7 @@ import type {
   SessionEventInput,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import { CallSweeper } from './call-sweeper.service.js';
 import type { CallRepository, DueDeadline } from './call.repository.js';
@@ -97,11 +98,16 @@ class FakeSessions implements SessionRepository {
   status: SessionStatus = SessionStatus.IN_CALL;
   readonly ended: EndCallCommand[] = [];
 
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the call sweeper must not look for unrecorded calls');
+  }
+
   findForCallEvent(sessionId: string): Promise<CallSessionRow | null> {
     return Promise.resolve({
       id: sessionId,
       tenantId: TENANT,
       status: this.status,
+      roomName: `vcip_${sessionId}`,
       agentId: AGENT,
       queuedAt: null,
       connectedAt: null,

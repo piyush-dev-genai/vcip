@@ -14,6 +14,7 @@ import type {
   SessionClaimOutcome,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { AgentProfileRow, AgentRepository, AgentCredentialRow } from './agent.repository.js';
 import { presenceKey, PRESENCE_TTL_SECONDS } from './presence.keys.js';
@@ -157,6 +158,10 @@ class FakeSessionRepository implements SessionRepository {
   findById(): Promise<SessionRow | null> {
     throw new Error('presence must not read a session');
   }
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('presence must not look for unrecorded calls');
+  }
+
   findForCallEvent(): Promise<CallSessionRow | null> {
     throw new Error('presence must not drive call lifecycle');
   }

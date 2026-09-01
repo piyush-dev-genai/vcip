@@ -28,11 +28,14 @@ import type {
   SessionEventInput,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { TenantConfig, TenantConfigStore } from '../tenants/tenant-config.store.js';
 import { TenantsService } from '../tenants/tenants.service.js';
 import type { CallWebhookEvent } from './call-events.rules.js';
 import { CallLifecycleService } from './call-lifecycle.service.js';
+import type { RecordingService } from './recording.service.js';
+import { RecordingOutcome } from './recording.service.js';
 import type { CallRepository, DueDeadline } from './call.repository.js';
 import { deadlineMember } from './call.keys.js';
 import { RecordingNotifications } from '../realtime/notifications.testing.js';
@@ -119,6 +122,7 @@ class FakeSessions implements SessionRepository {
     id: SESSION,
     tenantId: TENANT,
     status: SessionStatus.IN_CALL,
+    roomName: `vcip_${SESSION}`,
     agentId: AGENT,
     queuedAt: new Date(NOW.getTime() - 120_000),
     connectedAt: new Date(NOW.getTime() - 60_000),
@@ -127,6 +131,10 @@ class FakeSessions implements SessionRepository {
 
   readonly appended: SessionEventInput[] = [];
   readonly ended: EndCallCommand[] = [];
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the webhook path must not look for unrecorded calls');
+  }
 
   findForCallEvent(): Promise<CallSessionRow | null> {
     return Promise.resolve(this.row);
@@ -205,6 +213,17 @@ const tenantStore: TenantConfigStore = {
   findActiveChecklistTemplateId: () => Promise.resolve(null),
 };
 
+/** Records what the lifecycle asked it to record. */
+class FakeRecording {
+  readonly started: { sessionId: string; tenantId: string; roomName: string | null }[] = [];
+
+  start(sessionId: string, tenantId: string, roomName: string | null): Promise<RecordingOutcome> {
+    this.started.push({ sessionId, tenantId, roomName });
+    return Promise.resolve(RecordingOutcome.STARTED);
+  }
+}
+
+let recording: FakeRecording;
 let calls: FakeCalls;
 let sessions: FakeSessions;
 let service: CallLifecycleService;
@@ -212,10 +231,12 @@ let service: CallLifecycleService;
 beforeEach(() => {
   calls = new FakeCalls();
   sessions = new FakeSessions();
+  recording = new FakeRecording();
   service = new CallLifecycleService(
     sessions,
     calls,
     new TenantsService(tenantStore),
+    recording as unknown as RecordingService,
     new RecordingNotifications(),
     createLogger({ level: 'silent' }),
     () => NOW,
@@ -378,5 +399,64 @@ describe('deliveries that change nothing', () => {
     expect(outcome.handled).toBe('ROOM_CLOSED');
     expect(calls.participants.has(SESSION)).toBe(false);
     expect(sessions.ended).toHaveLength(0);
+  });
+});
+
+describe('the evidence recording (T28)', () => {
+  const bothJoin = async (): Promise<void> => {
+    await service.handle(event({ participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+  };
+
+  /**
+   * The plan calls this "recording start on accept", and that is not
+   * implementable: at accept nobody has joined, so the room does not exist and
+   * LiveKit answers `requested room does not exist`. Design §21.2's "when the
+   * actual call begins" is this moment.
+   */
+  it('starts when both participants are in the room', async () => {
+    await bothJoin();
+
+    expect(recording.started).toEqual([
+      { sessionId: SESSION, tenantId: TENANT, roomName: `vcip_${SESSION}` },
+    ]);
+  });
+
+  it('does not start for the agent alone', async () => {
+    await service.handle(event({ participantIdentity: 'agent' }));
+    expect(recording.started).toEqual([]);
+  });
+
+  it('does not start for the customer alone', async () => {
+    await service.handle(event({ participantIdentity: 'customer' }));
+    expect(recording.started).toEqual([]);
+  });
+
+  /**
+   * A customer who reloads satisfies "both present" a second time. The service
+   * refuses a second start, but the lifecycle should not be asking either —
+   * `CALL_STARTED` is once per session and so is the recording.
+   */
+  it('is not asked for again when a participant rejoins', async () => {
+    await bothJoin();
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(recording.started).toHaveLength(1);
+  });
+
+  it('is asked for after CALL_STARTED, never instead of it', async () => {
+    await bothJoin();
+
+    expect(types()).toContain(SessionEventType.CALL_STARTED);
+    expect(recording.started).toHaveLength(1);
+  });
+
+  it('is not asked for on a session that already ended', async () => {
+    sessions.row = { ...(sessions.row as CallSessionRow), status: SessionStatus.APPROVED };
+
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
+
+    expect(recording.started).toEqual([]);
   });
 });

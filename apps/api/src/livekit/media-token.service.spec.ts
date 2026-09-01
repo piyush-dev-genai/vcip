@@ -37,6 +37,7 @@ import type {
   SessionClaimOutcome,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { LiveKitConfig } from './livekit.config.js';
 import type { MediaTokenGrantRequest, MediaTokenMinter } from './media-token.minter.js';
@@ -138,6 +139,10 @@ class FakeSessions implements SessionRepository {
 
   findQueued(): Promise<readonly QueuedSessionRow[]> {
     throw new Error('the media-token path must not read the queue projection');
+  }
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the media-token path must not look for unrecorded calls');
   }
 
   findForCallEvent(): Promise<CallSessionRow | null> {

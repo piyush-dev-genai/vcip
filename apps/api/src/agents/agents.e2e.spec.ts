@@ -68,6 +68,7 @@ import type {
   QueuedSessionRow,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import { SESSION_REPOSITORY } from '../sessions/session.repository.js';
 import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './agent.repository.js';
@@ -391,6 +392,10 @@ class FakeSessionStore implements SessionRepository {
    * with them, within their tenant. Reproduced rather than stubbed because the
    * work route is exercised over HTTP here, and a stub would test nothing.
    */
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('no agent route looks for unrecorded calls');
+  }
+
   findForCallEvent(): Promise<CallSessionRow | null> {
     throw new Error('no agent route drives call lifecycle; T26 has its own controller');
   }

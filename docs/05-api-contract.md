@@ -2995,6 +2995,168 @@ The internal API must be authenticated.
 
 
 
+\# 21a. Recording [IMPLEMENTED]
+
+
+
+\### When it starts
+
+
+
+When **both participants are in the room** — the same instant `CALL\_STARTED` is
+
+appended (§19a).
+
+
+
+`05-development-plan.md` calls this task "recording start on accept". That is
+
+not implementable: at accept nobody has joined, so the room does not exist and
+
+LiveKit answers `requested room does not exist`. `03-system-design.md` §21.2
+
+already says recording starts "when the actual call begins", and that is what
+
+happens. Starting from the first arrival instead would open every evidence file
+
+with however long one party waited alone.
+
+
+
+\### What is recorded
+
+
+
+Room-composite, `grid` layout, MP4 — R17's "both participants, one file".
+
+`speaker` would shrink whoever is not talking, and a document held up in
+
+silence is exactly the frame that must not be the small one. No custom
+
+template: the Day-0 spike used one to prove a layout was possible, and it
+
+required the egress container to reach a page served from the host.
+
+
+
+The file lands in the temporary bucket under a key derived from the session id:
+
+
+
+```text
+
+raw/{session\_id}.mp4
+
+```
+
+
+
+Deliberately not LiveKit's `{room\_name}-{time}` template. The key has to be
+
+recomputable from the session id so the egress worker can find it without a
+
+listing, and a time component would silently permit two files for one session.
+
+
+
+The Control API never touches the bytes (I6). It asks LiveKit to record, and
+
+the egress container writes to object storage itself.
+
+
+
+\### Where the egress id lives
+
+
+
+In the `EGRESS\_STARTED` event payload:
+
+
+
+```json
+
+{
+
+&#x20; "egress\_id": "EG\_...",
+
+&#x20; "room\_name": "vcip\_session-uuid",
+
+&#x20; "video\_key": "raw/session-uuid.mp4"
+
+}
+
+```
+
+
+
+No column. D18 and D25 both refused one for this kind of in-flight fact, and
+
+the egress worker reads the id back from the log.
+
+
+
+\### When it stops
+
+
+
+Nothing in this codebase stops a recording. Room-composite egress ends when the
+
+room does, and `infra/livekit.yaml` closes an empty room after
+
+`empty\_timeout`. The evidence file therefore extends past the end of the
+
+conversation by that timeout.
+
+
+
+\### When it fails
+
+
+
+A failed start never fails the call. `EGRESS\_FAILED` is appended once — added
+
+to §15's catalogue for this, because "the recording never started" and "the
+
+recording is still running" must not look the same to an auditor — and the
+
+verification proceeds. The verdict stands and billing is unaffected (I9).
+
+
+
+A retry pass runs on an interval for calls that are `IN\_CALL` with a
+
+`CALL\_STARTED` and no `EGRESS\_STARTED`, so a recording that could not start
+
+while the egress container was restarting still gets going. The file then
+
+misses the opening of the conversation, which `EGRESS\_FAILED` in the log is
+
+what discloses.
+
+
+
+```http
+
+POST /internal/recordings/retry
+
+```
+
+
+
+Internal token only (D10). Runs one pass immediately and reports counts —
+
+`{ "found": n, "started": n, "failed": n }` — for deterministic testing and for
+
+operations. Naturally idempotent: a session that started recording no longer
+
+matches, and a second start for one session is refused.
+
+
+
+---
+
+
+
 \# 24. Internal Egress API
 
 
@@ -3073,6 +3235,7 @@ The Control API updates export state.
 
 | `POST /agent/sessions/:id/verdict` | `IN\_CALL → APPROVED/REJECTED/ABORTED`            |
 | LiveKit webhook                    | No status change; call events only                |
+| recording start / retry            | No status change; egress events only              |
 | call sweeper (customer window)     | `IN\_CALL → DROPPED\_IN\_CALL`                     |
 | call sweeper (agent window)        | `IN\_CALL → ABORTED`                               |
 
@@ -3230,6 +3393,7 @@ POST /internal/ai/result
 POST /internal/egress/completed
 POST /internal/livekit/webhook
 POST /internal/calls/sweep
+POST /internal/recordings/retry
 ```
 ## Webhook
 

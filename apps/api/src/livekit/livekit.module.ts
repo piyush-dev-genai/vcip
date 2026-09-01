@@ -12,6 +12,11 @@ import { LIVEKIT_CONFIG, livekitConfigFromEnv } from './livekit.config.js';
 import { MediaTokenController } from './media-token.controller.js';
 import { LiveKitTokenMinter, MEDIA_TOKEN_MINTER } from './media-token.minter.js';
 import { MediaTokenService } from './media-token.service.js';
+import { RecordingRetryController } from './recording-retry.controller.js';
+import { RECORDING_RETRY_ENABLED, RecordingRetrySweeper } from './recording-retry.service.js';
+import { LiveKitRecordingStarter, RECORDING_STARTER } from './recording.client.js';
+import { RECORDING_CONFIG, recordingConfigFromEnv } from './recording.config.js';
+import { RecordingService } from './recording.service.js';
 import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
 
 /**
@@ -62,11 +67,24 @@ import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js'
  * describe, which is the only way an append-only log stays consistent with the
  * row it explains.
  *
- * T28's recording belongs here too, when it arrives.
+ * T28 adds the evidence recording, and it brings no new imports either. A
+ * recording is LiveKit asking LiveKit to compose a room — the same boundary and
+ * the same credentials — and the file never passes through this process (I6):
+ * the egress container writes it to object storage itself, which is why
+ * `RECORDING_CONFIG` holds storage settings this module hands onward rather
+ * than uses.
+ *
+ * Nothing here stops a recording. Room-composite egress ends when the room
+ * does, and `infra/livekit.yaml` closes an empty room after `empty_timeout`.
  */
 @Module({
   imports: [AuthModule, SessionsModule, TenantsModule, AgentsModule],
-  controllers: [MediaTokenController, LiveKitWebhookController, CallSweeperController],
+  controllers: [
+    MediaTokenController,
+    LiveKitWebhookController,
+    CallSweeperController,
+    RecordingRetryController,
+  ],
   providers: [
     { provide: LIVEKIT_CONFIG, useFactory: () => livekitConfigFromEnv() },
     { provide: MEDIA_TOKEN_MINTER, useClass: LiveKitTokenMinter },
@@ -78,6 +96,11 @@ import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js'
     // and leave it off, so no pass fires between cases.
     { provide: CALL_SWEEP_ENABLED, useValue: true },
     CallSweeper,
+    { provide: RECORDING_CONFIG, useFactory: () => recordingConfigFromEnv() },
+    { provide: RECORDING_STARTER, useClass: LiveKitRecordingStarter },
+    RecordingService,
+    { provide: RECORDING_RETRY_ENABLED, useValue: true },
+    RecordingRetrySweeper,
   ],
   exports: [MEDIA_TOKEN_MINTER, LIVEKIT_CONFIG],
 })

@@ -32,6 +32,7 @@ import type {
   SessionClaimOutcome,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './agent.repository.js';
 import { OfferSweeper, SWEEP_BATCH, SWEEP_INTERVAL_MS } from './offer-sweeper.service.js';
@@ -102,6 +103,10 @@ class FakeSessions implements SessionRepository {
   findById(): Promise<SessionRow | null> {
     throw new Error('the sweeper must not read sessions one at a time');
   }
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the offer sweeper must not look for unrecorded calls');
+  }
+
   findForCallEvent(): Promise<CallSessionRow | null> {
     throw new Error('the offer sweeper must not drive call lifecycle');
   }

@@ -41,6 +41,7 @@ import type {
   SessionClaimOutcome,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './agent.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
@@ -102,6 +103,10 @@ class FakeSessions implements SessionRepository {
 
   seed(row: Stored): void {
     this.rows.set(row.id, row);
+  }
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('accepting a session must not look for unrecorded calls');
   }
 
   findForCallEvent(): Promise<CallSessionRow | null> {

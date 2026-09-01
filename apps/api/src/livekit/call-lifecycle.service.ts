@@ -41,6 +41,8 @@ import { TenantsService } from '../tenants/tenants.service.js';
 import type { CallAction, CallWebhookEvent } from './call-events.rules.js';
 import { bothPresent, classify } from './call-events.rules.js';
 import type { CallRepository } from './call.repository.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { RecordingService } from './recording.service.js';
 import { InjectCallRepository } from './call.repository.js';
 import { CUSTOMER_GRACE_SECONDS, CallRole, deadlineAt } from './call.keys.js';
 
@@ -65,6 +67,7 @@ export class CallLifecycleService {
     @InjectSessionRepository() private readonly sessions: SessionRepository,
     @InjectCallRepository() private readonly calls: CallRepository,
     private readonly tenants: TenantsService,
+    private readonly recording: RecordingService,
     @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(CALL_LIFECYCLE_CLOCK) now?: CallClock,
@@ -186,6 +189,15 @@ export class CallLifecycleService {
       { event: 'call.started', session_id: action.sessionId },
       'both participants are in the room',
     );
+
+    // T28: the evidence recording starts here and nowhere else. The plan calls
+    // it "recording start on accept", but at accept nobody has joined and
+    // LiveKit refuses room-composite egress on a room that does not exist —
+    // design §21.2's "when the actual call begins" is this moment. It never
+    // fails the call: a verification whose recording could not start is still a
+    // verification, and the retry sweeper tries again for as long as the call
+    // lasts.
+    await this.recording.start(action.sessionId, session.tenantId, session.roomName ?? null);
   }
 
   /**

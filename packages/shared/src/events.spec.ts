@@ -33,7 +33,12 @@ const CATALOGUE_FROM_DOCS = [
 ] as const;
 
 /** Names added beyond §15's "Example Events", documented in `events.ts`. */
-const ADDED_BEYOND_DOCS = ['CONSENT_REJECTED', 'SESSION_ABORTED', 'OFFER_EXPIRED'] as const;
+const ADDED_BEYOND_DOCS = [
+  'CONSENT_REJECTED',
+  'SESSION_ABORTED',
+  'OFFER_EXPIRED',
+  'EGRESS_FAILED',
+] as const;
 
 describe('session event catalogue', () => {
   it('contains every event type named in docs/06-database-schema.md §15', () => {
@@ -42,7 +47,7 @@ describe('session event catalogue', () => {
     }
   });
 
-  it('adds exactly the three names the MVP lifecycle needs and no others', () => {
+  it('adds exactly the names the MVP lifecycle needs and no others', () => {
     const extra = SESSION_EVENT_TYPES.filter(
       (name) => !(CATALOGUE_FROM_DOCS as readonly string[]).includes(name),
     );

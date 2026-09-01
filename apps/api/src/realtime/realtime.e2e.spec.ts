@@ -151,7 +151,27 @@ describe('realtime over real sockets and real Redis', () => {
     return { received };
   };
 
-  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 250));
+  /**
+   * Wait for delivery, rather than sleeping and hoping.
+   *
+   * With no argument this is a fixed pause, which is what a "nothing should
+   * arrive" assertion needs. With a predicate it polls until the condition
+   * holds, so a positive assertion is not racing a fixed timeout — the whole
+   * path here is asynchronous (publish, Redis fan-out, socket write) and a
+   * quarter-second was enough on an idle machine and not enough under a full
+   * suite.
+   */
+  const settle = async (until?: () => boolean): Promise<void> => {
+    if (until === undefined) {
+      await new Promise((r) => setTimeout(r, 250));
+      return;
+    }
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (until()) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
 
   beforeEach(async (ctx) => {
     // Skipped rather than faked when Redis is absent: Pub/Sub is the part that
@@ -353,7 +373,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(socket);
 
       await notifications.sessionOffered(SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toEqual([
         { event: CustomerEvent.SESSION_OFFERED, data: { session_id: SESSION_ONE } },
@@ -390,7 +410,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(socket);
 
       await notifications.queuePosition(SESSION_ONE, 3);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toEqual([
         {
@@ -408,7 +428,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(socket);
 
       await notifications.sessionOfferExpired(TENANT_A, AGENT_EN, SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toEqual([
         { event: AgentEvent.SESSION_OFFER_EXPIRED, data: { session_id: SESSION_ONE } },
@@ -450,7 +470,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(socket);
 
       await notifications.queueNewSession(TENANT_A, 'en', SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toEqual([
         {
@@ -477,7 +497,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(socket);
 
       await notifications.queueNewSession(TENANT_A, 'hi', SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toHaveLength(1);
       socket.close();
@@ -488,7 +508,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(socket);
 
       await notifications.queueNewSession(TENANT_A, 'EN', SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toHaveLength(1);
       socket.close();
@@ -538,7 +558,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inboxTwo = messages(two);
 
       await notifications.agentJoined(SESSION_ONE);
-      await settle();
+      await settle(() => inboxOne.received.length > 0);
 
       expect(inboxOne.received).toHaveLength(1);
       expect(inboxTwo.received).toEqual([]);
@@ -553,7 +573,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inboxTwo = messages(second);
 
       await notifications.queueNewSession(TENANT_A, 'en', SESSION_ONE);
-      await settle();
+      await settle(() => inboxOne.received.length > 0 && inboxTwo.received.length > 0);
 
       expect(inboxOne.received).toHaveLength(1);
       expect(inboxTwo.received).toHaveLength(1);
@@ -577,7 +597,7 @@ describe('realtime over real sockets and real Redis', () => {
       const inbox = messages(second);
 
       await notifications.agentJoined(SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
 
       expect(inbox.received).toHaveLength(1);
       second.close();
@@ -715,7 +735,7 @@ describe('realtime over real sockets and real Redis', () => {
       expect(socket.readyState).toBe(WebSocket.OPEN);
 
       await notifications.agentJoined(SESSION_ONE);
-      await settle();
+      await settle(() => inbox.received.length > 0);
       expect(inbox.received).toHaveLength(1);
       socket.close();
     });

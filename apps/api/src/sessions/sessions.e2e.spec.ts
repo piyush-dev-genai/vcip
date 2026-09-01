@@ -61,6 +61,7 @@ import type {
   QueuedSessionRow,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from './session.repository.js';
 import { QUEUE_REPOSITORY, RedisQueueRepository } from '../queue/queue.repository.js';
 import { QueueService } from '../queue/queue.service.js';
@@ -298,6 +299,10 @@ class InMemorySessionRepository implements SessionRepository {
       payload: command.event.payload,
     });
     return updated;
+  }
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('the customer lifecycle must not look for unrecorded calls');
   }
 
   findForCallEvent(): Promise<CallSessionRow | null> {

@@ -43,6 +43,7 @@ import type {
   QueuedSessionRow,
   SessionRepository,
   SessionRow,
+  UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { TenantConfig, TenantConfigStore } from '../tenants/tenant-config.store.js';
 import { TenantsService } from '../tenants/tenants.service.js';
@@ -135,6 +136,10 @@ class FakeSessionRepository implements SessionRepository {
       createdAt: new Date(NOW - 120_000),
       updatedAt: new Date(NOW - 60_000),
     });
+  }
+
+  findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
+    throw new Error('claiming a session must not look for unrecorded calls');
   }
 
   findForCallEvent(): Promise<CallSessionRow | null> {

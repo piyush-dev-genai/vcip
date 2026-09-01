@@ -78,6 +78,22 @@ export const SessionEventType = {
   // --- evidence ----------------------------------------------------------
   EGRESS_STARTED: 'EGRESS_STARTED',
   EGRESS_COMPLETED: 'EGRESS_COMPLETED',
+
+  /**
+   * Added beyond §15's catalogue.
+   *
+   * A recording that never started is the difference between a verification
+   * with evidence and one without, and §15 has no name for it: `EGRESS_STARTED`
+   * records the success and nothing records the failure. Without this, a
+   * session whose recording never began is indistinguishable in the audit trail
+   * from one whose recording is merely still running — and the first is the
+   * case an auditor asking "where is the video?" needs answered.
+   *
+   * It is not a terminal outcome and produces no billing row. The call
+   * continues and the verdict stands; T46 is what eventually tells the
+   * enterprise that no evidence exists.
+   */
+  EGRESS_FAILED: 'EGRESS_FAILED',
   EXPORT_STARTED: 'EXPORT_STARTED',
   EXPORTED: 'EXPORTED',
   EXPORT_FAILED: 'EXPORT_FAILED',

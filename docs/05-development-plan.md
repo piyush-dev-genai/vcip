@@ -275,7 +275,7 @@ gate and report.
 | T25 | 3 | Customer + agent join LiveKit, role-scoped publish/subscribe | done |
 | T26 | 3 | `POST /internal/livekit/webhook` -> agent.joined, timestamps, DROPPED_IN_CALL, AGENT_DISCONNECTED | done |
 | T27 | 3 | WS gateway + connection tokens + canonical event enum | done |
-| T28 | 3 | Recording start on accept | todo |
+| T28 | 3 | Recording start on accept | done |
 | T29 | 4 | FastAPI + three mock providers behind interfaces | todo |
 | T30 | 4 | Frame source per D23 -> `/internal/ai/result` | todo |
 | T31 | 4 | Redis HUD + pub/sub -> WS -> agent HUD | todo |
