@@ -5,12 +5,19 @@ import type { AgentMessage } from '../lib/errors';
 import { formatWait, shortId } from '../lib/queue';
 
 /**
- * The waiting customers, read-only.
+ * The waiting customers, and the one action a row offers.
  *
- * Read-only is the whole design of this component and not merely its current
- * state: there is no button, no link, and no callback on a row. Claiming a
- * session is T18's, and a portal that shipped a disabled "Claim" control would
- * be shipping half of it.
+ * Until T21 this list was strictly read-only, because the claim endpoint did
+ * not exist yet and a disabled button would have been half a feature. It now
+ * takes a session, and the row's button is the whole of that: it names a
+ * session id and nothing else. There is no agent id, no tenant id, and no
+ * status here for a caller to influence — the server reads all three from the
+ * JWT and from the row it already holds.
+ *
+ * Only one claim can be in flight at a time, and every row is disabled while it
+ * is. An agent double-clicking should not fire a second operation, and an agent
+ * who is already holding work should not be offered a second session the API
+ * would refuse on `max_concurrent` anyway.
  *
  * The list is rendered in the order the API returned it. It is not sorted,
  * filtered, or grouped here — the Control API already merged the agent's
@@ -29,9 +36,21 @@ export interface QueuePanelProps {
   readonly error: AgentMessage | null;
   readonly onRefresh: () => void;
   readonly refreshing: boolean;
+  /** The session id, and only the session id. */
+  readonly onClaim: (sessionId: string) => void;
+  /** The session currently being claimed, or null. */
+  readonly claiming: string | null;
 }
 
-export function QueuePanel({ sessions, loadedAt, error, onRefresh, refreshing }: QueuePanelProps) {
+export function QueuePanel({
+  sessions,
+  loadedAt,
+  error,
+  onRefresh,
+  refreshing,
+  onClaim,
+  claiming,
+}: QueuePanelProps) {
   return (
     <section className="card">
       <div className="queue-head">
@@ -57,6 +76,16 @@ export function QueuePanel({ sessions, loadedAt, error, onRefresh, refreshing }:
               </span>
               <span className="queue-lang">{session.language}</span>
               <span className="queue-wait">{formatWait(session.wait_seconds)}</span>
+              <button
+                type="button"
+                className="claim"
+                onClick={() => {
+                  onClaim(session.session_id);
+                }}
+                disabled={claiming !== null}
+              >
+                {claiming === session.session_id ? 'Claiming...' : 'Claim'}
+              </button>
             </li>
           ))}
         </ul>
@@ -64,7 +93,8 @@ export function QueuePanel({ sessions, loadedAt, error, onRefresh, refreshing }:
 
       {sessions.length === 0 ? null : (
         <p className="ref">
-          {sessions.length} waiting, oldest first. Looking at this list changes nothing.
+          {sessions.length} waiting, oldest first. Claiming holds one for you briefly; it is yours
+          only once the server says so.
         </p>
       )}
 

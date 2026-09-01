@@ -265,7 +265,7 @@ ul.plain {
 
 .queue-row {
   display: grid;
-  grid-template-columns: 2rem 1fr auto auto;
+  grid-template-columns: 2rem 1fr auto auto auto;
   gap: 0.75rem;
   align-items: baseline;
   padding: 0.6rem 0;
@@ -296,4 +296,63 @@ ul.plain {
   font-size: 0.9rem;
   min-width: 4rem;
   text-align: right;
+}
+
+/* ------------------------------------------------------------- T21 work */
+
+.claim {
+  font-size: 0.85rem;
+  padding: 0.3rem 0.7rem;
+}
+
+.card.offer,
+.card.call {
+  border-color: var(--accent, var(--line));
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.facts div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.facts dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+
+.facts dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+/* The window shown here has run out. Deliberately not styled as an error:
+   the server has not been asked yet, and the offer may well still be live. */
+.countdown.out {
+  color: var(--ink-soft);
+}
+
+.room {
+  font-size: 0.85rem;
+}
+
+button.primary {
+  font-weight: 600;
 }

@@ -23,7 +23,9 @@
  */
 
 import {
+  agentAcceptSchema,
   agentAvailabilitySchema,
+  agentClaimSchema,
   agentHeartbeatSchema,
   agentLoginSchema,
   type AgentAvailabilityRequest,
@@ -67,6 +69,35 @@ export interface QueueResult {
   readonly sessions: readonly QueuedSession[];
 }
 
+/** `POST /v1/agent/sessions/{id}/claim`. Exactly the four fields §17.1 defines. */
+export interface ClaimResult {
+  readonly session_id: string;
+  readonly status: string;
+  readonly offered_to_agent_id: string;
+  readonly offer_expires_at: string;
+}
+
+/** `POST /v1/agent/sessions/{id}/accept`. Exactly the four fields §17.2 defines. */
+export interface AcceptResult {
+  readonly session_id: string;
+  readonly status: string;
+  readonly agent_id: string;
+  readonly room_name: string | null;
+}
+
+/**
+ * The subset of `GET /v1/sessions/{id}` the portal reads.
+ *
+ * Narrow on purpose. The endpoint returns more — consent, geo, verdict, export
+ * state — and none of it belongs on a Day 2 screen. Declaring only what is
+ * rendered keeps a future field from arriving in a component by accident.
+ */
+export interface SessionState {
+  readonly session_id: string;
+  readonly status: string;
+  readonly room_name: string | null;
+}
+
 /** `POST /v1/agent/heartbeat`. */
 export interface HeartbeatResult {
   readonly agent_id: string;
@@ -86,6 +117,30 @@ export interface AgentApi {
    * through which a portal could widen what it sees.
    */
   queue(): Promise<QueueResult>;
+
+  /**
+   * Claim one queued session.
+   *
+   * The session id is the only thing the caller chooses. There is no agent id
+   * and no tenant id in this signature, and the body is empty — the server
+   * takes both from the JWT.
+   *
+   * `idempotencyKey` is a parameter rather than something minted here, because
+   * a retry has to present the *same* key and only the caller knows whether
+   * this is a retry. `lib/work.ts` is what remembers.
+   */
+  claim(sessionId: string, idempotencyKey: string): Promise<ClaimResult>;
+
+  /** Take up the offer this agent holds. Same rules as `claim`. */
+  accept(sessionId: string, idempotencyKey: string): Promise<AcceptResult>;
+
+  /**
+   * Read one session's current state.
+   *
+   * The recovery path after a reload, and the authority for every screen: the
+   * portal renders what this returns rather than what it last believed.
+   */
+  session(sessionId: string): Promise<SessionState>;
 }
 
 /** The success envelope: every 2xx body is `{ "data": ... }`. */
@@ -107,15 +162,38 @@ const asString = (value: unknown): string | null => (typeof value === 'string' ?
 
 const buildUrl = (baseUrl: string, suffix: string): string => `${baseUrl}/v1/agent${suffix}`;
 
+/**
+ * The session routes live outside `/v1/agent`.
+ *
+ * The id is encoded rather than interpolated raw. It comes from a queue row or
+ * from storage, both of which should only ever hold a UUID — encoding it means
+ * that if either is ever wrong, the result is a 400 from the server and not a
+ * request to a path this function invented.
+ */
+const sessionUrl = (baseUrl: string, sessionId: string, suffix = ''): string =>
+  `${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}${suffix}`;
+
+const agentSessionUrl = (baseUrl: string, sessionId: string, suffix: string): string =>
+  `${baseUrl}/v1/agent/sessions/${encodeURIComponent(sessionId)}${suffix}`;
+
 export function createAgentApi(deps: AgentApiDeps): AgentApi {
   const doFetch: FetchLike = deps.fetchImpl ?? ((input, init) => fetch(input, init));
 
   async function request<T>(
     url: string,
-    init: { method?: 'GET' | 'POST'; body?: unknown; authenticated: boolean },
+    init: {
+      method?: 'GET' | 'POST';
+      body?: unknown;
+      authenticated: boolean;
+      idempotencyKey?: string;
+    },
   ): Promise<T> {
     const method = init.method ?? 'POST';
     const headers: Record<string, string> = { Accept: 'application/json' };
+    // Only where the route requires one (D13). Sending it everywhere would
+    // make it look like a transport concern rather than a property of the six
+    // operations that must happen at most once.
+    if (init.idempotencyKey !== undefined) headers['Idempotency-Key'] = init.idempotencyKey;
     // A GET has no body, so it declares no content type. Sending one would add
     // nothing and would make the preflight ask for a header it does not need.
     if (method === 'POST') headers['Content-Type'] = 'application/json';
@@ -205,6 +283,36 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
       // No schema to parse: the request has no body and no query string, so
       // there is nothing a client could get wrong and nothing to validate.
       return request<QueueResult>(buildUrl(deps.baseUrl, '/queue'), {
+        method: 'GET',
+        authenticated: true,
+      });
+    },
+
+    async claim(sessionId, idempotencyKey) {
+      // An empty strict object, parsed for the reason the heartbeat is: it
+      // makes "a claim carries no agent id, no tenant id, and no session id in
+      // its body" a property of this code rather than of the current call site.
+      // A portal that tried to smuggle any of them would fail here, before the
+      // request left the browser.
+      const valid = agentClaimSchema.parse({});
+      return request<ClaimResult>(agentSessionUrl(deps.baseUrl, sessionId, '/claim'), {
+        body: valid,
+        authenticated: true,
+        idempotencyKey,
+      });
+    },
+
+    async accept(sessionId, idempotencyKey) {
+      const valid = agentAcceptSchema.parse({});
+      return request<AcceptResult>(agentSessionUrl(deps.baseUrl, sessionId, '/accept'), {
+        body: valid,
+        authenticated: true,
+        idempotencyKey,
+      });
+    },
+
+    async session(sessionId) {
+      return request<SessionState>(sessionUrl(deps.baseUrl, sessionId), {
         method: 'GET',
         authenticated: true,
       });

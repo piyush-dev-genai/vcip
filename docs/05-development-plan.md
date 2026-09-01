@@ -268,7 +268,7 @@ gate and report.
 | T18 | 2 | Claim `QUEUED -> OFFERED` (conditional update) | done |
 | T19 | 2 | Accept `OFFERED -> IN_CALL` (conditional update, offer not expired) | done |
 | T20 | 2 | Offer-expiry sweeper `OFFERED -> QUEUED`, preserving queue score | done |
-| T21 | 2 | Agent portal shell + queue view | todo |
+| T21 | 2 | Agent portal shell + queue view, claim and accept | done |
 | T22 | 2 | (!) Two concurrent claims -> one 200, one 409 | done |
 | T23 | 2 | (!) Offer timeout -> back to QUEUED, unbilled | done |
 | T24 | 3 | `room_name` at creation; media-token endpoints, both paths | todo |

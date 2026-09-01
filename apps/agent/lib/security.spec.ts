@@ -128,8 +128,30 @@ describe('token handling has one implementation', () => {
     expect(offenders(/localStorage/)).toEqual([]);
   });
 
-  it('touches browser storage in exactly one module', () => {
-    expect(offenders(/sessionStorage|setItem\(|getItem\(/)).toEqual(['lib/token.ts']);
+  it('touches browser storage in exactly two modules, both in lib', () => {
+    // The credential (T16) and the session being worked (T21). Both are
+    // sessionStorage, both are injected as a host so they are testable, and no
+    // component reaches for storage directly — which is what keeps the rules
+    // about what may be persisted in files that state them.
+    expect(offenders(/sessionStorage|setItem\(|getItem\(/)).toEqual([
+      'lib/token.ts',
+      'lib/work.ts',
+    ]);
+  });
+
+  it('persists no customer data and no credential beside the session id', () => {
+    const work = sources.find((file) => file.path === 'lib/work.ts');
+    // What T21 remembers is an id, a server-issued expiry, and a room name.
+    // Nothing about the customer, and nothing that authenticates.
+    for (const pattern of [
+      /external_ref/,
+      /password/i,
+      /access_token/,
+      /latitude|longitude/,
+      /language/,
+    ]) {
+      expect(work?.text ?? '').not.toMatch(pattern);
+    }
   });
 
   it('never builds a URL with a token or password parameter', () => {
@@ -166,30 +188,62 @@ describe('every request goes through the API client', () => {
     expect(offenders(/\bfetch\s*\(/)).toEqual(['lib/api.ts']);
   });
 
-  it('names the four routes T16 and T17 define, and no others', () => {
+  it('names the six routes Day 2 defines, and no others', () => {
     const routes = new Set<string>();
     for (const file of sources) {
       for (const match of file.text.matchAll(/'\/(login|availability|heartbeat|[a-z-]+)'/g)) {
         routes.add(match[0]);
       }
     }
-    expect([...routes].sort()).toEqual(["'/availability'", "'/heartbeat'", "'/login'", "'/queue'"]);
+    expect([...routes].sort()).toEqual([
+      "'/accept'",
+      "'/availability'",
+      "'/claim'",
+      "'/heartbeat'",
+      "'/login'",
+      "'/queue'",
+    ]);
   });
 
-  it('reaches the queue with a GET and sends it no body', () => {
+  it('builds every session path from an encoded id and nothing else', () => {
     const client = sources.find((file) => file.path === 'lib/api.ts');
-    expect(client?.text).toMatch(/method: 'GET'/);
-    // The one GET in the app is the queue read, so nothing that mutates can
-    // be smuggled onto the read verb.
-    expect([...(client?.text.matchAll(/method: '(GET|POST)'/g) ?? [])]).toHaveLength(1);
+    // The id is the only caller-chosen value that reaches a URL, and it is
+    // encoded rather than interpolated raw — so a stale storage entry produces
+    // a 400 from the server rather than a request to a path the client invented.
+    expect(client?.text).toMatch(/encodeURIComponent\(sessionId\)/);
+    // No agent id, tenant id, or status has ever been part of a path or query.
+    expect(offenders(/[?&](agent_id|tenant_id|status)=/)).toEqual([]);
+  });
+
+  it('reads with GET and acts with POST, and never the other way round', () => {
+    const client = sources.find((file) => file.path === 'lib/api.ts');
+    // Two GETs: the queue and one session. Both are reads in the API contract
+    // too, so no mutation can be smuggled onto the read verb.
+    const gets = [...(client?.text.matchAll(/method: 'GET'/g) ?? [])];
+    expect(gets).toHaveLength(2);
+    // And a GET never carries a body: the client only attaches one for POST.
+    expect(client?.text).toMatch(/method === 'POST' \? \{ body:/);
+  });
+
+  it('sends an Idempotency-Key on exactly the two operations that need one', () => {
+    const client = sources.find((file) => file.path === 'lib/api.ts');
+    // D13 protects claim and accept. Login, availability, heartbeat and the two
+    // reads carry no key, so the header cannot drift into a transport default.
+    const uses = [...(client?.text.matchAll(/idempotencyKey,/g) ?? [])];
+    expect(uses).toHaveLength(2);
+  });
+
+  it('never mints an idempotency key inside the API client', () => {
+    const client = sources.find((file) => file.path === 'lib/api.ts');
+    // The key is a parameter. Minting it here would produce a fresh key per
+    // call, which turns every retry into a second operation.
+    expect(client?.text ?? '').not.toMatch(/randomUUID|Math\.random/);
   });
 
   it('calls none of the endpoints later tasks add', () => {
-    // T18's claim, T19's accept. Scope, asserted rather than promised. The
-    // queue is no longer on this list: T17 owns it.
+    // Claim and accept have left this list: T21 owns them. Everything still on
+    // it is scope, asserted rather than promised.
     for (const pattern of [
-      /\/claim\b/,
-      /\/accept\b/,
       /\/verdict\b/,
       /\/checklist\b/,
       /\/media-token\b/,
@@ -250,15 +304,52 @@ describe('presence rules live where they can be checked', () => {
     expect(offenders(/\btenant_id\b/, sources)).toEqual([]);
   });
 
-  it('has no claim, accept, or assignment control', () => {
-    // T17's queue is read-only. Not "the button is disabled" - there is no
-    // button, no handler, and no word for one anywhere in the app. The
-    // lookahead spares the Accept request header, which is not an action,
-    // and 'offer' is absent because T16 already tells an unavailable agent
-    // they will not be offered work - prose about the server, not a control.
-    for (const pattern of [/\bclaim/i, /\baccept\b(?!:)/i, /\bassign/i]) {
+  it('claims and accepts only through the API client', () => {
+    // T17's queue was read-only and this rule asserted that no word for a
+    // control existed anywhere. T21 adds both actions, so the rule becomes
+    // where they may live: the client issues them, the portal orchestrates
+    // them, and the two panels render them. No other module may act.
+    const actors = new Set(
+      offenders(/\bclaim\b|\baccept\b(?!:)/i).filter((path) => path !== 'lib/queue.ts'),
+    );
+    expect([...actors].sort()).toEqual([
+      'components/AgentPortal.tsx',
+      'components/OfferPanel.tsx',
+      'components/QueuePanel.tsx',
+      'lib/api.ts',
+      'lib/work.ts',
+    ]);
+  });
+
+  it('assigns nothing, and offers no control that would', () => {
+    // Assignment is the server's word for what a claim causes. Nothing in the
+    // portal reassigns, transfers, or releases a session — none of those is a
+    // transition that exists.
+    for (const pattern of [/\bassign/i, /\breassign/i, /\btransfer\b/i, /\brelease\b/i]) {
       expect(offenders(pattern)).toEqual([]);
     }
+  });
+
+  it('never sets a session status locally', () => {
+    // Every status the portal shows came from a response. A literal assignment
+    // to a status here would be the browser deciding something PostgreSQL owns.
+    const components = sources.filter((file) => file.path.startsWith('components/'));
+    expect(offenders(/status:\s*'(OFFERED|IN_CALL|QUEUED|APPROVED|REJECTED)'/, components)).toEqual(
+      [],
+    );
+  });
+
+  it('treats the offer countdown as a hint and never as an authority', () => {
+    const offer = sources.find((file) => file.path === 'lib/offer.ts');
+    // The module deliberately has no function that answers "has it expired".
+    // It reports what to display, and the portal's only response to zero is to
+    // ask the server.
+    expect(offer?.text ?? '').not.toMatch(/function hasExpired|isExpired/);
+    expect(offer?.text).toMatch(/countdownFinished/);
+    // And the panel does not disable Accept when the timer runs out: a fast
+    // local clock must not be able to take work away from an agent.
+    const panel = sources.find((file) => file.path === 'components/OfferPanel.tsx');
+    expect(panel?.text ?? '').not.toMatch(/disabled=\{lapsed/);
   });
 
   it('does not re-derive the queue order or the wait in the browser', () => {

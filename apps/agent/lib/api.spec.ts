@@ -295,3 +295,162 @@ describe('queue', () => {
     await expect(api.queue()).rejects.toMatchObject({ status: 403, code: 'FORBIDDEN' });
   });
 });
+
+// ------------------------------------------------------------------ claim
+
+const CLAIMED = {
+  session_id: '11111111-2222-4333-8444-555555555555',
+  status: 'OFFERED',
+  offered_to_agent_id: 'agent-1',
+  offer_expires_at: '2026-09-01T10:00:30.000Z',
+};
+
+const SESSION = CLAIMED.session_id;
+
+describe('claim', () => {
+  it('posts to the session claim route', async () => {
+    const { api, calls } = harness(() => ok(CLAIMED));
+    await api.claim(SESSION, 'key-1');
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agent/sessions/${SESSION}/claim`);
+    expect(calls[0]?.init?.method).toBe('POST');
+  });
+
+  it('sends the idempotency key it was given', async () => {
+    const { api, calls } = harness(() => ok(CLAIMED));
+    await api.claim(SESSION, 'key-1');
+
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toBe('key-1');
+  });
+
+  it('sends the same key again for a retry', async () => {
+    // The client does not mint keys, so a retry with the same key is a retry.
+    const { api, calls } = harness(() => ok(CLAIMED));
+    await api.claim(SESSION, 'key-1');
+    await api.claim(SESSION, 'key-1');
+
+    const first = calls[0]?.init?.headers as Record<string, string>;
+    const second = calls[1]?.init?.headers as Record<string, string>;
+    expect(second['Idempotency-Key']).toBe(first['Idempotency-Key']);
+  });
+
+  it('sends an empty body, whatever the caller had in mind', async () => {
+    const { api, calls } = harness(() => ok(CLAIMED));
+    await api.claim(SESSION, 'key-1');
+
+    // The whole payload. No agent id, no tenant id, no session id, no status:
+    // the server reads the first two from the JWT and the third from the path.
+    expect(calls[0]?.init?.body).toBe('{}');
+  });
+
+  it('carries the credential as a header', async () => {
+    const { api, calls } = harness(() => ok(CLAIMED));
+    await api.claim(SESSION, 'key-1');
+
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]?.url).not.toContain(TOKEN);
+  });
+
+  it('encodes the session id into the path', async () => {
+    const { api, calls } = harness(() => ok(CLAIMED));
+    await api.claim('../../etc/passwd', 'key-1');
+
+    // A stale or tampered id becomes a 400 from the server, never a request to
+    // a path this client invented.
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agent/sessions/..%2F..%2Fetc%2Fpasswd/claim`);
+  });
+
+  it('surfaces a lost race as an ApiError with the server code', async () => {
+    const { api } = harness(() =>
+      json(409, { error: { code: 'SESSION_ALREADY_ASSIGNED', message: 'taken' } }),
+    );
+
+    await expect(api.claim(SESSION, 'key-1')).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+// ----------------------------------------------------------------- accept
+
+const ACCEPTED = {
+  session_id: SESSION,
+  status: 'IN_CALL',
+  agent_id: 'agent-1',
+  room_name: `vcip_${SESSION}`,
+};
+
+describe('accept', () => {
+  it('posts to the session accept route with its key', async () => {
+    const { api, calls } = harness(() => ok(ACCEPTED));
+    await api.accept(SESSION, 'key-2');
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agent/sessions/${SESSION}/accept`);
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toBe('key-2');
+  });
+
+  it('sends an empty body', async () => {
+    const { api, calls } = harness(() => ok(ACCEPTED));
+    await api.accept(SESSION, 'key-2');
+    expect(calls[0]?.init?.body).toBe('{}');
+  });
+
+  it('returns the room name the server assigned', async () => {
+    const { api } = harness(() => ok(ACCEPTED));
+    await expect(api.accept(SESSION, 'key-2')).resolves.toMatchObject({
+      room_name: `vcip_${SESSION}`,
+    });
+  });
+});
+
+// ---------------------------------------------------------------- session
+
+describe('session', () => {
+  it('reads the session with a GET and no body', async () => {
+    const { api, calls } = harness(() =>
+      ok({ session_id: SESSION, status: 'OFFERED', room_name: null }),
+    );
+    await api.session(SESSION);
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/sessions/${SESSION}`);
+    expect(calls[0]?.init?.method).toBe('GET');
+    expect(calls[0]?.init?.body).toBeUndefined();
+  });
+
+  it('sends no idempotency key on a read', async () => {
+    const { api, calls } = harness(() =>
+      ok({ session_id: SESSION, status: 'IN_CALL', room_name: null }),
+    );
+    await api.session(SESSION);
+
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('returns the status the server reported', async () => {
+    const { api } = harness(() => ok({ session_id: SESSION, status: 'QUEUED', room_name: null }));
+    await expect(api.session(SESSION)).resolves.toMatchObject({ status: 'QUEUED' });
+  });
+});
+
+// --------------------------------------------- the agent cannot name itself
+
+describe('no request names an agent, a tenant, or a status', () => {
+  it('sends nothing but a credential and a key on every action', async () => {
+    const { api, calls } = harness((call) =>
+      call.url.endsWith('/claim') ? ok(CLAIMED) : ok(ACCEPTED),
+    );
+    await api.claim(SESSION, 'key-1');
+    await api.accept(SESSION, 'key-2');
+
+    for (const call of calls) {
+      const body = String(call.init?.body ?? '{}');
+      for (const field of ['agent_id', 'tenant_id', 'session_id', 'status', 'room_name']) {
+        expect(body).not.toContain(field);
+      }
+      expect(call.url).not.toContain('agent_id');
+      expect(call.url).not.toContain('tenant_id');
+    }
+  });
+});
