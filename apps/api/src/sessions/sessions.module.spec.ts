@@ -35,14 +35,17 @@ import { SESSION_REPOSITORY } from './session.repository.js';
 import { SessionsController } from './sessions.controller.js';
 import { SessionsModule } from './sessions.module.js';
 import { SessionsService } from './sessions.service.js';
+import { NotificationsTestingModule } from '../realtime/notifications.testing.js';
 
 /** Secrets are fake and never leave this file. 32+ chars, as the config demands. */
 const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-di-tests-000001',
   agentJwtSecret: 'FAKE-agent-secret-for-di-tests-00000002',
   internalToken: 'FAKE-internal-token-for-di-tests-0000003',
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: 7200,
   agentJwtTtlSeconds: 3600,
+  wsTokenTtlSeconds: 300,
 };
 
 /**
@@ -68,7 +71,13 @@ describe('SessionsModule resolves through the container', () => {
 
   beforeEach(async () => {
     moduleRef = await Test.createTestingModule({
-      imports: [LoggingModule, FakeDbModule, FakeRedisModule, SessionsModule],
+      imports: [
+        LoggingModule,
+        NotificationsTestingModule,
+        FakeDbModule,
+        FakeRedisModule,
+        SessionsModule,
+      ],
     })
       // The two providers that would otherwise reach a real datastore. Every
       // other provider in the graph is the production one.

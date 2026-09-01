@@ -24,8 +24,10 @@ const CONFIG: AuthConfig = redactable({
   customerTokenSecret: CUSTOMER_SECRET,
   agentJwtSecret: AGENT_SECRET,
   internalToken: INTERNAL_TOKEN,
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: 7200,
   agentJwtTtlSeconds: 43200,
+  wsTokenTtlSeconds: 300,
 });
 
 const TENANT_A = '11111111-1111-4111-8111-111111111111';

@@ -19,8 +19,10 @@ const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-tests-0123456789',
   agentJwtSecret: 'FAKE-agent-secret-for-tests-9876543210ab',
   internalToken: 'FAKE-internal-token-for-tests-abcdefghij',
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: 7200,
   agentJwtTtlSeconds: 3600,
+  wsTokenTtlSeconds: 300,
 };
 
 /**

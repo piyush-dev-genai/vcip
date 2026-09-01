@@ -24,10 +24,23 @@ export interface AuthConfig {
   readonly agentJwtSecret: string;
   /** The shared `X-Internal-Token` credential (D10). */
   readonly internalToken: string;
+  /**
+   * Signs and verifies WebSocket connection tokens (D9, T27).
+   *
+   * A third distinct secret, for the reason the first two are distinct: a
+   * connection token travels in a query parameter, which is the one place this
+   * codebase otherwise refuses to put a credential, and query parameters reach
+   * access logs and browser history. Signing it with the customer or agent
+   * secret would mean a leaked WS token differed from a full session credential
+   * by a single `act` claim.
+   */
+  readonly wsTokenSecret: string;
   /** Customer token lifetime. Two hours per R8. */
   readonly customerTokenTtlSeconds: number;
   /** Agent JWT lifetime. */
   readonly agentJwtTtlSeconds: number;
+  /** Connection-token lifetime. Five minutes per T27. */
+  readonly wsTokenTtlSeconds: number;
 }
 
 /** R8: the customer token lives two hours. There is no refresh endpoint. */
@@ -35,6 +48,20 @@ export const CUSTOMER_TOKEN_TTL_SECONDS = 2 * 60 * 60;
 
 /** A working shift plus slack. Agents re-authenticate, they do not refresh. */
 export const AGENT_JWT_TTL_SECONDS = 12 * 60 * 60;
+
+/**
+ * Connection-token lifetime: five minutes.
+ *
+ * Long enough that a client which fetches a token, renders, and then opens a
+ * socket is not racing the clock, and that an ordinary reconnect inside the
+ * window needs no second round trip. Short enough that a token in an access log
+ * or a browser history entry is worthless by the time anyone reads it.
+ *
+ * Deliberately not single-use. A dropped socket reconnecting is the common
+ * case, and a one-shot token would make every network blip a REST round trip
+ * before the client could try again.
+ */
+export const WS_TOKEN_TTL_SECONDS = 5 * 60;
 
 /**
  * The shortest secret worth accepting. Short shared secrets are guessable, and
@@ -63,8 +90,10 @@ export function authConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AuthCon
     customerTokenSecret: required('VCIP_CUSTOMER_TOKEN_SECRET', env['VCIP_CUSTOMER_TOKEN_SECRET']),
     agentJwtSecret: required('VCIP_AGENT_JWT_SECRET', env['VCIP_AGENT_JWT_SECRET']),
     internalToken: required('VCIP_INTERNAL_TOKEN', env['VCIP_INTERNAL_TOKEN']),
+    wsTokenSecret: required('VCIP_WS_TOKEN_SECRET', env['VCIP_WS_TOKEN_SECRET']),
     customerTokenTtlSeconds: CUSTOMER_TOKEN_TTL_SECONDS,
     agentJwtTtlSeconds: AGENT_JWT_TTL_SECONDS,
+    wsTokenTtlSeconds: WS_TOKEN_TTL_SECONDS,
   };
 
   if (config.customerTokenSecret === config.agentJwtSecret) {
@@ -72,6 +101,16 @@ export function authConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AuthCon
     // secret, a forged `act` claim would be the only thing standing between a
     // customer token and an agent route.
     throw new Error('VCIP_CUSTOMER_TOKEN_SECRET and VCIP_AGENT_JWT_SECRET must differ');
+  }
+
+  if (
+    config.wsTokenSecret === config.customerTokenSecret ||
+    config.wsTokenSecret === config.agentJwtSecret
+  ) {
+    // The same argument, for the credential D9 puts in a query parameter. A WS
+    // token that shared a signing key with a session credential would differ
+    // from it only by an `act` claim, and it travels somewhere logs can see.
+    throw new Error('VCIP_WS_TOKEN_SECRET must differ from the customer and agent secrets');
   }
 
   return redactable(config);

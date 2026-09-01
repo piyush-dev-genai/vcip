@@ -35,6 +35,7 @@ import type { CallWebhookEvent } from './call-events.rules.js';
 import { CallLifecycleService } from './call-lifecycle.service.js';
 import type { CallRepository, DueDeadline } from './call.repository.js';
 import { deadlineMember } from './call.keys.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
 const AGENT = '00000000-0000-4000-8000-0000000000a1';
@@ -215,6 +216,7 @@ beforeEach(() => {
     sessions,
     calls,
     new TenantsService(tenantStore),
+    new RecordingNotifications(),
     createLogger({ level: 'silent' }),
     () => NOW,
   );

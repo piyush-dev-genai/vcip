@@ -31,6 +31,8 @@ import { SessionEventType, SessionStatus, getBillingForOutcome } from '@vcip/sha
 import type { Logger } from 'pino';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
 import type { SessionRepository } from '../sessions/session.repository.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { PresenceService } from '../agents/presence.service.js';
@@ -72,6 +74,7 @@ export class CallSweeper {
     @InjectSessionRepository() private readonly sessions: SessionRepository,
     @InjectCallRepository() private readonly calls: CallRepository,
     private readonly presence: PresenceService,
+    @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(CALL_SWEEP_ENABLED) enabled?: boolean,
     @Optional() @Inject(CALL_SWEEP_CLOCK) now?: SweepClock,
@@ -193,6 +196,15 @@ export class CallSweeper {
     // R5: BUSY is cleared on session end. Never fails the transition — the
     // transaction has committed, and a presence key is not authoritative (D2).
     await this.freeAgent(ended.agentId, sessionId);
+
+    // Both screens have somewhere else to be: the customer sees the outcome,
+    // the agent's portal releases the work. The sweeper decided; this reports.
+    await this.notify.sessionCompleted(
+      sessionId,
+      status,
+      null,
+      ended.agentId === null ? null : { tenantId: session.tenantId, userId: ended.agentId },
+    );
 
     this.logger.info(
       {

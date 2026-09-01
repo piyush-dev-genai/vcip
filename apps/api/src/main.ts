@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ApiErrorFilter } from './common/errors/api-error.filter.js';
 import { corsPolicyFromEnv } from './common/http/cors.config.js';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { logger } from './common/logging/logger.js';
 
 async function bootstrap(): Promise<void> {
@@ -18,6 +19,11 @@ async function bootstrap(): Promise<void> {
   // neither parsed nor captured, `rawBody` is empty, and every genuine delivery
   // fails signature verification with a 401 — which is exactly what it did.
   app.useBodyParser('json', { type: ['application/json', 'application/webhook+json'] });
+
+  // Native WebSocket, not Socket.IO (T27). The contract names a plain URL
+  // with a query parameter, which Socket.IO's own handshake protocol does not
+  // speak.
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   // Browser origin policy (T14). Applied as middleware, so a preflight OPTIONS
   // is answered before any guard runs — a guard rejecting the preflight would

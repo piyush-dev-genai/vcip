@@ -67,6 +67,8 @@ import { QueueService } from '../queue/queue.service.js';
 import { SESSION_REPOSITORY } from './session.repository.js';
 import { SessionsController } from './sessions.controller.js';
 import { SessionsService } from './sessions.service.js';
+import { NOTIFICATIONS } from '../realtime/notifications.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 // ------------------------------------------------------------------ fakes
 
@@ -78,8 +80,10 @@ const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-tests-0123456789',
   agentJwtSecret: 'FAKE-agent-secret-for-tests-9876543210ab',
   internalToken: 'FAKE-internal-token-for-tests-abcdefghij',
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: CUSTOMER_TOKEN_TTL_SECONDS,
   agentJwtTtlSeconds: 3600,
+  wsTokenTtlSeconds: 300,
 };
 
 const API_KEY_A = 'vcip_tenanta_FAKEKEYSECRETAAAAAAAAAAAAAAAAAAAA';
@@ -485,6 +489,7 @@ class FakeRedis {
 // ------------------------------------------------------------- application
 
 const repository = new InMemorySessionRepository();
+const notifications = new RecordingNotifications();
 const tenantStore = new FakeTenantConfigStore();
 const geo = new FakeGeoProvider();
 const redis = new FakeRedis();
@@ -493,6 +498,7 @@ const redis = new FakeRedis();
   imports: [LoggingModule],
   controllers: [SessionsController],
   providers: [
+    { provide: NOTIFICATIONS, useValue: notifications },
     { provide: AUTH_CONFIG, useValue: TEST_AUTH_CONFIG },
     { provide: API_KEY_STORE, useClass: FakeApiKeyStore },
     ApiKeyGuard,
@@ -570,6 +576,7 @@ describe('session lifecycle over HTTP', () => {
 
   beforeEach(async () => {
     repository.rows.clear();
+    notifications.clear();
     repository.events.length = 0;
     repository.createCalls = 0;
     repository.failNextUpdate = false;
@@ -1796,6 +1803,66 @@ describe('session lifecycle over HTTP', () => {
       expect(second.body).toEqual(first.body);
       // One transition, not two.
       expect(repository.eventsFor(id).filter((e) => e.type === 'SESSION_QUEUED')).toHaveLength(1);
+    });
+
+    // ------------------------------------------ realtime notifications (T27)
+
+    describe('what joining publishes', () => {
+      /**
+       * Two audiences, two different facts, from the one decision this route
+       * makes. T27 carries them; the decision that a session was queued was
+       * made by the transition itself.
+       */
+      it('tells this customer where they stand', async () => {
+        const { id, token } = await eligible();
+        notifications.clear();
+
+        await join(id, token);
+
+        const published = notifications.of('queuePosition');
+        expect(published).toHaveLength(1);
+        expect(published[0]?.args[0]).toBe(id);
+      });
+
+      it('tells agents of that language that work is waiting', async () => {
+        const { id, token } = await eligible('hi');
+        notifications.clear();
+
+        await join(id, token);
+
+        const published = notifications.of('queueNewSession');
+        expect(published).toHaveLength(1);
+        // tenant, language, session — the language is what targets it.
+        expect(published[0]?.args[1]).toBe('hi');
+        expect(published[0]?.args[2]).toBe(id);
+      });
+
+      it('publishes nothing when the transition is refused', async () => {
+        // No gates passed, so the session cannot queue.
+        const created = await createSession();
+        const id = created.body.data.session_id as string;
+        const token = created.body.data.customer_token as string;
+        notifications.clear();
+
+        const response = await join(id, token);
+
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(notifications.sent).toEqual([]);
+      });
+
+      it('publishes after the commit, never instead of it', async () => {
+        const { id, token } = await eligible();
+        notifications.clear();
+
+        await join(id, token);
+
+        // The session really is QUEUED, and the notification followed it.
+        const read = await request(app.getHttpServer())
+          .get(`/v1/sessions/${id}`)
+          .set('Authorization', `Bearer ${token}`);
+        expect(read.body.data.status).toBe('QUEUED');
+        expect(notifications.kinds()).toContain('queuePosition');
+      });
     });
   });
 

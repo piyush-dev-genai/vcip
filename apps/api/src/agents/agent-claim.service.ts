@@ -45,6 +45,8 @@ import type {
   SessionClaimOutcome,
   SessionRepository,
 } from '../sessions/session.repository.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { TenantsService } from '../tenants/tenants.service.js';
@@ -110,6 +112,7 @@ export class AgentClaimService {
     private readonly presence: PresenceService,
     private readonly tenants: TenantsService,
     private readonly scope: TenantScope,
+    @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(AGENT_CLAIM_CLOCK) now?: ClaimClock,
   ) {
@@ -136,7 +139,7 @@ export class AgentClaimService {
     const own = this.ownOffer(actor, session, config.offerTimeoutSeconds);
     if (own !== null) return own;
 
-    this.requireClaimable(session);
+    await this.requireClaimableOrTell(actor, session);
     this.requireLanguage(actor, profile, session);
     await this.requirePresent(actor);
 
@@ -246,6 +249,29 @@ export class AgentClaimService {
     };
   }
 
+  /**
+   * Refuse, and tell the agent why when the reason is that somebody else has
+   * it.
+   *
+   * The common losing path is here rather than in the LOST branch below: by the
+   * time a second agent asks, the row usually already says OFFERED, so the
+   * conditional UPDATE is never reached. Both paths mean the same thing to the
+   * agent — the session they were looking at went elsewhere — so both publish.
+   */
+  private async requireClaimableOrTell(
+    actor: AgentActor,
+    session: ClaimableSessionRow,
+  ): Promise<void> {
+    try {
+      this.requireClaimable(session);
+    } catch (error) {
+      if (error instanceof DomainError && error.code === ErrorCode.SESSION_ALREADY_ASSIGNED) {
+        await this.notify.sessionClaimedElsewhere(actor.tenantId, actor.userId, session.id);
+      }
+      throw error;
+    }
+  }
+
   /** Reject a session that is not waiting in the queue for someone to take. */
   private requireClaimable(session: ClaimableSessionRow): void {
     if (session.status === SessionStatus.QUEUED) return;
@@ -349,6 +375,9 @@ export class AgentClaimService {
         },
         'claim lost: the session was no longer queued',
       );
+      // The losing agent is told, so their portal can drop the row rather than
+      // wait for the next queue poll to notice it is gone.
+      await this.notify.sessionClaimedElsewhere(actor.tenantId, actor.userId, sessionId);
       throw alreadyAssigned();
     }
 
@@ -365,6 +394,10 @@ export class AgentClaimService {
       },
       'session offered to agent',
     );
+
+    // The customer learns an agent is deciding. The decision that this
+    // happened was the conditional UPDATE above; this only reports it.
+    await this.notify.sessionOffered(session.id);
 
     return {
       session_id: session.id,

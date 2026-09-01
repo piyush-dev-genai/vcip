@@ -76,6 +76,8 @@ import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentWorkService } from './agent-work.service.js';
+import { NOTIFICATIONS } from '../realtime/notifications.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 import { AgentsController } from './agents.controller.js';
 import { AgentsService } from './agents.service.js';
 import { OfferSweeperController } from './offer-sweeper.controller.js';
@@ -98,8 +100,10 @@ const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-tests-0123456789',
   agentJwtSecret: 'FAKE-agent-secret-for-tests-9876543210ab',
   internalToken: 'FAKE-internal-token-for-tests-abcdefghij',
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: 7200,
   agentJwtTtlSeconds: 3600,
+  wsTokenTtlSeconds: 300,
 };
 
 const PASSWORD = 'FAKE-PASSWORD-FOR-TESTS-0123456789';
@@ -666,6 +670,7 @@ class FakeApiKeyStore implements ApiKeyStore {
 const presenceStore = new FakePresenceRepository();
 const queueStore = new FakeQueueRepository();
 const sessionStore = new FakeSessionStore();
+const notifications = new RecordingNotifications();
 const idempotencyRedis = new FakeRedis();
 const tenantStore = new FakeTenantConfigStore();
 
@@ -673,6 +678,7 @@ const tenantStore = new FakeTenantConfigStore();
   imports: [LoggingModule],
   controllers: [AgentsController, OfferSweeperController],
   providers: [
+    { provide: NOTIFICATIONS, useValue: notifications },
     { provide: AUTH_CONFIG, useValue: TEST_AUTH_CONFIG },
     { provide: API_KEY_STORE, useClass: FakeApiKeyStore },
     ApiKeyGuard,
@@ -717,7 +723,15 @@ const tenantStore = new FakeTenantConfigStore();
         presence: PresenceService,
         scope: TenantScope,
         logger,
-      ) => new AgentAcceptService(sessions, presence, scope, logger, () => new Date(clockMs)),
+      ) =>
+        new AgentAcceptService(
+          sessions,
+          presence,
+          scope,
+          notifications,
+          logger,
+          () => new Date(clockMs),
+        ),
       inject: [SESSION_REPOSITORY, PresenceService, TenantScope, LOGGER],
     },
     {
@@ -725,7 +739,7 @@ const tenantStore = new FakeTenantConfigStore();
       // can fire between cases and change a fixture out from under an assertion.
       provide: OfferSweeper,
       useFactory: (sessions: SessionRepository, presence: PresenceService, logger) =>
-        new OfferSweeper(sessions, presence, logger, false, () => new Date(clockMs)),
+        new OfferSweeper(sessions, presence, notifications, logger, false, () => new Date(clockMs)),
       inject: [SESSION_REPOSITORY, PresenceService, LOGGER],
     },
     {
@@ -744,6 +758,7 @@ const tenantStore = new FakeTenantConfigStore();
           presence,
           tenants,
           scope,
+          notifications,
           logger,
           () => new Date(clockMs),
         ),
@@ -843,6 +858,7 @@ describe('agent identity and presence over HTTP', () => {
     presenceStore.keys.clear();
     queueStore.clear();
     sessionStore.clear();
+    notifications.clear();
     idempotencyRedis.clear();
     tenantStore.offerTimeoutSeconds = 30;
     logged = '';
@@ -2979,6 +2995,101 @@ describe('agent identity and presence over HTTP', () => {
       const response = await work(token);
       expect(response.body.data.sessions).toHaveLength(1);
       expect(response.body.data.sessions[0].session_id).toBe(SESSION_W);
+    });
+  });
+
+  // ------------------------------------------------ realtime notifications
+
+  describe('what the agent routes publish (T27)', () => {
+    /**
+     * T27 owns transport, not timing: these assert that the module which
+     * *decides* something happened is the one that says so, and that it says it
+     * once, to the right audience.
+     */
+    const enqueueOne = (id: string): void => {
+      const row: StoredSession = {
+        id,
+        tenantId: TENANT_A,
+        status: SessionStatus.QUEUED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(clockMs - 60_000),
+        version: 1,
+      };
+      sessionStore.seed(row);
+      queueStore.seed(row.tenantId, row.language, row.id, row.queuedAt.getTime());
+    };
+
+    it('tells the customer an agent was offered their session', async () => {
+      const id = '00000000-0000-4000-8000-0000000000c1';
+      enqueueOne(id);
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      notifications.clear();
+
+      await bearer(`/sessions/${id}/claim`, token)
+        .set('Idempotency-Key', `k-${Math.random()}`)
+        .send({});
+
+      expect(notifications.of('sessionOffered').map((n) => n.args[0])).toEqual([id]);
+    });
+
+    it('tells the customer and the agent when the offer is accepted', async () => {
+      const id = '00000000-0000-4000-8000-0000000000c2';
+      enqueueOne(id);
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      await bearer(`/sessions/${id}/claim`, token)
+        .set('Idempotency-Key', `k-${Math.random()}`)
+        .send({});
+      notifications.clear();
+
+      await bearer(`/sessions/${id}/accept`, token)
+        .set('Idempotency-Key', `k-${Math.random()}`)
+        .send({});
+
+      expect(notifications.of('sessionAssigned')).toHaveLength(1);
+      expect(notifications.of('sessionAssigned')[0]?.args[0]).toBe(id);
+    });
+
+    it('publishes nothing when a claim is refused', async () => {
+      const id = '00000000-0000-4000-8000-0000000000c3';
+      enqueueOne(id);
+      const first = await loginAs();
+      const second = await loginAs('agent.two@demo.local');
+      await bearer('/availability', first).send({ status: 'AVAILABLE' });
+      await bearer('/availability', second).send({ status: 'AVAILABLE' });
+      await bearer(`/sessions/${id}/claim`, first)
+        .set('Idempotency-Key', `k-${Math.random()}`)
+        .send({});
+      notifications.clear();
+
+      // The loser is told their target went elsewhere, and the customer is not
+      // told a second time that an agent was offered the session.
+      await bearer(`/sessions/${id}/claim`, second)
+        .set('Idempotency-Key', `k-${Math.random()}`)
+        .send({});
+
+      expect(notifications.of('sessionOffered')).toHaveLength(0);
+      expect(notifications.of('sessionClaimedElsewhere')).toHaveLength(1);
+    });
+
+    it('tells the agent when the sweeper takes their offer back', async () => {
+      const id = '00000000-0000-4000-8000-0000000000c4';
+      enqueueOne(id);
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      await bearer(`/sessions/${id}/claim`, token)
+        .set('Idempotency-Key', `k-${Math.random()}`)
+        .send({});
+      notifications.clear();
+
+      clockMs += 60_000;
+      await request(app.getHttpServer())
+        .post('/internal/offers/sweep')
+        .set(INTERNAL_TOKEN_HEADER, TEST_AUTH_CONFIG.internalToken);
+
+      expect(notifications.of('sessionOfferExpired').map((n) => n.args[2])).toEqual([id]);
     });
   });
 });

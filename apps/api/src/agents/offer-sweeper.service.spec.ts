@@ -37,6 +37,7 @@ import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './age
 import { OfferSweeper, SWEEP_BATCH, SWEEP_INTERVAL_MS } from './offer-sweeper.service.js';
 import type { PresenceEntry, PresenceRepository, TouchResult } from './presence.repository.js';
 import { PresenceService } from './presence.service.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 const TENANT_A = '00000000-0000-4000-8000-00000000000a';
 const TENANT_B = '00000000-0000-4000-8000-00000000000b';
@@ -225,6 +226,7 @@ describe('OfferSweeper', () => {
         silentLogger(),
         () => new Date(NOW),
       ),
+      new RecordingNotifications(),
       silentLogger(),
       false,
       () => new Date(NOW),

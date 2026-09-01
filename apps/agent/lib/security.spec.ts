@@ -163,6 +163,21 @@ describe('token handling has one implementation', () => {
     }
   });
 
+  /**
+   * D9's WebSocket connection token is the one sanctioned exception to this
+   * rule, and it is not in play yet.
+   *
+   * A browser cannot set `Authorization` on a WebSocket handshake, so
+   * `GET /v1/ws?token=...` carries a short-lived, purpose-bound credential in
+   * the query string — five minutes, its own signing secret, and its own
+   * `act` claim, so a leak is worth far less than a session token. The API
+   * redacts it from every line it logs about a connection.
+   *
+   * This app holds no WebSocket client, so the assertion below is unchanged
+   * and still exact. When one is added, the exception belongs here as a named
+   * allowance for that one parameter on that one URL — never as a relaxation
+   * of the rule.
+   */
   it('never builds a URL with a token or password parameter', () => {
     expect(offenders(/[?&](token|password|access_token)=/)).toEqual([]);
     expect(offenders(/searchParams\.(set|append)\(\s*['"](token|password)/)).toEqual([]);

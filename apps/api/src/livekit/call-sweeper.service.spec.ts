@@ -45,6 +45,7 @@ import type {
 import { CallSweeper } from './call-sweeper.service.js';
 import type { CallRepository, DueDeadline } from './call.repository.js';
 import { deadlineMember } from './call.keys.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
 const AGENT = '00000000-0000-4000-8000-0000000000a1';
@@ -223,6 +224,7 @@ beforeEach(() => {
     sessions,
     calls,
     new PresenceService(presenceStore, agents, sessions, logger, () => NOW),
+    new RecordingNotifications(),
     logger,
     false,
     () => NOW,

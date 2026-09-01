@@ -61,6 +61,8 @@ import { QueueService } from '../queue/queue.service.js';
 import type { WaitingAhead } from '../queue/queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- see above
 import { TenantsService } from '../tenants/tenants.service.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
 import { evaluateLocation } from './location.js';
 import { evaluatePreflight } from './preflight.js';
 import type {
@@ -150,6 +152,7 @@ export class SessionsService {
     @InjectSessionRepository() private readonly repository: SessionRepository,
     private readonly tenants: TenantsService,
     private readonly scope: TenantScope,
+    @InjectNotifications() private readonly notify: Notifications,
     @InjectAuthConfig() private readonly authConfig: AuthConfig,
     @InjectGeoProvider() private readonly geo: GeoProvider,
     // The Redis queue projection (T15). Consulted only after PostgreSQL has
@@ -492,6 +495,13 @@ export class SessionsService {
       updated,
       this.waitingAhead(updated.tenantId),
     );
+
+    // Notifications, after the commit and after the projection. T27 transports;
+    // the decision that a session was queued was made above, by this method.
+    // Two audiences, two different facts: this customer learns where they
+    // stand, and agents who can work this language learn there is work.
+    await this.notify.queuePosition(updated.id, position);
+    await this.notify.queueNewSession(updated.tenantId, updated.language, updated.id);
 
     return {
       session_id: updated.id,

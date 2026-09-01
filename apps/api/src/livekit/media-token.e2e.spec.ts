@@ -57,6 +57,8 @@ import { MediaTokenController } from './media-token.controller.js';
 import type { MediaParticipantMetadata } from './media-token.minter.js';
 import { LiveKitTokenMinter, MEDIA_TOKEN_MINTER } from './media-token.minter.js';
 import { MediaTokenService } from './media-token.service.js';
+import { NOTIFICATIONS } from '../realtime/notifications.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 // ------------------------------------------------------------------ fixtures
 
@@ -73,8 +75,10 @@ const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-tests-0123456789',
   agentJwtSecret: 'FAKE-agent-secret-for-tests-9876543210ab',
   internalToken: 'FAKE-internal-token-for-tests-abcdefghij',
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: 7200,
   agentJwtTtlSeconds: 3600,
+  wsTokenTtlSeconds: 300,
 };
 
 const LIVEKIT: LiveKitConfig = {
@@ -173,6 +177,7 @@ const sessions = new FakeSessions();
   imports: [LoggingModule],
   controllers: [MediaTokenController],
   providers: [
+    { provide: NOTIFICATIONS, useValue: new RecordingNotifications() },
     { provide: AUTH_CONFIG, useValue: TEST_AUTH_CONFIG },
     CustomerTokenGuard,
     AgentJwtGuard,

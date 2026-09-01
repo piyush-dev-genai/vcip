@@ -26,6 +26,8 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "@nestjs/platform-ws": "^11.2.3",
+    "@nestjs/websockets": "^11.2.3",
     "@vcip/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "ioredis": "^6.0.0",
@@ -34,6 +36,7 @@
     "postgres": "^3.4.9",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "ws": "^8.21.3",
     "zod": "^4.5.1"
   },
   "devDependencies": {
@@ -43,6 +46,7 @@
     "@swc/core": "^1.7.0",
     "@types/node": "^22.0.0",
     "@types/supertest": "^6.0.2",
+    "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10",
     "supertest": "^7.0.0",
     "tsx": "^4.23.12",

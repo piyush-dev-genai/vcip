@@ -52,6 +52,20 @@ const PUBLIC_SURFACE: readonly string[] = [
   'isDomainError',
   'toApiErrorBody',
 
+  // realtime notification vocabulary (T27, R3) — deliberately separate from
+  // the session-event names above: one is an append-only audit record, the
+  // other a best-effort push.
+  'CustomerEvent',
+  'CUSTOMER_EVENTS',
+  'AgentEvent',
+  'AGENT_EVENTS',
+  'REALTIME_EVENTS',
+  'RealtimeAudience',
+  'isCustomerEvent',
+  'isAgentEvent',
+  'mayReceive',
+  'realtimeMessage',
+
   // session events
   'SessionEventType',
   'SESSION_EVENT_TYPES',

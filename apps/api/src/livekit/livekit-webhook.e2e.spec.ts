@@ -62,6 +62,8 @@ import { LiveKitWebhookController } from './livekit-webhook.controller.js';
 import type { LiveKitConfig } from './livekit.config.js';
 import { LIVEKIT_CONFIG } from './livekit.config.js';
 import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
+import { NOTIFICATIONS } from '../realtime/notifications.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
 const AGENT = '00000000-0000-4000-8000-0000000000a1';
@@ -79,8 +81,10 @@ const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-tests-0123456789',
   agentJwtSecret: 'FAKE-agent-secret-for-tests-9876543210ab',
   internalToken: 'FAKE-internal-token-for-tests-abcdefghij',
+  wsTokenSecret: 'FAKE-ws-secret-for-tests-abcdefghijklmnop',
   customerTokenTtlSeconds: 7200,
   agentJwtTtlSeconds: 3600,
+  wsTokenTtlSeconds: 300,
 };
 
 /**
@@ -247,6 +251,7 @@ const tenantStore: TenantConfigStore = {
   imports: [LoggingModule],
   controllers: [LiveKitWebhookController],
   providers: [
+    { provide: NOTIFICATIONS, useValue: new RecordingNotifications() },
     { provide: AUTH_CONFIG, useValue: TEST_AUTH_CONFIG },
     InternalTokenGuard,
     { provide: LIVEKIT_CONFIG, useValue: LIVEKIT },

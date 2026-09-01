@@ -10,11 +10,13 @@ import {
 const CUSTOMER = 'customer-secret-value-that-is-long-enough';
 const AGENT = 'agent-secret-value-that-is-long-enough-xx';
 const INTERNAL = 'internal-secret-value-that-is-long-enough';
+const WS = 'w'.repeat(40);
 
 const env = (overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv => ({
   VCIP_CUSTOMER_TOKEN_SECRET: CUSTOMER,
   VCIP_AGENT_JWT_SECRET: AGENT,
   VCIP_INTERNAL_TOKEN: INTERNAL,
+  VCIP_WS_TOKEN_SECRET: WS,
   ...overrides,
 });
 
@@ -120,8 +122,10 @@ describe('the config cannot spill its secrets', () => {
       customerTokenSecret: 'c'.repeat(40),
       agentJwtSecret: 'a'.repeat(40),
       internalToken: 'i'.repeat(40),
+      wsTokenSecret: 'w'.repeat(40),
       customerTokenTtlSeconds: 1,
       agentJwtTtlSeconds: 1,
+      wsTokenTtlSeconds: 300,
     });
     expect(JSON.stringify(custom)).not.toContain('iiii');
   });

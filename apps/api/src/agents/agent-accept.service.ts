@@ -36,6 +36,8 @@ import { TenantScope } from '../common/auth/tenant-scope.js';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
 import { setContextSession } from '../common/logging/request-context.js';
 import type { ClaimableSessionRow, SessionRepository } from '../sessions/session.repository.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 // The one definition of the room name (R2). Imported rather than repeated: a
 // second copy would be a second answer, and the retry path would report a room
@@ -72,6 +74,7 @@ export class AgentAcceptService {
     @InjectSessionRepository() private readonly sessions: SessionRepository,
     private readonly presence: PresenceService,
     private readonly scope: TenantScope,
+    @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(AGENT_ACCEPT_CLOCK) now?: AcceptClock,
   ) {
@@ -144,6 +147,11 @@ export class AgentAcceptService {
       },
       'agent accepted the session',
     );
+
+    // The customer's cue to join the room (T25 acts on IN_CALL), and the
+    // agent's own confirmation. Both after the commit; neither decides
+    // anything.
+    await this.notify.sessionAssigned(sessionId, actor.tenantId, actor.userId);
 
     const { session: accepted } = outcome;
     return {

@@ -33,6 +33,8 @@ import type { Logger } from 'pino';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
 import { setContextSession } from '../common/logging/request-context.js';
 import type { CallSessionRow, SessionRepository } from '../sessions/session.repository.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { TenantsService } from '../tenants/tenants.service.js';
@@ -63,6 +65,7 @@ export class CallLifecycleService {
     @InjectSessionRepository() private readonly sessions: SessionRepository,
     @InjectCallRepository() private readonly calls: CallRepository,
     private readonly tenants: TenantsService,
+    @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(CALL_LIFECYCLE_CLOCK) now?: CallClock,
   ) {
@@ -149,6 +152,14 @@ export class CallLifecycleService {
         { event: 'call.agent.reconnected', session_id: action.sessionId },
         'the agent returned before the window lapsed',
       );
+    }
+
+    // The customer's cue that their agent is actually in the room. T26 owns
+    // the decision — this is the point at which it is known — and T27 only
+    // carries it. Published on the agent's join whether or not the customer has
+    // arrived yet: a customer who connects later reads the session instead.
+    if (action.role === CallRole.AGENT) {
+      await this.notify.agentJoined(action.sessionId);
     }
 
     if (!bothPresent(present)) return;

@@ -2382,369 +2382,59 @@ ABORTED → ₹5
 
 
 
-\## 19.1 Connection
+\## 19.0 Connection Tokens [IMPLEMENTED]
 
 
 
-```text
+A WebSocket handshake cannot carry an `Authorization` header from a browser, so
 
-GET /v1/ws
+D9 authenticates the connection with a short-lived token in a query parameter,
 
-```
+minted by a REST endpoint the caller is already authorised to use. The token
 
+grants nothing the caller did not already hold; it re-expresses an existing
 
-
-Authentication is performed using an appropriate short-lived token.
-
-
-
-The connection is scoped to:
-
-
-
-```text
-
-tenant\_id
-
-user/session identity
-
-```
-
-
-
-\---
-
-
-
-\## 19.2 Customer Events
-
-
-
-\### `queue.position`
-
-
-
-```json
-
-{
-
-&#x20; "event": "queue.position",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid",
-
-&#x20;   "position": 2
-
-&#x20; }
-
-}
-
-```
-
-
-
-\### `session.assigned`
-
-
-
-```json
-
-{
-
-&#x20; "event": "session.assigned",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid"
-
-&#x20; }
-
-}
-
-```
-
-
-
-\### `agent.joined`
-
-
-
-```json
-
-{
-
-&#x20; "event": "agent.joined",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid"
-
-&#x20; }
-
-}
-
-```
-
-
-
-\### `session.updated`
-
-
-
-```json
-
-{
-
-&#x20; "event": "session.updated",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid",
-
-&#x20;   "status": "IN\_CALL"
-
-&#x20; }
-
-}
-
-```
-
-
-
-\### `session.completed`
-
-
-
-```json
-
-{
-
-&#x20; "event": "session.completed",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid",
-
-&#x20;   "verdict": "APPROVED"
-
-&#x20; }
-
-}
-
-```
-
-
-
-\---
-
-
-
-\## 19.3 Agent Events
-
-
-
-\### `queue.new\_session`
-
-
-
-```json
-
-{
-
-&#x20; "event": "queue.new\_session",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid"
-
-&#x20; }
-
-}
-
-```
-
-
-
-\### `ai.updated`
-
-
-
-```json
-
-{
-
-&#x20; "event": "ai.updated",
-
-&#x20; "data": {
-
-&#x20;   "session\_id": "session-uuid",
-
-&#x20;   "liveness\_score": 97,
-
-&#x20;   "liveness\_status": "LIVE",
-
-&#x20;   "face\_match\_score": 95,
-
-&#x20;   "ocr\_status": "PASS"
-
-&#x20; }
-
-}
-
-```
-
-
-
-AI events must not contain images or raw document content.
-
-
-
-\---
-
-
-
-\# 19a. LiveKit Webhook [IMPLEMENTED]
-
-
-
-\### Endpoint
+credential in a form the handshake can carry.
 
 
 
 ```http
 
-POST /internal/livekit/webhook
+POST /v1/sessions/{session\_id}/ws-token     customer session token
+
+POST /v1/agent/ws-token                     agent JWT
 
 ```
 
 
 
-Added by D7, which recorded that this contract previously had no such endpoint.
+\### Scope
 
 
 
-\### Authentication
-
-
-
-LiveKit's own signature, and **not** `X-Internal-Token`.
-
-
-
-This is a deliberate amendment to D10. The other internal routes are called by
-
-services this repository controls, which can send whatever header they are told
-
-to. `livekit-server` cannot: it has no configuration for custom webhook
-
-headers, and sends only a JWT in `Authorization` whose claim carries a SHA-256
-
-of the body, signed with the same key pair that mints media tokens. Requiring a
-
-header the sender cannot produce would leave the endpoint permanently
-
-unreachable.
-
-
-
-What D10 protects still holds. An unsigned or wrongly signed delivery is
-
-refused with `401`; the signature covers the body, so a replayed envelope
-
-cannot be edited to name another room; and the route is not publicly routed.
-
-
-
-\### Content type
-
-
-
-```text
-
-Content-Type: application/webhook+json
-
-```
-
-
-
-Not `application/json`. A body parser configured only for the latter never
-
-captures the raw bytes, and every authentic delivery then fails signature
-
-verification — the signature is over the exact bytes sent, so a re-serialised
-
-body hashes differently.
-
-
-
-\### Events acted on
-
-
-
-```text
-
-participant\_joined
-
-participant\_left
-
-room\_finished
-
-```
-
-
-
-Everything else LiveKit sends — `track\_*`, `room\_started`, the `egress\_*`
-
-family — is acknowledged and ignored. Egress belongs to T28.
-
-
-
-A `participant\_left` carrying `DisconnectReason.DUPLICATE\_IDENTITY` is a
-
-reconnection, not a departure: one session is one room and the participant
-
-identity is the role, so a rejoin evicts the previous connection and LiveKit
-
-reports the eviction as a leave.
-
-
-
-\### Effects
-
-
-
-| Event | Effect |
+| Route | Scoped to |
 
 | --- | --- |
 
-| both participants present | `CALL\_STARTED` appended, once per session |
+| `/v1/sessions/{id}/ws-token` | tenant + that one session |
 
-| agent leaves | `AGENT\_DISCONNECTED` appended; session stays `IN\_CALL` (D18); reconnect window armed |
-
-| agent returns in time | `AGENT\_RECONNECTED` appended; the call resumes |
-
-| customer leaves | grace window armed; nothing else |
-
-| room closes | room presence forgotten; no session changes |
+| `/v1/agent/ws-token` | tenant + that one user |
 
 
 
-`CALL\_STARTED` requires **both** participants to be in the room. It is not the
+The asymmetry is D9's. A customer token is bound to one session (R8); an
 
-accept (`connected\_at`, §17.2) and not either party arriving alone: a
+agent's connection outlives any one session, so scoping it to a session would
 
-verification begins when both can see each other, `talk\_ms` is measured from
-
-it, and the evidence package will claim it.
+mean re-minting on every claim.
 
 
 
-**No delivery terminates a session.** Departures arm a window; the sweeper below
+Every claim is taken from the verified caller. The path `{session\_id}` is only
 
-decides. A webhook can arrive late, twice, or out of order, and a billing
+ever checked — the guard refuses a token naming a different session — and the
 
-decision does not belong on the far side of a network delivery.
+minted token is signed from the credential, never from the path.
 
 
 
@@ -2752,25 +2442,223 @@ decision does not belong on the far side of a network delivery.
 
 
 
-Always `200` unless the signature fails, because LiveKit retries a non-2xx and
-
-an event nothing will ever accept must not be redelivered forever.
-
-
-
 ```json
 
-{ "data": { "handled": "JOINED", "duplicate": false } }
+{
+
+&#x20; "data": {
+
+&#x20;   "token": "connection-token",
+
+&#x20;   "expires\_at": "2026-09-02T10:05:00Z",
+
+&#x20;   "audience": "customer"
+
+&#x20; }
+
+}
 
 ```
 
 
 
-`handled` is one of `JOINED`, `LEFT`, `ROOM\_CLOSED`, `IGNORE`, `DUPLICATE`.
+\### Lifetime
+
+
+
+Five minutes, and **not** single-use. Long enough that a client which fetches a
+
+token, renders, and then opens a socket is not racing the clock, and that an
+
+ordinary reconnect inside the window needs no second round trip. Short enough
+
+that a token in an access log or a browser history entry is worthless by the
+
+time anyone reads it.
+
+
+
+\### Signing
+
+
+
+A dedicated secret (`VCIP\_WS\_TOKEN\_SECRET`) and a dedicated `act` claim, both
+
+distinct from the customer and agent credentials. This is the one credential
+
+the system puts in a URL, so it must not be worth as much as a session token if
+
+it leaks: a WS token that shared a signing key would differ from a full
+
+credential by a single claim.
+
+
+
+Servers must keep connection tokens out of access logs. The API redacts the
+
+query string from every line it writes about a connection.
 
 
 
 ---
+
+
+
+\## 19.1 Connection [UPDATED]
+
+
+
+```http
+
+GET /v1/ws?token=<short-lived-connection-token>
+
+```
+
+
+
+Native WebSocket, not Socket.IO. The connection is scoped to the tenant plus
+
+either a session (customer) or a user (agent), derived **from the verified
+
+token only**. No other query parameter is read, and the server accepts no
+
+message that changes what a connection receives — a client cannot ask for a
+
+channel.
+
+
+
+An unauthenticated, expired, or wrongly-purposed token closes the connection
+
+with code `4401`. Expired and forged are indistinguishable to the caller.
+
+
+
+The server pings periodically; a connection that does not answer is terminated
+
+and its subscriptions released.
+
+
+
+\### Event vocabulary
+
+
+
+R3 is canonical. `03-system-design.md` §10.2 lists `agent.assigned`,
+
+`call.started` and `call.ended`; those names predate R3 and are stale.
+
+
+
+Customer:
+
+
+
+```text
+
+queue.position
+
+session.offered
+
+session.assigned
+
+agent.joined
+
+session.updated
+
+session.completed
+
+```
+
+
+
+Agent:
+
+
+
+```text
+
+queue.new\_session
+
+session.claimed\_elsewhere
+
+session.offer\_expired
+
+ai.updated
+
+session.updated
+
+session.cancelled
+
+```
+
+
+
+`session.updated` is the only name both audiences receive, and it means the
+
+same thing to each. Every other name belongs to exactly one audience, and the
+
+server refuses to deliver an event to the wrong one.
+
+
+
+These are **not** `session\_events` types. That is the append-only audit
+
+vocabulary, written inside the transaction that made something happen and kept
+
+forever; this is a notification vocabulary, delivered best-effort and
+
+authoritative for nothing.
+
+
+
+\### Routing
+
+
+
+Events are routed server-side from the connection's verified scope.
+
+
+
+| Audience | Receives |
+
+| --- | --- |
+
+| customer | events for its own session only |
+
+| agent | events addressed to that user, plus queue events for languages the agent is configured to work |
+
+
+
+`queue.new\_session` is targeted, never broadcast: an agent receives it only
+
+when the session's language matches one in `agent\_profiles.languages`, using
+
+the same normalisation the queue projection applies (trim and lower-case, with
+
+`en` distinct from `en-IN`). Browser-side filtering is not relied on.
+
+
+
+\### Delivery guarantees
+
+
+
+None. Redis Pub/Sub is fire-and-forget: a notification published while nobody
+
+is connected is dropped, with no queue and no replay. That is correct for this
+
+transport — §33.11 — and REST is the recovery path for anything missed. A
+
+client that reconnects reads the session; it is never told to replay.
+
+
+
+---
+
+
+
+
 
 
 

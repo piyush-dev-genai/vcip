@@ -12,4 +12,5 @@ export * from './state-machine.js';
 export * from './billing.js';
 export * from './errors.js';
 export * from './events.js';
+export * from './realtime.js';
 export * from './api/index.js';

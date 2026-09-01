@@ -46,6 +46,7 @@ import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './age
 import { AgentAcceptService } from './agent-accept.service.js';
 import type { PresenceEntry, PresenceRepository, TouchResult } from './presence.repository.js';
 import { PresenceService } from './presence.service.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 // ------------------------------------------------------------------ fixtures
 
@@ -283,6 +284,7 @@ describe('AgentAcceptService', () => {
         () => new Date(NOW),
       ),
       new TenantScope(),
+      new RecordingNotifications(),
       silentLogger(),
       () => new Date(NOW),
     );

@@ -40,6 +40,8 @@ import { SessionEventType } from '@vcip/shared';
 import type { Logger } from 'pino';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
 import type { ExpiredOfferRow, SessionRepository } from '../sessions/session.repository.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { PresenceService } from './presence.service.js';
@@ -90,6 +92,7 @@ export class OfferSweeper implements OnModuleInit, OnModuleDestroy {
   constructor(
     @InjectSessionRepository() private readonly sessions: SessionRepository,
     private readonly presence: PresenceService,
+    @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(OFFER_SWEEP_ENABLED) private readonly enabled: boolean = false,
     @Optional() @Inject(OFFER_SWEEP_CLOCK) now?: SweepClock,
@@ -129,6 +132,7 @@ export class OfferSweeper implements OnModuleInit, OnModuleDestroy {
     if (expired.length === 0) return { expired: 0, freed: 0 };
 
     const freed = await this.free(expired);
+    await this.announce(expired);
 
     this.logger.info(
       { event: 'offer.sweep', expired_count: expired.length, freed_count: freed },
@@ -147,6 +151,20 @@ export class OfferSweeper implements OnModuleInit, OnModuleDestroy {
    * freed. An agent whose presence had already expired is not an error — they
    * are not at their desk, which is the state we wanted anyway.
    */
+  /**
+   * Tell each agent that the offer they were holding has gone.
+   *
+   * The sweeper already decided; this reports it. An agent whose portal is open
+   * on the offer screen would otherwise wait out its own countdown and then ask
+   * — which works, and is two seconds slower than being told.
+   */
+  private async announce(expired: readonly ExpiredOfferRow[]): Promise<void> {
+    for (const row of expired) {
+      if (row.agentId === null) continue;
+      await this.notify.sessionOfferExpired(row.tenantId, row.agentId, row.id);
+    }
+  }
+
   private async free(expired: readonly ExpiredOfferRow[]): Promise<number> {
     const agents = new Set(
       expired.map((row) => row.agentId).filter((id): id is string => id !== null),
