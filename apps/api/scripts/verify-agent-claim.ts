@@ -150,16 +150,21 @@ async function main(): Promise<void> {
   };
 
   /** Build the service against one executor, so a transaction can be used. */
-  const serviceFor = (executor: PostgresJsDatabase): AgentClaimService =>
-    new AgentClaimService(
-      new DrizzleSessionRepository(executor, eventWriter),
-      new DrizzleAgentRepository(executor),
-      new PresenceService(presenceRepo, new DrizzleAgentRepository(executor), logger, () => NOW),
+  const serviceFor = (executor: PostgresJsDatabase): AgentClaimService => {
+    const sessionRepo = new DrizzleSessionRepository(executor, eventWriter);
+    const agentRepo = new DrizzleAgentRepository(executor);
+    return new AgentClaimService(
+      sessionRepo,
+      agentRepo,
+      // The availability guard asks PostgreSQL whether the agent holds work,
+      // so presence needs the session repository too.
+      new PresenceService(presenceRepo, agentRepo, sessionRepo, logger, () => NOW),
       new TenantsService(new DrizzleTenantConfigStore(executor)),
       new TenantScope(),
       logger,
       () => NOW,
     );
+  };
 
   /** Fixtures both halves need, inserted through whichever executor is given. */
   const insertFixtures = async (executor: PostgresJsDatabase): Promise<void> => {
@@ -577,6 +582,7 @@ async function main(): Promise<void> {
           // predicates, and a capacity refusal would mask both.
           maxConcurrent: 99,
           offeredAt: NOW,
+          offerExpiresAt: new Date(NOW.getTime() + 30_000),
           event: {
             type: SessionEventType.SESSION_ASSIGNED,
             actorType: 'AGENT' as const,

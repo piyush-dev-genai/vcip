@@ -112,6 +112,10 @@ class FakeSessions implements SessionRepository {
   accept(_c: AcceptCommand): Promise<SessionAcceptOutcome> {
     throw new Error('the sweeper must not accept');
   }
+
+  countActiveWork(): Promise<number> {
+    throw new Error('the sweeper must not count an agent work');
+  }
 }
 
 class FakeAgents implements AgentRepository {
@@ -186,7 +190,13 @@ describe('OfferSweeper', () => {
     presence = new FakePresence();
     sweeper = new OfferSweeper(
       sessions,
-      new PresenceService(presence, new FakeAgents(), silentLogger(), () => new Date(NOW)),
+      new PresenceService(
+        presence,
+        new FakeAgents(),
+        sessions,
+        silentLogger(),
+        () => new Date(NOW),
+      ),
       silentLogger(),
       false,
       () => new Date(NOW),

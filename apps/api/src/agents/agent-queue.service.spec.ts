@@ -190,6 +190,10 @@ class FakeSessionRepository implements SessionRepository {
   expireOffers(): Promise<readonly ExpiredOfferRow[]> {
     throw new Error('the queue view must not sweep offers');
   }
+
+  countActiveWork(): Promise<number> {
+    throw new Error('the queue view must not count an agent work');
+  }
 }
 
 const PROFILES: readonly AgentProfileRow[] = Object.freeze([

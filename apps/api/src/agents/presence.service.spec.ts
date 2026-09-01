@@ -1,7 +1,16 @@
-import { AgentPresence } from '@vcip/shared';
+import { AgentPresence, ErrorCode } from '@vcip/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { AgentActor } from '../common/auth/auth-context.js';
 import { createLogger } from '../common/logging/logger.js';
+import type {
+  ClaimableSessionRow,
+  ExpiredOfferRow,
+  QueuedSessionRow,
+  SessionAcceptOutcome,
+  SessionClaimOutcome,
+  SessionRepository,
+  SessionRow,
+} from '../sessions/session.repository.js';
 import type { AgentProfileRow, AgentRepository, AgentCredentialRow } from './agent.repository.js';
 import { presenceKey, PRESENCE_TTL_SECONDS } from './presence.keys.js';
 import type { PresenceEntry, PresenceRepository, TouchResult } from './presence.repository.js';
@@ -120,6 +129,50 @@ class FakeAgentRepository implements AgentRepository {
   }
 }
 
+/**
+ * The sessions an agent is holding, as PostgreSQL would report them.
+ *
+ * Only `countActiveWork` is real: it is the one method the presence service
+ * calls, and every other member throws so a presence path that started reading
+ * or writing sessions would fail loudly rather than quietly widen its reach.
+ */
+class FakeSessionRepository implements SessionRepository {
+  /** agent id -> how many sessions PostgreSQL says they are holding. */
+  readonly active = new Map<string, number>();
+  countCalls = 0;
+
+  countActiveWork(tenantId: string, agentId: string): Promise<number> {
+    this.countCalls += 1;
+    // Tenant-scoped, as the real query is.
+    return Promise.resolve(tenantId === TENANT_A ? (this.active.get(agentId) ?? 0) : 0);
+  }
+
+  create(): Promise<SessionRow> {
+    throw new Error('presence must not create a session');
+  }
+  findById(): Promise<SessionRow | null> {
+    throw new Error('presence must not read a session');
+  }
+  findClaimable(): Promise<ClaimableSessionRow | null> {
+    throw new Error('presence must not read the claim projection');
+  }
+  findQueued(): Promise<readonly QueuedSessionRow[]> {
+    throw new Error('presence must not read the queue projection');
+  }
+  update(): Promise<SessionRow | null> {
+    throw new Error('presence must not update a session');
+  }
+  claim(): Promise<SessionClaimOutcome> {
+    throw new Error('presence must not claim');
+  }
+  accept(): Promise<SessionAcceptOutcome> {
+    throw new Error('presence must not accept');
+  }
+  expireOffers(): Promise<readonly ExpiredOfferRow[]> {
+    throw new Error('presence must not sweep');
+  }
+}
+
 const agentActor = (userId: string, tenantId: string): AgentActor => ({
   kind: 'agent',
   tenantId,
@@ -133,6 +186,7 @@ describe('PresenceService', () => {
   let clockMs: number;
   let presence: FakePresenceRepository;
   let agents: FakeAgentRepository;
+  let sessions: FakeSessionRepository;
   let service: PresenceService;
 
   const advance = (seconds: number): void => {
@@ -143,7 +197,14 @@ describe('PresenceService', () => {
     clockMs = Date.parse('2026-08-31T09:00:00.000Z');
     presence = new FakePresenceRepository(() => clockMs);
     agents = new FakeAgentRepository();
-    service = new PresenceService(presence, agents, silentLogger, () => new Date(clockMs));
+    sessions = new FakeSessionRepository();
+    service = new PresenceService(
+      presence,
+      agents,
+      sessions,
+      silentLogger,
+      () => new Date(clockMs),
+    );
   });
 
   // ------------------------------------------------------- availability
@@ -380,6 +441,7 @@ describe('PresenceService', () => {
       const isolated = new PresenceService(
         presence,
         counting,
+        sessions,
         silentLogger,
         () => new Date(clockMs),
       );
@@ -391,6 +453,140 @@ describe('PresenceService', () => {
   });
 
   // --------------------------------------------------------------- busy
+
+  // --------------------------------------- availability while holding work
+
+  describe('an agent holding work cannot advertise themselves as free', () => {
+    // The regression. R5 makes BUSY internal — "set on claim, cleared on
+    // session end" — and that is only true if AVAILABLE cannot overwrite it.
+    // Before this guard an agent could accept a session and immediately post
+    // {"status":"AVAILABLE"}, and the whole system would see them as free while
+    // they held a live call.
+
+    it('refuses AVAILABLE while the agent is IN_CALL', async () => {
+      sessions.active.set(AGENT_A, 1);
+
+      await expect(
+        service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    });
+
+    it('leaves the presence untouched when it refuses', async () => {
+      // The point of the fix: Redis must not read AVAILABLE afterwards.
+      await service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE);
+      await service.markBusy(AGENT_A);
+      sessions.active.set(AGENT_A, 1);
+
+      await expect(
+        service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toBeDefined();
+
+      expect((await presence.read(AGENT_A))?.status).toBe('BUSY');
+    });
+
+    it('refuses AVAILABLE while the agent holds an unaccepted offer', async () => {
+      // OFFERED counts as holding work: the session is out of the queue and
+      // nobody else can take it.
+      sessions.active.set(AGENT_A, 1);
+
+      await expect(
+        service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    });
+
+    it('creates no presence at all for an agent who had none', async () => {
+      sessions.active.set(AGENT_A, 1);
+
+      await expect(
+        service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toBeDefined();
+
+      expect(await presence.read(AGENT_A)).toBeNull();
+    });
+
+    it('allows AVAILABLE once the session has ended', async () => {
+      sessions.active.set(AGENT_A, 1);
+      await expect(
+        service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toBeDefined();
+
+      // The session reached a terminal status, so PostgreSQL no longer counts
+      // it. Nothing about Redis changed; the answer did.
+      sessions.active.set(AGENT_A, 0);
+
+      const result = await service.setAvailability(
+        agentActor(AGENT_A, TENANT_A),
+        AgentPresence.AVAILABLE,
+      );
+      expect(result.status).toBe('AVAILABLE');
+      expect((await presence.read(AGENT_A))?.status).toBe('AVAILABLE');
+    });
+
+    it('asks PostgreSQL rather than trusting the presence key', async () => {
+      // The presence key says AVAILABLE — as it would if a BUSY write had
+      // failed (§17.1) — and PostgreSQL says the agent holds work. The
+      // database wins (D1).
+      await service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE);
+      sessions.active.set(AGENT_A, 1);
+
+      await expect(
+        service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(sessions.countCalls).toBeGreaterThan(0);
+    });
+
+    it('preserves max_concurrent: an agent with spare capacity may go available', async () => {
+      // AGENT_B is configured for two. Holding one leaves room for another, and
+      // claiming requires a live AVAILABLE presence (§17.1) — so refusing here
+      // would cut their effective capacity to one.
+      sessions.active.set(AGENT_B, 1);
+
+      const result = await service.setAvailability(
+        agentActor(AGENT_B, TENANT_A),
+        AgentPresence.AVAILABLE,
+      );
+      expect(result.status).toBe('AVAILABLE');
+    });
+
+    it('refuses once that agent reaches their max_concurrent', async () => {
+      sessions.active.set(AGENT_B, 2);
+
+      await expect(
+        service.setAvailability(agentActor(AGENT_B, TENANT_A), AgentPresence.AVAILABLE),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    });
+
+    it('still lets a busy agent go UNAVAILABLE', async () => {
+      // Stepping away is always permitted. It releases no session — PostgreSQL
+      // still holds the assignment — it only says the agent is not at the desk.
+      await service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.AVAILABLE);
+      sessions.active.set(AGENT_A, 1);
+
+      const result = await service.setAvailability(
+        agentActor(AGENT_A, TENANT_A),
+        AgentPresence.UNAVAILABLE,
+      );
+      expect(result.status).toBe('UNAVAILABLE');
+      expect(await presence.read(AGENT_A)).toBeNull();
+    });
+
+    it('does not consult sessions when going UNAVAILABLE', async () => {
+      sessions.countCalls = 0;
+      await service.setAvailability(agentActor(AGENT_A, TENANT_A), AgentPresence.UNAVAILABLE);
+      expect(sessions.countCalls).toBe(0);
+    });
+
+    it('counts work per agent, not per tenant', async () => {
+      // AGENT_B's session must not make AGENT_A busy.
+      sessions.active.set(AGENT_B, 1);
+
+      const result = await service.setAvailability(
+        agentActor(AGENT_A, TENANT_A),
+        AgentPresence.AVAILABLE,
+      );
+      expect(result.status).toBe('AVAILABLE');
+    });
+  });
 
   describe('the internal BUSY mechanism', () => {
     it('marks an available agent busy', async () => {

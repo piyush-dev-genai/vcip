@@ -27,15 +27,30 @@
  * `BUSY` appears in this file only as `markBusy`/`markAvailable`, which no HTTP
  * route reaches directly. T18's claim is now the first caller of `markBusy`,
  * after PostgreSQL has committed the offer — never as the thing that decides
- * it. `markAvailable` still has no caller; T19 and T20 own the clearing.
+ * it. T20's sweeper is the first caller of `markAvailable`.
+ *
+ * **Going available is a request, not an instruction.** R5 makes `AVAILABLE`
+ * and `UNAVAILABLE` agent-settable and `BUSY` internal, and the second half is
+ * only true if setting `AVAILABLE` cannot overwrite a `BUSY` the server put
+ * there. Without that guard an agent could accept a session, immediately post
+ * `{"status":"AVAILABLE"}`, and appear free to the whole system while holding a
+ * live call — which is the client manufacturing a non-`BUSY` state, exactly
+ * what "internal" is supposed to prevent.
+ *
+ * Whether the agent is busy is asked of **PostgreSQL**, never of the presence
+ * key. The key is the thing being decided, and D1 puts the authority in the
+ * database: an agent is busy when `sessions` says they hold work, regardless of
+ * what Redis currently reads.
  */
 
 import { ForbiddenException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { AgentPresence } from '@vcip/shared';
-import { AgentPresence as Presence, ErrorCode } from '@vcip/shared';
+import { AgentPresence as Presence, DomainError, ErrorCode } from '@vcip/shared';
 import type { Logger } from 'pino';
 import type { AgentActor } from '../common/auth/auth-context.js';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
+import type { SessionRepository } from '../sessions/session.repository.js';
+import { InjectSessionRepository } from '../sessions/session.repository.js';
 import type { AgentRepository } from './agent.repository.js';
 import { InjectAgentRepository } from './agent.repository.js';
 import type { PresenceRepository } from './presence.repository.js';
@@ -82,6 +97,7 @@ export class PresenceService {
   constructor(
     @InjectPresenceRepository() private readonly presence: PresenceRepository,
     @InjectAgentRepository() private readonly agents: AgentRepository,
+    @InjectSessionRepository() private readonly sessions: SessionRepository,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(PRESENCE_CLOCK) now?: Clock,
   ) {
@@ -113,6 +129,31 @@ export class PresenceService {
     }
 
     if (status === Presence.AVAILABLE) {
+      // The guard, and it is asked of PostgreSQL. `max_concurrent` rather than
+      // "holds anything", because claiming requires a live `AVAILABLE` presence
+      // (§17.1): an agent with spare capacity who could never go available
+      // again would have their effective capacity cut to one, which would
+      // break the very setting R5 says is enforced at claim time. At the
+      // schema default of 1 the two readings coincide — one held session is
+      // full — and that is the case every seeded agent is in.
+      const active = await this.sessions.countActiveWork(actor.tenantId, actor.userId);
+      if (active >= profile.maxConcurrent) {
+        this.logger.info(
+          {
+            event: 'agent.availability.refused',
+            reason: 'busy',
+            agent_id: actor.userId,
+            tenant_id: actor.tenantId,
+            active_sessions: active,
+          },
+          'availability refused: the agent is holding active work',
+        );
+        throw new DomainError(
+          ErrorCode.CONFLICT,
+          'You are working a session. Finish it before going available.',
+        );
+      }
+
       await this.presence.set({
         agentId: actor.userId,
         tenantId: actor.tenantId,

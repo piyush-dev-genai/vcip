@@ -208,6 +208,19 @@ class FakeSessionRepository implements SessionRepository {
   expireOffers(): Promise<readonly ExpiredOfferRow[]> {
     throw new Error('a claim must not sweep offers');
   }
+
+  countActiveWork(tenantId: string, agentId: string): Promise<number> {
+    // The same predicate the real statement uses: an offer held, or a call in
+    // progress, each paired with its status.
+    return Promise.resolve(
+      [...this.rows.values()].filter(
+        (row) =>
+          row.tenantId === tenantId &&
+          ((row.status === SessionStatus.OFFERED && row.offeredToAgentId === agentId) ||
+            (row.status === SessionStatus.IN_CALL && row.agentId === agentId)),
+      ).length,
+    );
+  }
 }
 
 const PROFILES: readonly AgentProfileRow[] = Object.freeze([
@@ -319,6 +332,7 @@ describe('AgentClaimService', () => {
       new PresenceService(
         presenceStore,
         new FakeAgentRepository(),
+        sessions,
         silentLogger(),
         () => new Date(NOW),
       ),

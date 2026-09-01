@@ -142,6 +142,7 @@ async function main(): Promise<void> {
     const presence = new PresenceService(
       presenceRepo,
       new DrizzleAgentRepository(executor),
+      repo,
       logger,
       now,
     );

@@ -397,6 +397,17 @@ export interface SessionRepository {
   accept(command: AcceptCommand): Promise<SessionAcceptOutcome>;
 
   /**
+   * How many sessions this agent is currently holding.
+   *
+   * The same definition the claim counts against, exposed as a read so the
+   * availability endpoint can refuse to advertise a busy agent as free. It is
+   * asked of PostgreSQL rather than of the presence key, because the presence
+   * key is exactly the thing being decided and D1 puts the authority in the
+   * database.
+   */
+  countActiveWork(tenantId: string, agentId: string): Promise<number>;
+
+  /**
    * Return lapsed offers to the queue: `OFFERED -> QUEUED` (T20, §17.3).
    *
    * Cross-tenant, and the one read in this file that is. A sweeper exists to
@@ -413,6 +424,29 @@ export interface SessionRepository {
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
 
 export const InjectSessionRepository = (): ParameterDecorator => Inject(SESSION_REPOSITORY);
+
+/**
+ * What counts as an agent holding work.
+ *
+ * One definition, used by the claim's capacity check and by the availability
+ * guard, because two copies of this predicate that drifted apart would mean an
+ * agent could be refused a claim for being at capacity while simultaneously
+ * being allowed to advertise themselves as free.
+ *
+ * Both halves of "holding": an offer not yet accepted, keyed by
+ * `offered_to_agent_id`, and a call in progress, keyed by `agent_id`. Each id
+ * is paired with its status, so the offer columns left behind as history on an
+ * `IN_CALL` row (§17.2) cannot be counted twice, and a stale
+ * `offered_to_agent_id` on a session that has moved on counts for nothing.
+ */
+const holdsActiveWork = (tenantId: string, agentId: string) =>
+  and(
+    eq(sessions.tenantId, tenantId),
+    or(
+      and(eq(sessions.status, SessionStatus.OFFERED), eq(sessions.offeredToAgentId, agentId)),
+      and(eq(sessions.status, SessionStatus.IN_CALL), eq(sessions.agentId, agentId)),
+    ),
+  );
 
 /** The columns every read returns, so the projection is defined once. */
 const SESSION_COLUMNS = {
@@ -615,6 +649,14 @@ export class DrizzleSessionRepository implements SessionRepository {
     return { ...row, status: row.status as SessionStatus };
   }
 
+  async countActiveWork(tenantId: string, agentId: string): Promise<number> {
+    const [row] = await this.db
+      .select({ active: sql<string>`count(*)` })
+      .from(sessions)
+      .where(holdsActiveWork(tenantId, agentId));
+    return Number(row?.active ?? 0);
+  }
+
   async expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {
     if (command.limit <= 0) return [];
 
@@ -802,30 +844,12 @@ export class DrizzleSessionRepository implements SessionRepository {
         .where(and(eq(users.id, command.agentId), eq(users.tenantId, command.tenantId)))
         .for('update');
 
-      // 2. Count what this agent is already holding (R5).
-      //
-      // Both halves of "holding": an offer they have not accepted yet, keyed by
-      // `offered_to_agent_id`, and a call in progress, keyed by `agent_id`.
-      // Each is paired with its status, so a stale `offered_to_agent_id` left
-      // on a session that has since moved on cannot consume capacity.
+      // 2. Count what this agent is already holding (R5), using the same
+      //    predicate the availability guard uses.
       const [counted] = await tx
         .select({ active: sql<string>`count(*)` })
         .from(sessions)
-        .where(
-          and(
-            eq(sessions.tenantId, command.tenantId),
-            or(
-              and(
-                eq(sessions.status, SessionStatus.OFFERED),
-                eq(sessions.offeredToAgentId, command.agentId),
-              ),
-              and(
-                eq(sessions.status, SessionStatus.IN_CALL),
-                eq(sessions.agentId, command.agentId),
-              ),
-            ),
-          ),
-        );
+        .where(holdsActiveWork(command.tenantId, command.agentId));
 
       const active = Number(counted?.active ?? 0);
       if (active >= command.maxConcurrent) {

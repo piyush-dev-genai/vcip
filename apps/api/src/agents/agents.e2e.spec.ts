@@ -433,6 +433,18 @@ class FakeSessionStore implements SessionRepository {
     });
   }
 
+  countActiveWork(tenantId: string, agentId: string): Promise<number> {
+    this.singleReads += 1;
+    return Promise.resolve(
+      [...this.rows.values()].filter(
+        (row) =>
+          row.tenantId === tenantId &&
+          ((row.status === SessionStatus.OFFERED && row.offeredToAgentId === agentId) ||
+            (row.status === SessionStatus.IN_CALL && row.agentId === agentId)),
+      ).length,
+    );
+  }
+
   expireOffers(command: ExpireOffersCommand): Promise<readonly ExpiredOfferRow[]> {
     this.writes += 1;
     const due = [...this.rows.values()]
@@ -622,7 +634,7 @@ const tenantStore = new FakeTenantConfigStore();
     {
       provide: PresenceService,
       useFactory: (presence: PresenceRepository, agents: AgentRepository, logger) =>
-        new PresenceService(presence, agents, logger, () => new Date(clockMs)),
+        new PresenceService(presence, agents, sessionStore, logger, () => new Date(clockMs)),
       inject: [PRESENCE_REPOSITORY, AGENT_REPOSITORY, LOGGER],
     },
     { provide: QUEUE_REPOSITORY, useValue: queueStore },
@@ -2601,6 +2613,157 @@ describe('agent identity and presence over HTTP', () => {
       expect(Object.keys(response.body.data).sort()).toEqual(['expired', 'freed']);
       expect(JSON.stringify(response.body)).not.toContain(SESSION_EN);
       expect(JSON.stringify(response.body)).not.toContain(AGENT_A1);
+    });
+  });
+
+  // ------------------------------- availability while holding work (bug fix)
+
+  describe('POST /v1/agent/availability while holding work', () => {
+    const SESSION_EN = '00000000-0000-4000-8000-00000000f201';
+    const QUEUED_AT = Date.parse('2026-08-31T08:59:28.000Z');
+
+    let seq = 0;
+    const idem = (): string => `avail-key-${(seq += 1)}`;
+
+    const enqueue = (id: string): void => {
+      sessionStore.seed({
+        id,
+        tenantId: TENANT_A,
+        status: SessionStatus.QUEUED,
+        language: 'en',
+        priority: 0,
+        queuedAt: new Date(QUEUED_AT),
+        version: 2,
+      });
+      queueStore.seed(TENANT_A, 'en', id, QUEUED_AT);
+    };
+
+    const availableAgent = async (): Promise<string> => {
+      const token = await loginAs();
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+      return token;
+    };
+
+    const act = (path: string, id: string, token: string) =>
+      post(`/sessions/${id}/${path}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', idem())
+        .send({});
+
+    it('refuses AVAILABLE while the agent holds an offer', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+      expect((await act('claim', SESSION_EN, token)).status).toBe(200);
+
+      const response = await bearer('/availability', token).send({ status: 'AVAILABLE' });
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe(ErrorCode.CONFLICT);
+    });
+
+    it('leaves the agent BUSY after refusing', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+      await act('claim', SESSION_EN, token);
+
+      await bearer('/availability', token).send({ status: 'AVAILABLE' });
+
+      // The bug: this used to read AVAILABLE, and the agent looked free while
+      // holding a session.
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.BUSY);
+      const beat = await bearer('/heartbeat', token).send({});
+      expect(beat.body.data.status).toBe(AgentPresence.BUSY);
+    });
+
+    it('refuses AVAILABLE while the agent is IN_CALL', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+      await act('claim', SESSION_EN, token);
+      expect((await act('accept', SESSION_EN, token)).status).toBe(200);
+
+      const response = await bearer('/availability', token).send({ status: 'AVAILABLE' });
+
+      expect(response.status).toBe(409);
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.BUSY);
+    });
+
+    it('still lets a busy agent go UNAVAILABLE', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+      await act('claim', SESSION_EN, token);
+
+      const response = await bearer('/availability', token).send({ status: 'UNAVAILABLE' });
+
+      expect(response.status).toBe(200);
+      expect(await presenceStore.read(AGENT_A1)).toBeNull();
+    });
+
+    it('allows AVAILABLE again once the session ends', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+      await act('claim', SESSION_EN, token);
+      await act('accept', SESSION_EN, token);
+
+      // The verdict path ends a session; T19 has no route for it yet, so the
+      // store is moved directly — the point is that PostgreSQL stops counting
+      // the session, and availability follows.
+      const row = sessionStore.rows.get(SESSION_EN);
+      if (row !== undefined) {
+        sessionStore.seed({ ...row, status: SessionStatus.APPROVED });
+      }
+
+      const response = await bearer('/availability', token).send({ status: 'AVAILABLE' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe('AVAILABLE');
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.AVAILABLE);
+    });
+
+    it('allows AVAILABLE again once the sweeper reclaims the offer', async () => {
+      enqueue(SESSION_EN);
+      const token = await availableAgent();
+      await act('claim', SESSION_EN, token);
+      clockMs += 31_000;
+      await request(app.getHttpServer())
+        .post('/internal/offers/sweep')
+        .set(INTERNAL_TOKEN_HEADER, TEST_AUTH_CONFIG.internalToken)
+        .send({});
+
+      const response = await bearer('/availability', token).send({ status: 'AVAILABLE' });
+
+      expect(response.status).toBe(200);
+    });
+
+    it('leaves an idle agent AVAILABLE exactly as before', async () => {
+      // The existing behaviour, unchanged: nothing held, so nothing refused.
+      const token = await loginAs();
+
+      const response = await bearer('/availability', token).send({ status: 'AVAILABLE' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe('AVAILABLE');
+      expect((await presenceStore.read(AGENT_A1))?.status).toBe(AgentPresence.AVAILABLE);
+    });
+
+    it('still rejects a client trying to send BUSY', async () => {
+      const token = await loginAs();
+
+      const response = await bearer('/availability', token).send({ status: 'BUSY' });
+
+      // Structural: BUSY is not in the shared schema, so it never reaches the
+      // service at all.
+      expect(response.status).toBe(400);
+    });
+
+    it('does not let one agent work affect another agent availability', async () => {
+      enqueue(SESSION_EN);
+      const mine = await availableAgent();
+      await act('claim', SESSION_EN, mine);
+
+      const other = await loginAs('agent.two@demo.local');
+      const response = await bearer('/availability', other).send({ status: 'AVAILABLE' });
+
+      expect(response.status).toBe(200);
     });
   });
 });

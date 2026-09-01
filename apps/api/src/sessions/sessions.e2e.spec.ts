@@ -303,6 +303,10 @@ class InMemorySessionRepository implements SessionRepository {
     throw new Error('the customer lifecycle must not sweep offers');
   }
 
+  countActiveWork(): Promise<number> {
+    throw new Error('the customer lifecycle must not count agent work');
+  }
+
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     // T18's agent claim. No customer route may reach it, and this suite covers
     // only customer routes — so a call here is a wiring defect, not a case to

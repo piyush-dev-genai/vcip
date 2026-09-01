@@ -28,12 +28,12 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ExecutionContext } from '@nestjs/common';
-import { AgentPresence } from '@vcip/shared';
-import { sql } from 'drizzle-orm';
+import { AgentPresence, SessionStatus } from '@vcip/shared';
+import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { Redis } from 'ioredis';
-import { agentProfiles, tenants, users } from '../db/schema.js';
+import { agentProfiles, sessions, tenants, users } from '../db/schema.js';
 import { DrizzleAgentRepository } from '../src/agents/agent.repository.js';
 import { AgentsService } from '../src/agents/agents.service.js';
 import { presenceKey, PRESENCE_FIELDS, PRESENCE_TTL_SECONDS } from '../src/agents/presence.keys.js';
@@ -45,6 +45,10 @@ import type { AuthConfig } from '../src/common/auth/auth.config.js';
 import { hashPassword } from '../src/common/auth/password.js';
 import { verifyJwt } from '../src/common/auth/tokens.js';
 import { createLogger } from '../src/common/logging/logger.js';
+// The availability guard asks PostgreSQL whether the agent holds work, so the
+// presence service needs the session repository even on a path that never
+// touches a session.
+import { DrizzleSessionRepository } from '../src/sessions/session.repository.js';
 
 let passed = 0;
 let failed = 0;
@@ -204,8 +208,13 @@ async function main(): Promise<void> {
         ]);
 
         const agentRepo = new DrizzleAgentRepository(tx);
+        const sessionRepo = new DrizzleSessionRepository(tx, {
+          append: () => {
+            throw new Error('presence must not append a session event');
+          },
+        });
         const login = new AgentsService(agentRepo, TEST_AUTH_CONFIG);
-        const presence = new PresenceService(presenceRepo, agentRepo, logger);
+        const presence = new PresenceService(presenceRepo, agentRepo, sessionRepo, logger);
         const guard = new AgentJwtGuard(TEST_AUTH_CONFIG);
 
         const actorA1: AgentActor = {
@@ -457,6 +466,118 @@ async function main(): Promise<void> {
         check(
           (await redis.exists(key)) === 0,
           'availability called with BUSY does not produce a BUSY presence',
+        );
+
+        // ------------------------------------- availability while busy
+
+        section('[availability] an agent holding work cannot go AVAILABLE');
+        // The manual-E2E regression. R5 makes BUSY internal — "set on claim,
+        // cleared on session end" — which is only true if AVAILABLE cannot
+        // overwrite it. Redis is deliberately left saying AVAILABLE here, so
+        // the refusal below can only come from PostgreSQL.
+        await presence.setAvailability(actorA1, AgentPresence.AVAILABLE);
+
+        const [held] = await tx
+          .insert(sessions)
+          .values({
+            tenantId: tenantA.id,
+            externalRef: `vp-${runId}-busy`,
+            status: SessionStatus.IN_CALL,
+            language: 'en',
+            agentId: AGENT_A1,
+            connectedAt: new Date(),
+          })
+          .returning({ id: sessions.id });
+        if (held === undefined) throw new Error('session insert failed');
+
+        check(
+          (await sessionRepo.countActiveWork(tenantA.id, AGENT_A1)) === 1,
+          'postgresql reports the agent holding one session',
+        );
+
+        let refusedCode = '';
+        try {
+          await presence.setAvailability(actorA1, AgentPresence.AVAILABLE);
+        } catch (error) {
+          refusedCode =
+            (error as { code?: string; response?: { code?: string } }).code ??
+            (error as { response?: { code?: string } }).response?.code ??
+            '';
+        }
+        check(
+          refusedCode === 'CONFLICT',
+          'requesting AVAILABLE while IN_CALL is refused with CONFLICT',
+        );
+        check(
+          (await redis.hget(key, 'status')) === 'AVAILABLE',
+          'and the refusal wrote nothing — redis is exactly as it was',
+        );
+
+        await presence.markBusy(AGENT_A1);
+        let refusedAgain = '';
+        try {
+          await presence.setAvailability(actorA1, AgentPresence.AVAILABLE);
+        } catch (error) {
+          refusedAgain = (error as { code?: string }).code ?? '';
+        }
+        check(refusedAgain === 'CONFLICT', 'a BUSY agent is refused too');
+        check(
+          (await redis.hget(key, 'status')) === 'BUSY',
+          'and BUSY survives — the bug was this reading AVAILABLE',
+        );
+
+        // Stepping away is always allowed: it releases no session.
+        const stepAway = await presence.setAvailability(actorA1, AgentPresence.UNAVAILABLE);
+        check(stepAway.status === 'UNAVAILABLE', 'a busy agent may still go UNAVAILABLE');
+        check((await redis.exists(key)) === 0, 'and the key is removed');
+
+        // An offer, not yet accepted, counts the same way.
+        await tx
+          .update(sessions)
+          .set({
+            status: SessionStatus.OFFERED,
+            agentId: null,
+            offeredToAgentId: AGENT_A1,
+            offeredAt: new Date(),
+            offerExpiresAt: new Date(Date.now() + 30_000),
+          })
+          .where(eq(sessions.id, held.id));
+
+        let offeredCode = '';
+        try {
+          await presence.setAvailability(actorA1, AgentPresence.AVAILABLE);
+        } catch (error) {
+          offeredCode = (error as { code?: string }).code ?? '';
+        }
+        check(offeredCode === 'CONFLICT', 'an unaccepted offer blocks AVAILABLE as well');
+
+        // Ending the session releases the agent, and nothing about Redis
+        // changed — only the answer PostgreSQL gives.
+        await tx
+          .update(sessions)
+          .set({ status: SessionStatus.APPROVED, offeredToAgentId: null, offerExpiresAt: null })
+          .where(eq(sessions.id, held.id));
+
+        const freed = await presence.setAvailability(actorA1, AgentPresence.AVAILABLE);
+        check(freed.status === 'AVAILABLE', 'once the session ends, availability works normally');
+        check(
+          (await redis.hget(key, 'status')) === 'AVAILABLE',
+          'and the presence is written again',
+        );
+
+        // AGENT_A2 has max_concurrent = 2, so one held session leaves room.
+        await tx.insert(sessions).values({
+          tenantId: tenantA.id,
+          externalRef: `vp-${runId}-spare`,
+          status: SessionStatus.IN_CALL,
+          language: 'ta',
+          agentId: AGENT_A2,
+          connectedAt: new Date(),
+        });
+        const spare = await presence.setAvailability(actorA2, AgentPresence.AVAILABLE);
+        check(
+          spare.status === 'AVAILABLE',
+          'an agent below max_concurrent may still go available (capacity preserved)',
         );
 
         // ---------------------------------------------------- isolation
