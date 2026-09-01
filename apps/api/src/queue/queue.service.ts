@@ -21,10 +21,20 @@
  *     no worker, and no second source of truth.
  *
  * Reconciliation is gated on PostgreSQL status being exactly `QUEUED`. Nothing
- * else may be inserted: an `OFFERED` session was deliberately removed by a
- * claim (T18), and re-adding it would hand the same customer to a second agent.
- * The gate is a positive check on one status, not a list of exclusions, so a
- * status added later cannot leak through by omission.
+ * else may be inserted: an `OFFERED` session is spoken for, and re-adding it
+ * would hand the same customer to a second agent. The gate is a positive check
+ * on one status, not a list of exclusions, so a status added later cannot leak
+ * through by omission.
+ *
+ * **Membership outlives `QUEUED`, and positions must account for it.** T18's
+ * claim does not `ZREM`: the queue stays a derived projection, and a claimed,
+ * accepted or finished session remains a member until something removes it.
+ * Redis therefore knows the *order* but not who is still *waiting*. Every
+ * position this file reports is the members ranked ahead, confirmed against
+ * PostgreSQL by the caller, plus one — the same filtering T17's agent view
+ * applies to the same stale members. Reporting a raw `ZRANK` would count
+ * customers who left, so a position could only ever grow, which is the one
+ * thing a queue position exists to do the opposite of.
  *
  * Nothing here throws for a Redis failure. A queue projection that can fail a
  * committed business operation is not a projection.
@@ -35,8 +45,8 @@ import type { Logger } from 'pino';
 import { SessionStatus } from '@vcip/shared';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
 import type { SessionRow } from '../sessions/session.repository.js';
-import { positionFromRank, queueKey, scoreFor } from './queue.keys.js';
-import type { QueueRepository } from './queue.repository.js';
+import { positionFromAhead, queueKey, scoreFor } from './queue.keys.js';
+import type { QueueMember, QueueRepository } from './queue.repository.js';
 import { InjectQueueRepository } from './queue.repository.js';
 
 /**
@@ -60,6 +70,21 @@ const sleep = (ms: number): Promise<void> =>
  */
 export type QueuePosition = number | null;
 
+/**
+ * How many of these sessions are genuinely still waiting.
+ *
+ * The projection cannot answer this: only PostgreSQL knows which members are
+ * still `QUEUED`. It arrives as a callback rather than as an injected
+ * repository because `SessionsModule` already imports `QueueModule`, and
+ * reaching back the other way would make the two modules circular. The caller
+ * that has both — `SessionsService` — supplies the authority it can reach.
+ *
+ * Required, not optional. An optional parameter would let a new call site
+ * silently reintroduce the raw-rank bug; a required one cannot compile without
+ * someone deciding where the confirmation comes from.
+ */
+export type WaitingAhead = (sessionIds: readonly string[]) => Promise<number>;
+
 @Injectable()
 export class QueueService {
   constructor(
@@ -78,7 +103,7 @@ export class QueueService {
    * never throws: the session is already durably `QUEUED`, and no Redis outcome
    * can make that untrue.
    */
-  async enqueue(session: SessionRow): Promise<QueuePosition> {
+  async enqueue(session: SessionRow, waitingAhead: WaitingAhead): Promise<QueuePosition> {
     if (session.queuedAt === null) {
       // A caller asking to enqueue a session with no `queued_at` is a bug: the
       // score would have to be invented, which is the one thing the ordering
@@ -107,7 +132,7 @@ export class QueueService {
         // Same member, same score, every attempt — so a retry after a partial
         // failure cannot duplicate the member or move the customer.
         await this.queue.add({ ...member, score });
-        return positionFromRank(await this.queue.rank(member));
+        return this.positionOf(member, waitingAhead);
       } catch (error) {
         this.logger.warn(
           {
@@ -147,7 +172,7 @@ export class QueueService {
    *
    * A session that is not `QUEUED` has no position and is never inserted.
    */
-  async positionFor(session: SessionRow): Promise<QueuePosition> {
+  async positionFor(session: SessionRow, waitingAhead: WaitingAhead): Promise<QueuePosition> {
     if (!this.isQueued(session)) return null;
 
     const member = {
@@ -157,14 +182,16 @@ export class QueueService {
     };
 
     try {
-      const rank = await this.queue.rank(member);
-      if (rank !== null) return positionFromRank(rank);
+      // `positionOf` returns null for a member Redis does not hold, which is
+      // the case reconciliation exists for. It is not an error.
+      const position = await this.positionOf(member, waitingAhead);
+      if (position !== null) return position;
     } catch (error) {
       this.logAdapterFailure('queue.position.failed', session, error);
       return null;
     }
 
-    return this.reconcile(session);
+    return this.reconcile(session, waitingAhead);
   }
 
   /**
@@ -178,7 +205,7 @@ export class QueueService {
    * returned — not Redis, not a cached value, not the caller's belief — and
    * inserts only for `QUEUED`.
    */
-  async reconcile(session: SessionRow): Promise<QueuePosition> {
+  async reconcile(session: SessionRow, waitingAhead: WaitingAhead): Promise<QueuePosition> {
     if (!this.isQueued(session)) {
       this.logger.debug(
         {
@@ -205,7 +232,7 @@ export class QueueService {
       // The stored `queued_at`, however long ago it was. A session reconciled
       // ten minutes late keeps the position it earned ten minutes ago.
       await this.queue.add({ ...member, score: scoreFor(session.queuedAt) });
-      const position = positionFromRank(await this.queue.rank(member));
+      const position = await this.positionOf(member, waitingAhead);
       this.logger.info(
         {
           event: 'queue.reconciled',
@@ -234,6 +261,68 @@ export class QueueService {
     } catch (error) {
       this.logAdapterFailure('queue.contains.failed', session, error);
       return false;
+    }
+  }
+
+  /**
+   * A member's position: those ranked ahead who are still waiting, plus one.
+   *
+   * `null` when Redis does not hold the member at all — "we cannot say", never
+   * "not queued", and never a number.
+   *
+   * Rank zero short-circuits. Nobody is ahead, so there is nothing to confirm
+   * and no reason to ask PostgreSQL, which makes the common case — the customer
+   * at the front, polling — free.
+   */
+  private async positionOf(
+    member: QueueMember,
+    waitingAhead: WaitingAhead,
+  ): Promise<QueuePosition> {
+    const rank = await this.queue.rank(member);
+    if (rank === null) return null;
+    if (rank === 0) return positionFromAhead(0);
+
+    // Exactly the members ranked ahead of this one: `range` reads `0..limit-1`,
+    // and this session is at `rank`.
+    const ahead = await this.queue.range(member.tenantId, member.language, rank);
+    return positionFromAhead(
+      await this.confirm(
+        member,
+        ahead.map((candidate) => candidate.sessionId),
+        waitingAhead,
+      ),
+    );
+  }
+
+  /**
+   * Ask PostgreSQL how many of the members ahead are still waiting.
+   *
+   * A failure here yields `null` rather than throwing, for the same reason a
+   * Redis failure does: the caller of `enqueue` has already committed, and a
+   * position nobody could confirm is a display detail, not a business outcome.
+   * Reporting the unfiltered rank instead would be reporting a number known to
+   * be wrong.
+   */
+  private async confirm(
+    member: QueueMember,
+    ahead: readonly string[],
+    waitingAhead: WaitingAhead,
+  ): Promise<number | null> {
+    try {
+      return await waitingAhead(ahead);
+    } catch (error) {
+      this.logger.warn(
+        {
+          event: 'queue.position.unconfirmed',
+          session_id: member.sessionId,
+          tenant_id: member.tenantId,
+          queue_key: queueKey(member.tenantId, member.language),
+          ranked_ahead: ahead.length,
+          error_name: error instanceof Error ? error.name : 'unknown',
+        },
+        'could not confirm which members ahead are still queued; reporting no position',
+      );
+      return null;
     }
   }
 

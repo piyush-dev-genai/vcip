@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { normaliseLanguage, positionFromRank, queueKey, scoreFor } from './queue.keys.js';
+import { normaliseLanguage, positionFromAhead, queueKey, scoreFor } from './queue.keys.js';
 
 const TENANT_A = '00000000-0000-4000-8000-00000000000a';
 const TENANT_B = '00000000-0000-4000-8000-00000000000b';
@@ -84,29 +84,29 @@ describe('scoreFor', () => {
   });
 });
 
-describe('positionFromRank', () => {
-  it('turns rank 0 into position 1', () => {
-    expect(positionFromRank(0)).toBe(1);
+describe('positionFromAhead', () => {
+  it('turns nobody ahead into position 1', () => {
+    expect(positionFromAhead(0)).toBe(1);
   });
 
-  it('turns rank 1 into position 2', () => {
-    expect(positionFromRank(1)).toBe(2);
+  it('turns one waiting ahead into position 2', () => {
+    expect(positionFromAhead(1)).toBe(2);
   });
 
-  it('is rank + 1 for any rank', () => {
-    for (const rank of [0, 1, 2, 17, 999]) {
-      expect(positionFromRank(rank)).toBe(rank + 1);
+  it('is waiting-ahead + 1 for any count', () => {
+    for (const ahead of [0, 1, 2, 17, 999]) {
+      expect(positionFromAhead(ahead)).toBe(ahead + 1);
     }
   });
 
   it('never returns zero', () => {
     // Position zero would be a queue place that does not exist.
-    for (const rank of [0, 1, 5]) {
-      expect(positionFromRank(rank)).not.toBe(0);
+    for (const ahead of [0, 1, 5]) {
+      expect(positionFromAhead(ahead)).not.toBe(0);
     }
   });
 
   it('passes null through rather than inventing a position', () => {
-    expect(positionFromRank(null)).toBeNull();
+    expect(positionFromAhead(null)).toBeNull();
   });
 });

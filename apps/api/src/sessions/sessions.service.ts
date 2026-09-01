@@ -58,6 +58,7 @@ import { InjectGeoProvider } from '../common/geo/geo.provider.js';
 import { setContextSession } from '../common/logging/request-context.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { QueueService } from '../queue/queue.service.js';
+import type { WaitingAhead } from '../queue/queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- see above
 import { TenantsService } from '../tenants/tenants.service.js';
 import { evaluateLocation } from './location.js';
@@ -453,7 +454,10 @@ export class SessionsService {
       return {
         session_id: session.id,
         status: session.status,
-        queue_position: await this.queueProjection.positionFor(session),
+        queue_position: await this.queueProjection.positionFor(
+          session,
+          this.waitingAhead(session.tenantId),
+        ),
       };
     }
 
@@ -484,7 +488,10 @@ export class SessionsService {
     });
 
     // Committed. From here nothing may fail the operation.
-    const position = await this.queueProjection.enqueue(updated);
+    const position = await this.queueProjection.enqueue(
+      updated,
+      this.waitingAhead(updated.tenantId),
+    );
 
     return {
       session_id: updated.id,
@@ -509,7 +516,33 @@ export class SessionsService {
     // to know where a session sits is the moment it is worth making sure it is
     // actually there. Never throws, and never reports a position for a session
     // PostgreSQL does not call `QUEUED`.
-    return toSessionView(session, await this.queueProjection.positionFor(session));
+    return toSessionView(
+      session,
+      await this.queueProjection.positionFor(session, this.waitingAhead(session.tenantId)),
+    );
+  }
+
+  /**
+   * How many of the sessions ranked ahead are still genuinely waiting.
+   *
+   * T18 does not remove a claimed session from the Redis queue, so a member can
+   * outlive the `QUEUED` status that put it there and a raw `ZRANK` counts
+   * customers who have already been taken. The projection knows the order and
+   * cannot know who is still waiting; PostgreSQL knows the reverse. This is
+   * where the two meet, and it is the same statement T17's agent view uses on
+   * the same stale members — `findQueued` puts the tenant and the `QUEUED`
+   * status in the WHERE clause, so a claimed session, a finished one, or
+   * another tenant's id simply does not come back.
+   *
+   * The tenant is bound here rather than taken from the ids, so a member that
+   * somehow named a foreign session could not be counted even if Redis offered
+   * one (I8).
+   *
+   * One statement for the whole set. A lookup per member would be an N+1 on the
+   * customer's polling path.
+   */
+  private waitingAhead(tenantId: string): WaitingAhead {
+    return async (sessionIds) => (await this.repository.findQueued(tenantId, sessionIds)).length;
   }
 
   // -------------------------------------------------------------- abort

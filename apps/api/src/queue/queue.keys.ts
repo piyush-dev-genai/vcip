@@ -16,7 +16,12 @@
  * guarantee: a retry or a reconciliation minutes later must land the session
  * exactly where it belonged, not at the back of the queue.
  *
- * **Position is `rank + 1`** — Redis ranks from zero, humans count from one.
+ * **Position is `waiting ahead + 1`** — and "waiting ahead" is not the same as
+ * "ranked ahead". T18 deliberately does not remove a claimed session from the
+ * ZSET (the queue stays a derived projection), so a member can outlive the
+ * `QUEUED` status that put it there. Ranking counts those; a queue position must
+ * not. The caller confirms the members ahead against PostgreSQL and passes the
+ * surviving count here, which is why this takes a count rather than a rank.
  *
  * Pure, so all of it is testable without a Redis server and so the rules are
  * readable in one place.
@@ -55,12 +60,16 @@ export function scoreFor(queuedAt: Date): number {
 }
 
 /**
- * Turn a Redis rank into a customer-facing position.
+ * Turn a count of sessions genuinely still waiting ahead into a position.
  *
- * `null` in, `null` out: a session with no membership has no position, and
- * saying so is the point. Inventing `0` or `1` here would tell a customer they
- * are first in a queue they are not in.
+ * The input is **not** a Redis rank. It is how many of the members ranked ahead
+ * PostgreSQL still calls `QUEUED` — see the note on filtering above. Passing a
+ * raw rank here is the bug this signature exists to make obvious.
+ *
+ * `null` in, `null` out: when the count could not be established the position
+ * is unknown, and saying so is the point. Inventing `0` or `1` here would tell
+ * a customer they are first in a queue nobody has confirmed they are in.
  */
-export function positionFromRank(rank: number | null): number | null {
-  return rank === null ? null : rank + 1;
+export function positionFromAhead(waitingAhead: number | null): number | null {
+  return waitingAhead === null ? null : waitingAhead + 1;
 }

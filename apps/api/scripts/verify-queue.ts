@@ -29,8 +29,10 @@ import { createLogger } from '../src/common/logging/logger.js';
 import { queueKey, scoreFor } from '../src/queue/queue.keys.js';
 import type { QueueEntry, QueueMember, QueueRepository } from '../src/queue/queue.repository.js';
 import { RedisQueueRepository } from '../src/queue/queue.repository.js';
+import type { WaitingAhead } from '../src/queue/queue.service.js';
 import { QueueService } from '../src/queue/queue.service.js';
 import type { SessionRow } from '../src/sessions/session.repository.js';
+import { DrizzleSessionRepository } from '../src/sessions/session.repository.js';
 
 let passed = 0;
 let failed = 0;
@@ -102,6 +104,23 @@ async function main(): Promise<void> {
   const TENANT_B = randomUUID();
   const touchedKeys = new Set<string>();
 
+  /**
+   * Everybody ranked ahead is still waiting.
+   *
+   * The baseline for the ordering checks: with no stale members a position is
+   * the rank plus one, so every FIFO property below is asserted against exactly
+   * the numbers it always was.
+   */
+  const allWaiting: WaitingAhead = async (ids) => ids.length;
+
+  /** Only these sessions are still `QUEUED`, as far as the caller can tell. */
+  const onlyWaiting =
+    (...stillQueued: readonly string[]): WaitingAhead =>
+    async (ids) => {
+      const waiting = new Set(stillQueued);
+      return ids.filter((id) => waiting.has(id)).length;
+    };
+
   const repository = new RedisQueueRepository(redis);
   const faulty = new FaultyQueueRepository(repository);
   const logger = createLogger({ level: 'silent' });
@@ -152,7 +171,10 @@ async function main(): Promise<void> {
     const first = row({ queuedAt: new Date(Date.now() - 3 * 60_000) });
     const key = queueKey(first.tenantId, first.language);
 
-    check((await service.enqueue(first)) === 1, 'an enqueued session reports position 1');
+    check(
+      (await service.enqueue(first, allWaiting)) === 1,
+      'an enqueued session reports position 1',
+    );
     check((await redis.exists(key)) === 1, `the ZSET ${key.slice(0, 24)}… exists`);
     check((await redis.type(key)) === 'zset', 'the key is a sorted set');
     check((await redis.zcard(key)) === 1, 'it holds exactly one member');
@@ -173,12 +195,15 @@ async function main(): Promise<void> {
     const older = row({ queuedAt: new Date(Date.now() - 10 * 60_000), language: first.language });
     const newer = row({ queuedAt: new Date(Date.now() - 1 * 60_000), language: first.language });
     // Inserted newest-first, so any FIFO result comes from the score.
-    await service.enqueue(newer);
-    await service.enqueue(older);
+    await service.enqueue(newer, allWaiting);
+    await service.enqueue(older, allWaiting);
 
-    check((await service.positionFor(older)) === 1, 'the oldest queued_at is position 1');
-    check((await service.positionFor(first)) === 2, 'the middle session is position 2');
-    check((await service.positionFor(newer)) === 3, 'the newest is position 3');
+    check(
+      (await service.positionFor(older, allWaiting)) === 1,
+      'the oldest queued_at is position 1',
+    );
+    check((await service.positionFor(first, allWaiting)) === 2, 'the middle session is position 2');
+    check((await service.positionFor(newer, allWaiting)) === 3, 'the newest is position 3');
 
     const ordered = await redis.zrange(key, 0, -1);
     check(
@@ -199,13 +224,13 @@ async function main(): Promise<void> {
       language: tieKeyLanguage,
       id: `ffffffff-${runId.slice(9)}`,
     });
-    await service.enqueue(tieB);
-    await service.enqueue(tieA);
-    const tieFirst = await service.positionFor(tieA);
-    const tieSecond = await service.positionFor(tieB);
+    await service.enqueue(tieB, allWaiting);
+    await service.enqueue(tieA, allWaiting);
+    const tieFirst = await service.positionFor(tieA, allWaiting);
+    const tieSecond = await service.positionFor(tieB, allWaiting);
     check(tieFirst === 1 && tieSecond === 2, 'equal scores fall back to lexical member order');
     check(
-      (await service.positionFor(tieA)) === tieFirst,
+      (await service.positionFor(tieA, allWaiting)) === tieFirst,
       'the same queue state yields the same position on a repeat read',
     );
 
@@ -213,8 +238,8 @@ async function main(): Promise<void> {
 
     section('[idempotent] repeated enqueue');
     const before = await redis.zcard(key);
-    await service.enqueue(first);
-    await service.enqueue(first);
+    await service.enqueue(first, allWaiting);
+    await service.enqueue(first, allWaiting);
     check((await redis.zcard(key)) === before, 'a repeated ZADD does not duplicate the member');
     check(
       Number(await redis.zscore(key, first.id)) === first.queuedAt?.getTime(),
@@ -225,9 +250,9 @@ async function main(): Promise<void> {
 
     section('[isolation] tenants and languages');
     const otherTenant = row({ tenantId: TENANT_B, language: first.language });
-    await service.enqueue(otherTenant);
+    await service.enqueue(otherTenant, allWaiting);
     check(
-      (await service.positionFor(otherTenant)) === 1,
+      (await service.positionFor(otherTenant, allWaiting)) === 1,
       'another tenant with the same language starts its own queue at position 1',
     );
     check(
@@ -240,9 +265,9 @@ async function main(): Promise<void> {
     );
 
     const otherLanguage = row({ language: `${first.language}-x` });
-    await service.enqueue(otherLanguage);
+    await service.enqueue(otherLanguage, allWaiting);
     check(
-      (await service.positionFor(otherLanguage)) === 1,
+      (await service.positionFor(otherLanguage, allWaiting)) === 1,
       'another language starts its own queue at position 1',
     );
 
@@ -254,7 +279,7 @@ async function main(): Promise<void> {
       language: `${first.language}-strand`,
     });
     faulty.failing = true;
-    const failedPosition = await faultyService.enqueue(stranded);
+    const failedPosition = await faultyService.enqueue(stranded, allWaiting);
     check(failedPosition === null, 'a failed enqueue reports no position rather than throwing');
     check(failedPosition !== 0, 'it does not report position zero');
 
@@ -270,13 +295,16 @@ async function main(): Promise<void> {
       queuedAt: new Date(Date.now() - 2 * 60_000),
       language: stranded.language,
     });
-    await service.enqueue(arrivedLater);
-    check((await service.positionFor(arrivedLater)) === 1, 'the newer session is alone at 1');
+    await service.enqueue(arrivedLater, allWaiting);
+    check(
+      (await service.positionFor(arrivedLater, allWaiting)) === 1,
+      'the newer session is alone at 1',
+    );
 
-    const restored = await service.positionFor(stranded);
+    const restored = await service.positionFor(stranded, allWaiting);
     check(restored === 1, 'the reconciled session takes the place its queued_at earned');
     check(
-      (await service.positionFor(arrivedLater)) === 2,
+      (await service.positionFor(arrivedLater, allWaiting)) === 2,
       'the session that arrived later moves to 2',
     );
     check(
@@ -285,8 +313,8 @@ async function main(): Promise<void> {
     );
 
     const countAfterOne = await redis.zcard(strandedKey);
-    await service.reconcile(stranded);
-    await service.reconcile(stranded);
+    await service.reconcile(stranded, allWaiting);
+    await service.reconcile(stranded, allWaiting);
     check(
       (await redis.zcard(strandedKey)) === countAfterOne,
       'reconciling repeatedly does not duplicate the member',
@@ -308,12 +336,81 @@ async function main(): Promise<void> {
     ]) {
       const gated = row({ status, language: `${first.language}-gate` });
       const gatedKey = queueKey(gated.tenantId, gated.language);
-      const position = await service.reconcile(gated);
+      const position = await service.reconcile(gated, allWaiting);
       check(
         position === null && (await redis.zscore(gatedKey, gated.id)) === null,
         `${status} is not reinserted`,
       );
     }
+
+    // --------------------------------------- positions skip stale members
+
+    section('[position] members left behind by a claim are not counted');
+    // T18 does not ZREM on claim, so the ZSET holds members whose sessions are
+    // long past QUEUED. Against a real server: ZRANGE must return exactly the
+    // members ahead, and the position must reflect who is still waiting.
+    const lineKey = queueKey(TENANT_A, `line-${runId.slice(0, 8)}`);
+    touchedKeys.add(lineKey);
+    const lineLanguage = `line-${runId.slice(0, 8)}`;
+    const ahead1 = row({
+      id: `aaaaaaaa-${runId.slice(9)}`,
+      language: lineLanguage,
+      queuedAt: new Date(Date.now() - 3000),
+    });
+    const ahead2 = row({
+      id: `bbbbbbbb-${runId.slice(9)}`,
+      language: lineLanguage,
+      queuedAt: new Date(Date.now() - 2000),
+    });
+    const mine = row({
+      id: `cccccccc-${runId.slice(9)}`,
+      language: lineLanguage,
+      queuedAt: new Date(Date.now() - 1000),
+    });
+    for (const waiting of [ahead1, ahead2, mine]) await service.enqueue(waiting, allWaiting);
+
+    check((await service.positionFor(mine, allWaiting)) === 3, 'three waiting: the last is at 3');
+    check(
+      (await service.positionFor(mine, onlyWaiting(mine.id))) === 1,
+      'with both ahead claimed, the last customer is at 1',
+    );
+    check(
+      (await service.positionFor(mine, onlyWaiting(ahead2.id, mine.id))) === 2,
+      'the position counts down as customers ahead are served',
+    );
+    check(
+      (await redis.zcard(lineKey)) === 3,
+      'and every member is still in the ZSET — reading a position removes nothing',
+    );
+
+    // What the filter is actually handed, from the real ZRANGE.
+    let offered: readonly string[] = [];
+    await service.positionFor(mine, async (ids) => {
+      offered = ids;
+      return ids.length;
+    });
+    check(
+      offered.length === 2 && offered[0] === ahead1.id && offered[1] === ahead2.id,
+      'the members offered for confirmation are exactly those ranked ahead, in order',
+    );
+    check(!offered.includes(mine.id), 'the session itself is never among them');
+
+    const frontRankCalls = repository instanceof RedisQueueRepository;
+    let askedForFront = 0;
+    check(
+      (await service.positionFor(ahead1, async (ids) => {
+        askedForFront += 1;
+        return ids.length;
+      })) === 1 &&
+        askedForFront === 0 &&
+        frontRankCalls,
+      'the session at the front is position 1 without any confirmation at all',
+    );
+
+    check(
+      (await service.positionFor(mine, () => Promise.reject(new Error('ECONNREFUSED')))) === null,
+      'an unavailable confirmation reports no position rather than the raw rank',
+    );
 
     // ------------------------------------------ postgresql remains truth
 
@@ -361,6 +458,47 @@ async function main(): Promise<void> {
         check(
           readBack !== null && scoreFor(readBack) === queuedAt.getTime(),
           'the Redis score would equal the stored queued_at exactly',
+        );
+
+        // ------------------------------------------------------------------
+        // The filter against the real database, over a real ZSET.
+        //
+        // Two sessions in one tenant's queue: this one, still QUEUED, and one
+        // moved to OFFERED the way a claim moves it. Redis holds both members,
+        // because nothing removed either. The position must count one.
+        const claimedId = randomUUID();
+        await tx.execute(sql`
+        INSERT INTO sessions (id, tenant_id, external_ref, status, language, consent_ok, preflight_ok, geo_ok, queued_at, offered_to_agent_id)
+        VALUES (${claimedId}::uuid, ${tenantId}::uuid, ${`verify-claimed-${runId}`}, 'OFFERED', 'en', true, true, true, ${new Date(queuedAt.getTime() - 1000).toISOString()}::timestamptz, NULL)`);
+
+        const dbRepo = new DrizzleSessionRepository(tx as unknown as PostgresJsDatabase, {
+          append: () => {
+            throw new Error('a position lookup must not append an event');
+          },
+        });
+        /** The real thing: `findQueued`, tenant and status in the WHERE clause. */
+        const fromDatabase: WaitingAhead = async (ids) =>
+          (await dbRepo.findQueued(tenantId, ids)).length;
+
+        const dbKey = queueKey(tenantId, 'en');
+        touchedKeys.add(dbKey);
+        await redis.zadd(dbKey, queuedAt.getTime() - 1000, claimedId);
+        await redis.zadd(dbKey, queuedAt.getTime(), sessionId);
+
+        const dbRow = row({ id: sessionId, tenantId, language: 'en', queuedAt });
+        check(
+          (await service.positionFor(dbRow, allWaiting)) === 2,
+          'unfiltered, the claimed session ahead would put this customer at 2',
+        );
+        check(
+          (await service.positionFor(dbRow, fromDatabase)) === 1,
+          'PostgreSQL says the one ahead is OFFERED, so the customer is at 1',
+        );
+        check((await redis.zcard(dbKey)) === 2, 'and both members are still in Redis');
+
+        check(
+          (await dbRepo.findQueued(randomUUID(), [sessionId, claimedId])).length === 0,
+          'the confirmation is tenant-scoped: another tenant counts nothing (I8)',
         );
 
         // Roll back: nothing this block created outlives the script.

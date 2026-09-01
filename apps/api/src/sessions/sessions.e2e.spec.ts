@@ -382,8 +382,8 @@ class FakeRedis {
   //
   // Enough of the ZSET commands for the queue projection (T15), with the same
   // semantics the real server has: `ZADD` on an existing member updates its
-  // score rather than duplicating it, and `ZRANK` orders by score ascending
-  // with equal scores broken by lexical order of the member.
+  // score rather than duplicating it, and `ZRANK` and `ZRANGE` order by score
+  // ascending with equal scores broken by lexical order of the member.
 
   private readonly zsets = new Map<string, Map<string, number>>();
 
@@ -409,6 +409,26 @@ class FakeRedis {
       (a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0),
     );
     return ordered.findIndex(([id]) => id === member);
+  }
+
+  /**
+   * `ZRANGE key 0 stop WITHSCORES`, as the position filter uses it.
+   *
+   * Flat `[member, score, member, score, …]`, which is the shape ioredis
+   * returns and the shape the adapter parses — a fake returning pairs would
+   * make the adapter's own parsing untested here.
+   */
+  async zrange(
+    key: string,
+    start: number,
+    stop: string,
+    withScores: 'WITHSCORES',
+  ): Promise<string[]> {
+    await this.hop();
+    if (this.zaddFailure !== null) throw this.zaddFailure;
+    void withScores;
+    const ordered = this.zsetMembers(key).slice(start, Number(stop) + 1);
+    return ordered.flatMap(({ member, score }) => [member, String(score)]);
   }
 
   /** Test-only: inspect a queue without going through the adapter. */
@@ -1480,6 +1500,106 @@ describe('session lifecycle over HTTP', () => {
 
       expect(one.body.data.queue_position).toBe(1);
       expect(two.body.data.queue_position).toBe(2);
+    });
+
+    // ------------------------------------ positions and claimed sessions
+
+    // The regression, at the level the customer experiences it. T18's claim
+    // moves a session to OFFERED in PostgreSQL and deliberately leaves it in
+    // the ZSET, so a raw ZRANK counts customers who have already been taken.
+    // The number a waiting customer sees must come down as those ahead are
+    // served, and before this fix it never did.
+
+    /** Where this customer is told they are, over HTTP. */
+    const positionOf = async (sessionId: string, token: string): Promise<number | null> => {
+      const response = await request(app.getHttpServer())
+        .get(`/v1/sessions/${sessionId}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(response.status).toBe(200);
+      return response.body.data.queue_position as number | null;
+    };
+
+    /** Three customers in one queue, in the order they joined it. */
+    const threeWaiting = async () => {
+      const first = await eligible();
+      const second = await eligible();
+      const third = await eligible();
+      for (const customer of [first, second, third]) await join(customer.id, customer.token);
+      return { first, second, third };
+    };
+
+    it('does not count a customer an agent has already claimed', async () => {
+      const { first, second, third } = await threeWaiting();
+      expect(await positionOf(third.id, third.token)).toBe(3);
+
+      // Exactly what a claim does: PostgreSQL moves on, Redis is left alone.
+      repository.place(first.id, { status: SessionStatus.OFFERED });
+      repository.place(second.id, { status: SessionStatus.IN_CALL });
+
+      expect(await positionOf(third.id, third.token)).toBe(1);
+    });
+
+    it('counts down as the customers ahead are served', async () => {
+      const { first, second, third } = await threeWaiting();
+
+      expect(await positionOf(third.id, third.token)).toBe(3);
+      repository.place(first.id, { status: SessionStatus.IN_CALL });
+      expect(await positionOf(third.id, third.token)).toBe(2);
+      repository.place(second.id, { status: SessionStatus.IN_CALL });
+      expect(await positionOf(third.id, third.token)).toBe(1);
+    });
+
+    it('leaves every member in Redis while doing so', async () => {
+      // T18's ruling: a claim does not ZREM, and neither does reading a
+      // position. The queue stays a derived projection.
+      const { first, third } = await threeWaiting();
+      repository.place(first.id, { status: SessionStatus.OFFERED });
+
+      await positionOf(third.id, third.token);
+
+      expect(redis.zsetMembers(keyFor(TENANT_A, 'en'))).toHaveLength(3);
+    });
+
+    it('does not count a customer who abandoned the queue', async () => {
+      const { first, third } = await threeWaiting();
+      await request(app.getHttpServer())
+        .post(`/v1/sessions/${first.id}/abort`)
+        .set('Authorization', `Bearer ${first.token}`)
+        .set('Idempotency-Key', idem())
+        .send({});
+
+      expect(await positionOf(third.id, third.token)).toBe(2);
+    });
+
+    it('reports the position a new customer actually joins at', async () => {
+      // The number in the queue response itself, not just on the poll after.
+      const { first } = await threeWaiting();
+      repository.place(first.id, { status: SessionStatus.IN_CALL });
+
+      const late = await eligible();
+      const response = await join(late.id, late.token);
+
+      // Two still waiting ahead, not the three members Redis holds.
+      expect(response.body.data.queue_position).toBe(3);
+    });
+
+    it('keeps another tenant queue out of this tenant position', async () => {
+      // Separate keys, so a second tenant's customers cannot be ranked ahead in
+      // the first place — and the confirmation binds the tenant from the
+      // session row, so a foreign id could not be counted even if one appeared
+      // (I8).
+      const { third } = await threeWaiting();
+
+      const other = await createSession(API_KEY_B, {
+        external_ref: 'loan-99999',
+        language: 'en',
+      });
+      const otherId = other.body.data.session_id as string;
+      repository.place(otherId, { consentOk: true, preflightOk: true, geoOk: true });
+      await join(otherId, other.body.data.customer_token as string);
+
+      expect(redis.zsetMembers(keyFor(TENANT_B, 'en'))).toHaveLength(1);
+      expect(await positionOf(third.id, third.token)).toBe(3);
     });
 
     it('keeps different languages in different queues', async () => {
