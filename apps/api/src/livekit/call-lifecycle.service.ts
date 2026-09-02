@@ -173,8 +173,43 @@ export class CallLifecycleService {
     // Both are here. `CALL_STARTED` is once per session, and PostgreSQL is what
     // says so — Redis knows only who is in the room right now, and a room the
     // customer rejoins twice must not produce a second start.
-    if (await this.sessions.hasEvent(action.sessionId, SessionEventType.CALL_STARTED)) return;
+    const firstArrival = !(await this.sessions.hasEvent(
+      action.sessionId,
+      SessionEventType.CALL_STARTED,
+    ));
 
+    if (firstArrival) await this.startCall(action, session);
+
+    // T31: asked on **every** arrival, not only the first, and this is the
+    // difference between the analysis and the recording.
+    //
+    // A room-composite egress survives a customer dropping out, because the
+    // agent keeps the room alive and LiveKit goes on recording it — starting a
+    // second one would open a second file. The analyzer has the opposite
+    // property: it leaves when the customer does, deliberately, so it cannot
+    // hold a room open past the call and stop the recording from ever ending.
+    // Something therefore has to bring it back, and a customer who returns
+    // inside `CUSTOMER_GRACE_SECONDS` resumes a call that would otherwise run
+    // to its verdict with a HUD frozen at the moment they dropped.
+    //
+    // Safe to ask repeatedly: the AI service refuses to start a second
+    // analysis for a session it is already analysing, and it is the only party
+    // that knows whether one is still running.
+    if (session.status === SessionStatus.IN_CALL) {
+      await this.ai.start(action.sessionId, session.tenantId, session.roomName ?? null);
+    }
+  }
+
+  /**
+   * The first time both parties are in the room.
+   *
+   * Split out so `onJoined` reads as what it now is: two things that happen
+   * once and one that happens on every arrival.
+   */
+  private async startCall(
+    action: Extract<CallAction, { kind: 'JOINED' }>,
+    session: CallSessionRow,
+  ): Promise<void> {
     await this.sessions.appendCallEvent(action.sessionId, {
       type: SessionEventType.CALL_STARTED,
       actorType: 'SYSTEM',
@@ -193,9 +228,6 @@ export class CallLifecycleService {
       'both participants are in the room',
     );
 
-    // T28 and T30 both hang off this instant, deliberately: the recording and
-    // the analysis want the same moment for the same reason.
-    //
     // T28: the evidence recording starts here and nowhere else. The plan calls
     // it "recording start on accept", but at accept nobody has joined and
     // LiveKit refuses room-composite egress on a room that does not exist —
@@ -205,12 +237,10 @@ export class CallLifecycleService {
     // lasts.
     await this.recording.start(action.sessionId, session.tenantId, session.roomName ?? null);
 
-    // T30: the AI analysis starts here too, and for the same reason. There is
-    // no customer video to subscribe to until somebody is publishing it, and
-    // analysing a customer waiting alone would spend a core on frames no agent
-    // is going to be shown. Like the recording, it never fails the call: AI is
-    // assistive (D6) and a blank HUD costs a signal, not a verification.
-    await this.ai.start(action.sessionId, session.tenantId, session.roomName ?? null);
+    // T30's analysis wants the same instant and for the same reason — there is
+    // no customer video to subscribe to until somebody is publishing it — but
+    // it is asked for in `onJoined`, because unlike the recording it has to be
+    // asked for again when a customer comes back.
   }
 
   /**

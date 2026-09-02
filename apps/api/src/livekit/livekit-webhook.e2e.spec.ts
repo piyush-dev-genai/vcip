@@ -355,6 +355,43 @@ describe('the LiveKit webhook over HTTP', () => {
     await app.close();
   });
 
+  // ------------------------------------------------------------- T31
+
+  describe('the AI analysis across a customer drop', () => {
+    const joined = (identity: string) => post(webhookBody({ participant: { identity } }));
+    const left = (identity: string) =>
+      post(webhookBody({ event: 'participant_left', participant: { identity } }));
+
+    const bothJoin = async (): Promise<void> => {
+      await joined('agent');
+      await joined('customer');
+    };
+
+    it('is asked for once when the call starts', async () => {
+      await bothJoin();
+
+      expect(analysisStarter.started).toHaveLength(1);
+      expect(analysisStarter.started[0]!.roomName).toBe(ROOM);
+    });
+
+    it('mints a subscribe-only analyzer credential for it', async () => {
+      await bothJoin();
+
+      expect(analyzerMinter.minted.map((entry) => entry.role)).toContain('analyzer');
+    });
+
+    it('is asked for again when the customer returns', async () => {
+      // Over real HTTP, through the real signature check and the real
+      // lifecycle: the analyzer leaves with the customer, so something has to
+      // bring it back or the HUD stays frozen for the rest of the call.
+      await bothJoin();
+      await left('customer');
+      await joined('customer');
+
+      expect(analysisStarter.started).toHaveLength(2);
+    });
+  });
+
   // ------------------------------------------------------ authentication
 
   describe('authentication', () => {

@@ -510,12 +510,66 @@ describe('the AI analysis', () => {
     expect(ai.started).toHaveLength(1);
   });
 
-  it('is asked for exactly once per call, like the recording', async () => {
+  /**
+   * The difference between the analysis and the recording, and the reason
+   * `onJoined` asks on every arrival.
+   *
+   * The analyzer leaves when the customer does — deliberately, so it cannot
+   * hold a room open past the call and stop the recording from ever ending.
+   * A customer who returns inside the grace window resumes a call that would
+   * otherwise run to its verdict with a HUD frozen at the moment they dropped.
+   */
+  it('is asked for again when the customer comes back', async () => {
     await bothJoin();
     await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
     await service.handle(event({ participantIdentity: 'customer' }));
 
-    expect(ai.started).toHaveLength(1);
+    expect(ai.started).toHaveLength(2);
+    expect(ai.started[1]).toEqual({
+      sessionId: SESSION,
+      tenantId: TENANT,
+      roomName: `vcip_${SESSION}`,
+    });
+  });
+
+  it('does not record the call a second time when the customer comes back', async () => {
+    // The recording never stopped: the agent kept the room alive, and a second
+    // start would open a second file.
+    await bothJoin();
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(recording.started).toHaveLength(1);
+  });
+
+  it('does not start the call a second time when the customer comes back', async () => {
+    await bothJoin();
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(types().filter((type) => type === SessionEventType.CALL_STARTED)).toHaveLength(1);
+  });
+
+  it('is asked for again when the agent comes back', async () => {
+    // Harmless and deliberate: the AI service refuses a second analysis for a
+    // session it is already analysing, so this costs one no-op call and covers
+    // the case where the analyzer's own connection was the one that dropped.
+    await bothJoin();
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'agent' }));
+
+    expect(ai.started).toHaveLength(2);
+  });
+
+  it('is not asked for on a session that has already ended', async () => {
+    // A late or replayed join webhook must not put an analyzer into the room
+    // of a verification that is over.
+    sessions.row = { ...(sessions.row as CallSessionRow), status: SessionStatus.APPROVED };
+
+    await service.handle(event({ participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(ai.started).toEqual([]);
   });
 
   it('does not hold up the recording', async () => {
