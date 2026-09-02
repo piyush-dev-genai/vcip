@@ -134,16 +134,34 @@ export class AiAnalysisService {
       'could not start AI analysis; the call continues without it',
     );
 
-    if (await this.sessions.hasEvent(sessionId, SessionEventType.AI_UNAVAILABLE)) return;
+    // T32: recording the failure must not become a second failure.
+    //
+    // This runs inside the catch of a method whose entire contract is that it
+    // cannot fail a call, and it is the only thing left in here that touches
+    // the database. A blip on these two statements would throw out of
+    // `start`, out of `onJoined`, and answer LiveKit's `participant_joined`
+    // with a 500 — turning "the AI is down" into a webhook the SFU retries
+    // against a call that is already under way.
+    try {
+      if (await this.sessions.hasEvent(sessionId, SessionEventType.AI_UNAVAILABLE)) return;
 
-    await this.sessions.appendCallEvent(sessionId, {
-      type: SessionEventType.AI_UNAVAILABLE,
-      actorType: 'SYSTEM',
-      actorId: null,
-      // The message, not the error: a fetch failure stringifies with the
-      // request it failed on, and that request carried a LiveKit join token
-      // and the internal credential.
-      payload: { reason: error instanceof Error ? error.message : 'unknown' },
-    });
+      await this.sessions.appendCallEvent(sessionId, {
+        type: SessionEventType.AI_UNAVAILABLE,
+        actorType: 'SYSTEM',
+        actorId: null,
+        // The message, not the error: a fetch failure stringifies with the
+        // request it failed on, and that request carried a LiveKit join token
+        // and the internal credential.
+        payload: { reason: error instanceof Error ? error.message : 'unknown' },
+      });
+    } catch (writeError) {
+      // Logged and dropped. The history loses the row explaining why the HUD
+      // was blank; the agent still sees "AI unavailable", because that is
+      // driven by the absence of results rather than by this event.
+      this.logger.warn(
+        { event: 'ai.unavailable_unrecorded', session_id: sessionId, err: writeError },
+        'could not record AI_UNAVAILABLE; the call continues regardless',
+      );
+    }
   }
 }

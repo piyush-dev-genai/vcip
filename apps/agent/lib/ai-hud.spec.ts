@@ -192,3 +192,38 @@ describe('staleness — the T32 case', () => {
     expect(AI_HUD_STALE_AFTER_MS).toBe(10_000);
   });
 });
+
+describe('the AI dying mid-call, from the portal (T32)', () => {
+  it('reads unavailable for the rest of the call, not just for a moment', () => {
+    // A killed analyzer never comes back on its own. The panel has to stay
+    // honest for the whole remaining call, not flicker and settle.
+    const dead = applyHudUpdate({}, at(30_000));
+
+    for (const laterMs of [0, 60_000, 600_000]) {
+      expect(isUnavailable(hudFor(dead, SESSION, NOW + laterMs))).toBe(true);
+    }
+  });
+
+  it('does not trust a HUD handed to a portal that reconnected', () => {
+    // The gateway primes a new connection with whatever Redis holds (T31), and
+    // Redis holds it for 24 hours. So an agent who reloads after the AI died
+    // is handed a result that *arrives* now and was *taken* minutes ago. Age is
+    // read from `updated_at` and never from arrival, which is the only reason
+    // this reads as unavailable rather than as a confident 97.
+    const primed = applyHudUpdate({}, at(5 * 60_000));
+
+    expect(hudFor(primed, SESSION, NOW).state).toBe(HudState.STALE);
+    expect(livenessText(hudFor(primed, SESSION, NOW))).toBeNull();
+  });
+
+  it('says the same thing whether the AI died or never started', () => {
+    // `AI_UNAVAILABLE` in the session history distinguishes the two for an
+    // auditor. In front of an agent mid-call they are one fact: there is no
+    // signal, and the verdict is theirs either way.
+    const died = hudFor(applyHudUpdate({}, at(30_000)), SESSION, NOW);
+    const neverStarted = hudFor({}, SESSION, NOW);
+
+    expect(isUnavailable(died)).toBe(isUnavailable(neverStarted));
+    expect(livenessText(died)).toBe(livenessText(neverStarted));
+  });
+});
