@@ -64,6 +64,13 @@ export interface QueuedSession {
   readonly wait_seconds: number;
 }
 
+/** `POST /v1/agent/ws-token` (T27, D9). */
+export interface WsTokenResult {
+  readonly token: string;
+  readonly expires_at: string;
+  readonly audience: string;
+}
+
 /** `GET /v1/agent/queue`. */
 export interface QueueResult {
   readonly sessions: readonly QueuedSession[];
@@ -188,6 +195,17 @@ export interface AgentApi {
    * only when this agent is the one `sessions.agent_id` names.
    */
   mediaToken(sessionId: string): Promise<MediaTokenResult>;
+
+  /**
+   * A short-lived credential for the WebSocket (T27, D9).
+   *
+   * Separate from the agent's JWT and much shorter-lived, because it travels
+   * in a query string: a browser cannot set `Authorization` on a WS handshake,
+   * so the credential is in the URL, where it reaches logs and proxies. It is
+   * scoped to tenant and user, names no session, and is minted per connection
+   * rather than kept.
+   */
+  wsToken(): Promise<WsTokenResult>;
 
   /**
    * What this agent is currently holding.
@@ -386,6 +404,12 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
     async mediaToken(sessionId) {
       return request<MediaTokenResult>(agentSessionUrl(deps.baseUrl, sessionId, '/media-token'), {
         method: 'GET',
+        authenticated: true,
+      });
+    },
+    async wsToken() {
+      return request<WsTokenResult>(`${deps.baseUrl}/v1/agent/ws-token`, {
+        method: 'POST',
         authenticated: true,
       });
     },

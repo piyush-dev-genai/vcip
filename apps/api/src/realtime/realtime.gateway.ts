@@ -34,7 +34,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit } from '@nestjs/websockets';
 import { WebSocketGateway } from '@nestjs/websockets';
 import type { RealtimeMessage } from '@vcip/shared';
-import { RealtimeAudience, mayReceive } from '@vcip/shared';
+import { AgentEvent, RealtimeAudience, mayReceive, realtimeMessage } from '@vcip/shared';
 import type { IncomingMessage } from 'node:http';
 import type { Logger } from 'pino';
 import type { WebSocket } from 'ws';
@@ -48,6 +48,8 @@ import type { VerifiedScope } from './handshake.js';
 import { WS_CLOSE_UNAUTHORIZED, authenticate, redactUrl } from './handshake.js';
 import type { ConnectionScope } from './realtime.keys.js';
 import { channelsFor } from './realtime.keys.js';
+import type { AiHudSnapshots } from '../ai/ai-hud.snapshots.js';
+import { AI_HUD_SNAPSHOTS } from '../ai/ai-hud.snapshots.js';
 import type { RealtimeTransport } from './realtime.transport.js';
 import { InjectRealtimeTransport } from './realtime.transport.js';
 
@@ -91,6 +93,11 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     @Optional()
     @Inject(WS_PING_INTERVAL)
     private readonly pingIntervalMs: number = WS_PING_INTERVAL_MS,
+    // Optional so a test module that only exercises transport need not build
+    // an AI module to get a socket open.
+    @Optional()
+    @Inject(AI_HUD_SNAPSHOTS)
+    private readonly snapshots?: AiHudSnapshots,
   ) {}
 
   afterInit(): void {
@@ -151,6 +158,8 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       }
     }
 
+    await this.primeConnection(client, scope);
+
     this.logger.info(
       {
         event: 'ws.connected',
@@ -161,6 +170,46 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       },
       'websocket connected',
     );
+  }
+
+  /**
+   * Hand a new connection what is already known (T31).
+   *
+   * Pub/Sub has no replay, so a connection that opens between two AI results
+   * would otherwise show an empty panel until the next one — up to a whole
+   * cadence on every page load, and identical on screen to an AI that is not
+   * running. `06-database-schema.md` §38 says a browser that missed a message
+   * can fetch the current state again; this is that, delivered rather than
+   * fetched, so it costs no REST route and no second code path.
+   *
+   * Written straight to this socket rather than published: it is a snapshot
+   * for one connection, and publishing it would send a duplicate to every
+   * other window the same agent has open.
+   *
+   * Agents only. A customer is the subject of the AI's output, never its
+   * audience (R3), and the audience check in `send` would refuse it anyway.
+   *
+   * Failure is contained here rather than trusted to the provider. The port
+   * says it never throws and the implementation honours that, but this runs
+   * inside the handshake: a rejected promise would surface as an unhandled
+   * rejection and leave a half-connected socket. A panel that could not be
+   * pre-filled is a degraded connection, not a refused one — the stream fills
+   * it in on the next result.
+   */
+  private async primeConnection(client: WebSocket, scope: ConnectionScope): Promise<void> {
+    if (scope.audience !== RealtimeAudience.AGENT || this.snapshots === undefined) return;
+
+    try {
+      const huds = await this.snapshots.forAgent(scope.tenantId, scope.userId);
+      for (const hud of huds) {
+        this.send(client, realtimeMessage(AgentEvent.AI_UPDATED, hud));
+      }
+    } catch (error) {
+      this.logger.warn(
+        { event: 'ws.prime_failed', tenant_id: scope.tenantId, err: error },
+        'connected an agent without a HUD snapshot; the stream will fill it in',
+      );
+    }
   }
 
   async handleDisconnect(client: WebSocket): Promise<void> {
@@ -217,25 +266,35 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
    * here is one array lookup.
    */
   private deliver(channel: string, message: RealtimeMessage): void {
-    const payload = JSON.stringify(message);
-
     for (const socket of this.registry.listeners(channel)) {
-      const audience = this.audiences.get(socket);
-      if (audience === undefined || !mayReceive(audience, message.event)) {
-        this.logger.error(
-          { event: 'ws.audience_mismatch', channel, notification: message.event },
-          'refused to deliver an event to the wrong audience',
-        );
-        continue;
-      }
-      try {
-        socket.send(payload);
-      } catch (error) {
-        this.logger.warn(
-          { event: 'ws.send_failed', channel, err: error },
-          'could not write to a connected client',
-        );
-      }
+      this.send(socket, message, channel);
+    }
+  }
+
+  /**
+   * Write one message to one socket, if that socket may have it.
+   *
+   * The audience check lives here rather than in `deliver` so that every route
+   * to a socket passes through it — the fan-out and T31's connection snapshot
+   * alike. A check on one path only is a check that the next path forgets.
+   */
+  private send(socket: WebSocket, message: RealtimeMessage, channel = 'direct'): void {
+    const audience = this.audiences.get(socket);
+    if (audience === undefined || !mayReceive(audience, message.event)) {
+      this.logger.error(
+        { event: 'ws.audience_mismatch', channel, notification: message.event },
+        'refused to deliver an event to the wrong audience',
+      );
+      return;
+    }
+
+    try {
+      socket.send(JSON.stringify(message));
+    } catch (error) {
+      this.logger.warn(
+        { event: 'ws.send_failed', channel, err: error },
+        'could not write to a connected client',
+      );
     }
   }
 

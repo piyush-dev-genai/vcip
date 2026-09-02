@@ -24,7 +24,14 @@ import { Module } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { Test } from '@nestjs/testing';
-import { AgentEvent, CustomerEvent, RealtimeAudience } from '@vcip/shared';
+import type { AiHudPayload } from '@vcip/shared';
+import {
+  AgentEvent,
+  CustomerEvent,
+  LivenessStatus,
+  OcrStatus,
+  RealtimeAudience,
+} from '@vcip/shared';
 import { Redis } from 'ioredis';
 import WebSocket from 'ws';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -54,6 +61,8 @@ import { RealtimeGateway, WS_PING_INTERVAL } from './realtime.gateway.js';
 import { REALTIME_TRANSPORT, RedisRealtimeTransport } from './realtime.transport.js';
 import { WsTokenController } from './ws-token.controller.js';
 import { WsTokenService } from './ws-token.service.js';
+import type { AiHudSnapshots } from '../ai/ai-hud.snapshots.js';
+import { AI_HUD_SNAPSHOTS } from '../ai/ai-hud.snapshots.js';
 
 const TENANT_A = '00000000-0000-4000-8000-00000000000a';
 const TENANT_B = '00000000-0000-4000-8000-00000000000b';
@@ -71,6 +80,28 @@ const TEST_AUTH_CONFIG: AuthConfig = {
   agentJwtTtlSeconds: 3600,
   wsTokenTtlSeconds: 300,
 };
+
+/**
+ * The HUD a connecting agent is handed (T31).
+ *
+ * Keyed by agent, because that is the question the gateway asks: what does
+ * *this* connection already have coming to it.
+ */
+const HUDS: Record<string, AiHudPayload[]> = {};
+
+const snapshots: AiHudSnapshots = {
+  forAgent: (tenantId: string, userId: string) => Promise.resolve(HUDS[userId] ?? []),
+};
+
+const hudFor = (sessionId: string): AiHudPayload => ({
+  session_id: sessionId,
+  liveness_score: 97,
+  liveness_status: LivenessStatus.LIVE,
+  face_match_score: 95,
+  ocr_status: OcrStatus.PASS,
+  model_versions: { liveness: 'demo-v1', face_match: 'demo-v1', ocr: 'demo-v1' },
+  updated_at: '2026-09-02T12:00:00.000Z',
+});
 
 const PROFILES: Record<string, AgentProfileRow> = {
   [AGENT_EN]: { userId: AGENT_EN, tenantId: TENANT_A, languages: ['en', 'hi'], maxConcurrent: 1 },
@@ -124,6 +155,31 @@ describe('realtime over real sockets and real Redis', () => {
       { act: 'ws', aud: RealtimeAudience.AGENT, tid: tenantId, uid: userId },
       { secret: TEST_AUTH_CONFIG.wsTokenSecret, ttlSeconds: 300 },
     );
+
+  /**
+   * Open a socket, listening from the first byte.
+   *
+   * Separate from `connect` because T31's snapshot is written during the
+   * handshake: a listener attached afterwards would miss it, which is exactly
+   * the race the priming exists to close.
+   */
+  const connectListening = async (
+    token: string,
+  ): Promise<{ socket: WebSocket; received: unknown[] }> => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/ws?token=${encodeURIComponent(token)}`);
+    const received: unknown[] = [];
+    socket.on('message', (raw) => {
+      received.push(JSON.parse(String(raw)));
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', () => {
+        resolve();
+      });
+      socket.once('error', reject);
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    return { socket, received };
+  };
 
   /** Open a socket and wait until the server has finished registering it. */
   const connect = async (token: string): Promise<WebSocket> => {
@@ -211,6 +267,10 @@ describe('realtime over real sockets and real Redis', () => {
         // Long, so the gateway's own timer never fires mid-case; the
         // dead-connection cases drive a pass directly instead.
         { provide: WS_PING_INTERVAL, useValue: 60_000 },
+        // T31: what the gateway hands a new agent connection. A double, because
+        // this suite is about transport — where a HUD comes from is the AI
+        // module's business.
+        { provide: AI_HUD_SNAPSHOTS, useValue: snapshots },
         RealtimeGateway,
       ],
     })
@@ -738,6 +798,168 @@ describe('realtime over real sockets and real Redis', () => {
       await settle(() => inbox.received.length > 0);
       expect(inbox.received).toHaveLength(1);
       socket.close();
+    });
+  });
+  describe('an AI result on the wire (T31)', () => {
+    it('reaches the agent on the call, over real Redis', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      // The whole T31 path in production code: `aiUpdated` -> Redis pub/sub ->
+      // the gateway's subscriber -> this socket.
+      const socket = await connect(agentWsToken(AGENT_EN));
+      const inbox = messages(socket);
+
+      await notifications.aiUpdated(TENANT_A, AGENT_EN, hudFor(SESSION_ONE));
+      await settle(() => inbox.received.length > 0);
+
+      expect(inbox.received).toEqual([{ event: AgentEvent.AI_UPDATED, data: hudFor(SESSION_ONE) }]);
+      socket.close();
+    });
+
+    it('carries the model versions T35 will need', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      const socket = await connect(agentWsToken(AGENT_EN));
+      const inbox = messages(socket);
+
+      await notifications.aiUpdated(TENANT_A, AGENT_EN, hudFor(SESSION_ONE));
+      await settle(() => inbox.received.length > 0);
+
+      const message = inbox.received[0] as { data: AiHudPayload };
+      expect(message.data.model_versions).toEqual({
+        liveness: 'demo-v1',
+        face_match: 'demo-v1',
+        ocr: 'demo-v1',
+      });
+      socket.close();
+    });
+
+    it('never reaches the customer whose call it is about', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      // R3 makes `ai.updated` an agent event, and the customer is its subject.
+      // Two independent locks: no customer socket holds an agent channel, and
+      // the gateway refuses the audience even if one somehow did.
+      const customer = await connect(customerWsToken(SESSION_ONE));
+      const inbox = messages(customer);
+
+      await notifications.aiUpdated(TENANT_A, AGENT_EN, hudFor(SESSION_ONE));
+      await settle();
+
+      expect(inbox.received).toEqual([]);
+      customer.close();
+    });
+
+    it('never reaches another agent in the same tenant', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      const other = await connect(agentWsToken(AGENT_TA));
+      const inbox = messages(other);
+
+      await notifications.aiUpdated(TENANT_A, AGENT_EN, hudFor(SESSION_ONE));
+      await settle();
+
+      expect(inbox.received).toEqual([]);
+      other.close();
+    });
+  });
+
+  describe('what a new connection is handed (T31)', () => {
+    beforeEach(() => {
+      for (const key of Object.keys(HUDS)) delete HUDS[key];
+    });
+
+    it('sends an agent the current HUD as soon as the socket opens', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      // Pub/Sub has no replay, so without this an agent reloading mid-call sees
+      // an empty panel until the next result — indistinguishable on screen from
+      // an AI that is not running.
+      HUDS[AGENT_EN] = [hudFor(SESSION_ONE)];
+
+      const { socket, received } = await connectListening(agentWsToken(AGENT_EN));
+      await settle(() => received.length > 0);
+
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual({
+        event: AgentEvent.AI_UPDATED,
+        data: hudFor(SESSION_ONE),
+      });
+      socket.close();
+    });
+
+    it('sends one per call when an agent holds more than one', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      HUDS[AGENT_EN] = [hudFor(SESSION_ONE), hudFor(SESSION_TWO)];
+
+      const { socket, received } = await connectListening(agentWsToken(AGENT_EN));
+      await settle(() => received.length > 1);
+
+      expect(received).toHaveLength(2);
+      socket.close();
+    });
+
+    it('sends nothing when the AI has said nothing about this agent', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      const { socket, received } = await connectListening(agentWsToken(AGENT_EN));
+      await settle();
+
+      expect(received).toEqual([]);
+      socket.close();
+    });
+
+    it('never primes a customer connection', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      // The customer is the subject of the AI's output, never its audience (R3).
+      HUDS[AGENT_EN] = [hudFor(SESSION_ONE)];
+
+      const { socket, received } = await connectListening(customerWsToken(SESSION_ONE));
+      await settle();
+
+      expect(received).toEqual([]);
+      socket.close();
+    });
+
+    it('still opens the socket when the HUD cannot be read', async ({ skip }) => {
+      if (!available) {
+        skip();
+        return;
+      }
+      // A panel that could not be pre-filled is a degraded connection, not a
+      // refused one: the stream fills it in two seconds later.
+      const original = snapshots.forAgent;
+      (snapshots as { forAgent: AiHudSnapshots['forAgent'] }).forAgent = () =>
+        Promise.reject(new Error('redis down'));
+
+      try {
+        const { socket, received } = await connectListening(agentWsToken(AGENT_EN));
+        await settle();
+
+        expect(socket.readyState).toBe(WebSocket.OPEN);
+        expect(received).toEqual([]);
+        socket.close();
+      } finally {
+        (snapshots as { forAgent: AiHudSnapshots['forAgent'] }).forAgent = original;
+      }
     });
   });
 });

@@ -1,29 +1,59 @@
 /**
- * Receiving an AI result (T30).
+ * Receiving an AI result, and getting it in front of the agent (T31).
  *
- * The AI service reports what it found every couple of seconds. T30 takes
- * delivery and validates it; T31 is what makes it visible, writing the HUD to
- * Redis and publishing `ai.updated` to the agent's WebSocket.
+ * ```text
+ * AI service -> /internal/ai/result -> Redis HUD -> pub/sub -> WS -> Agent HUD
+ * ```
  *
- * What this deliberately does **not** do, now or in T31:
+ * Three steps, in this order and for this reason:
  *
- *   - Touch `sessions.status`. A result is a signal, never a transition (I7).
- *   - Write `session_ai_summaries`. That row is the snapshot taken inside the
- *     verdict transaction (T35), not a running log of every two-second update
- *     — §20 is explicit that the summary is a snapshot and not a stream.
- *   - Fail loudly on a result for a session that is over. A call ends while
- *     the analyzer is mid-cycle almost every time; treating that as an error
- *     would make a normal race look like a fault.
+ *   1. **Write the HUD.** It is the durable-enough copy (D2) and it is what
+ *      T35 snapshots into `session_ai_summaries`. Writing it first means a
+ *      result that arrives while nobody is connected is not lost — the agent's
+ *      next connection is handed it (§38's "fetch the current state again",
+ *      answered by the gateway rather than by a REST route).
+ *   2. **Find out who to tell.** An agent's connection is scoped to tenant and
+ *      user, not to a session, so a result carrying only a session id has to be
+ *      resolved against PostgreSQL before it can be routed. That read is the
+ *      only place this path touches the database, and it is a read: nothing
+ *      about an AI result may write business state (I7).
+ *   3. **Publish.** Best-effort, to exactly one agent.
+ *
+ * **The customer is never told.** R3 lists `ai.updated` as an agent event and
+ * this service only ever names an agent channel. A customer being shown a
+ * liveness score about themselves would be a privacy failure and an invitation
+ * to argue with a machine that decides nothing (I7).
+ *
+ * **Nothing here can fail the AI service's request.** A Redis that will not
+ * take the write and an agent nobody can find are both logged and answered
+ * 200. The analyzer publishes a fresh snapshot every couple of seconds, so
+ * there is nothing worth retrying and nothing worth queueing.
  */
 
 import { Injectable } from '@nestjs/common';
-import type { AiResultRequest } from '@vcip/shared';
+import type { AiHudPayload, AiResultRequest } from '@vcip/shared';
+import { SessionStatus } from '@vcip/shared';
 import type { Logger } from 'pino';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
+import type { Notifications } from '../realtime/notifications.js';
+import { InjectNotifications } from '../realtime/notifications.js';
+import type { SessionRepository } from '../sessions/session.repository.js';
+import { InjectSessionRepository } from '../sessions/session.repository.js';
+import type { AiHudRepository } from './ai-hud.repository.js';
+import { InjectAiHudRepository } from './ai-hud.repository.js';
 
 /** What the Control API did with a result. */
 export const AiResultOutcome = {
-  ACCEPTED: 'ACCEPTED',
+  /** Stored, and published to the agent on the call. */
+  DELIVERED: 'DELIVERED',
+  /**
+   * Stored, but nobody was told.
+   *
+   * The session ended, or no agent holds it. Not an error: a call ends while
+   * the analyzer is mid-cycle almost every time, and the HUD is still worth
+   * writing because T35 may yet snapshot it.
+   */
+  STORED: 'STORED',
   /** The session is not one this deployment knows. */
   UNKNOWN_SESSION: 'UNKNOWN_SESSION',
 } as const;
@@ -34,34 +64,81 @@ export interface AiResultReceipt {
   readonly outcome: AiResultOutcome;
 }
 
+export type AiClock = () => Date;
+
 @Injectable()
 export class AiResultService {
-  constructor(@InjectLogger() private readonly logger: Logger) {}
+  constructor(
+    @InjectAiHudRepository() private readonly hud: AiHudRepository,
+    @InjectSessionRepository() private readonly sessions: SessionRepository,
+    @InjectNotifications() private readonly notify: Notifications,
+    @InjectLogger() private readonly logger: Logger,
+  ) {}
+
+  async receive(result: AiResultRequest, now: Date = new Date()): Promise<AiResultReceipt> {
+    const payload = toHudPayload(result, now);
+
+    await this.store(payload);
+
+    const session = await this.sessions.findForCallEvent(result.session_id);
+    if (session === null) {
+      // A result for a session this deployment has never heard of. Logged
+      // rather than raised: the AI service cannot do anything useful with an
+      // error, and retrying would send the same result to the same place.
+      this.logger.warn(
+        { event: 'ai.result_unknown_session', session_id: result.session_id },
+        'an AI result named a session that does not exist',
+      );
+      return { outcome: AiResultOutcome.UNKNOWN_SESSION };
+    }
+
+    if (session.status !== SessionStatus.IN_CALL || session.agentId === null) {
+      // Nobody is watching. The HUD is written anyway — the verdict
+      // transaction may still snapshot it — but there is no agent channel to
+      // publish on, and inventing one would be a message to whoever held the
+      // session last.
+      return { outcome: AiResultOutcome.STORED };
+    }
+
+    await this.notify.aiUpdated(session.tenantId, session.agentId, payload);
+
+    return { outcome: AiResultOutcome.DELIVERED };
+  }
 
   /**
-   * Take delivery of one result.
+   * Store the HUD, and treat a failure as one.
    *
-   * Returns rather than throws for an unrecognised session: the AI service
-   * cannot do anything useful with an error, and retrying would send the same
-   * result to the same place. The log line is for us.
+   * Redis being unavailable degrades the HUD and the eventual summary. It does
+   * not degrade the call, and it must not stop the agent being told what the
+   * AI just said — so the publish below happens either way.
    */
-  async receive(result: AiResultRequest): Promise<AiResultReceipt> {
-    this.logger.debug(
-      {
-        event: 'ai.result_received',
-        session_id: result.session_id,
-        liveness_status: result.liveness_status,
-        ocr_status: result.ocr_status,
-        // The scores are logged and the payload is not: `model_versions` is
-        // free-form JSON from another service, and a log line is not the place
-        // to find out what somebody put in it.
-        liveness_score: result.liveness_score,
-        face_match_score: result.face_match_score,
-      },
-      'AI result received',
-    );
-
-    // T31 writes the HUD and publishes `ai.updated` from here.
-    return { outcome: AiResultOutcome.ACCEPTED };
+  private async store(payload: AiHudPayload): Promise<void> {
+    try {
+      await this.hud.save(payload.session_id, payload);
+    } catch (error) {
+      this.logger.warn(
+        { event: 'ai.hud_write_failed', session_id: payload.session_id, err: error },
+        'could not store the AI HUD; the next result will try again',
+      );
+    }
   }
+}
+
+/**
+ * The wire payload plus the instant we took delivery.
+ *
+ * Server time, not a timestamp the AI service chose. The agent's panel decides
+ * the HUD has gone stale from this field, and a clock the caller controls is
+ * one an unreachable caller could have left in the future.
+ */
+export function toHudPayload(result: AiResultRequest, now: Date): AiHudPayload {
+  return {
+    session_id: result.session_id,
+    liveness_score: result.liveness_score,
+    liveness_status: result.liveness_status,
+    face_match_score: result.face_match_score,
+    ocr_status: result.ocr_status,
+    model_versions: result.model_versions,
+    updated_at: now.toISOString(),
+  };
 }

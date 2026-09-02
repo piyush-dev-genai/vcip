@@ -95,6 +95,7 @@ const PUBLIC_SURFACE: readonly string[] = [
   'AGENT_AVAILABILITY_VALUES',
   'aiResultSchema',
   'analyzeRequestSchema',
+  'AI_HUD_STALE_AFTER_MS',
   'LIVENESS_STATUS_VALUES',
   'OCR_STATUS_VALUES',
 ];

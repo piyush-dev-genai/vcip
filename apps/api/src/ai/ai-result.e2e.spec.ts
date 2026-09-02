@@ -12,7 +12,8 @@ import { Writable } from 'node:stream';
 import { Module } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { ErrorCode, LivenessStatus, OcrStatus } from '@vcip/shared';
+import type { AiHudPayload } from '@vcip/shared';
+import { ErrorCode, LivenessStatus, OcrStatus, SessionStatus } from '@vcip/shared';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AuthConfig } from '../common/auth/auth.config.js';
@@ -22,6 +23,12 @@ import { ApiErrorFilter } from '../common/errors/api-error.filter.js';
 import { createLogger } from '../common/logging/logger.js';
 import { LoggingModule } from '../common/logging/logging.module.js';
 import { LOGGER } from '../common/logging/logging.tokens.js';
+import { NOTIFICATIONS } from '../realtime/notifications.js';
+import { RecordingNotifications } from '../realtime/notifications.testing.js';
+import type { CallSessionRow, SessionRepository } from '../sessions/session.repository.js';
+import { SESSION_REPOSITORY } from '../sessions/session.repository.js';
+import type { AiHudRepository } from './ai-hud.repository.js';
+import { AI_HUD_REPOSITORY } from './ai-hud.repository.js';
 import { AiResultController } from './ai-result.controller.js';
 import { AiResultService } from './ai-result.service.js';
 
@@ -46,12 +53,58 @@ const healthy = {
   model_versions: { liveness: 'demo-v1', face_match: 'demo-v1', ocr: 'demo-v1' },
 };
 
+const AGENT = '00000000-0000-4000-8000-0000000000a1';
+const TENANT = '00000000-0000-4000-8000-00000000000a';
+
+const inCall = (): CallSessionRow => ({
+  id: SESSION,
+  tenantId: TENANT,
+  status: SessionStatus.IN_CALL,
+  roomName: `vcip_${SESSION}`,
+  agentId: AGENT,
+  queuedAt: null,
+  connectedAt: null,
+  callStartedAt: new Date(),
+});
+
+/** The HUD, in memory. Redis is not what this suite is about. */
+class FakeHud {
+  readonly saved: { sessionId: string; payload: AiHudPayload }[] = [];
+  failWith: Error | null = null;
+
+  save(sessionId: string, payload: AiHudPayload): Promise<void> {
+    if (this.failWith) return Promise.reject(this.failWith);
+    this.saved.push({ sessionId, payload });
+    return Promise.resolve();
+  }
+
+  read(sessionId: string): Promise<AiHudPayload | null> {
+    const last = [...this.saved].reverse().find((entry) => entry.sessionId === sessionId);
+    return Promise.resolve(last?.payload ?? null);
+  }
+}
+
+class FakeSessions {
+  row: CallSessionRow | null = inCall();
+
+  findForCallEvent(sessionId: string): Promise<CallSessionRow | null> {
+    return Promise.resolve(this.row !== null && this.row.id === sessionId ? this.row : null);
+  }
+}
+
+const hud = new FakeHud();
+const sessions = new FakeSessions();
+const notifications = new RecordingNotifications();
+
 @Module({
   imports: [LoggingModule],
   controllers: [AiResultController],
   providers: [
     { provide: AUTH_CONFIG, useValue: TEST_AUTH_CONFIG },
     InternalTokenGuard,
+    { provide: AI_HUD_REPOSITORY, useValue: hud as unknown as AiHudRepository },
+    { provide: SESSION_REPOSITORY, useValue: sessions as unknown as SessionRepository },
+    { provide: NOTIFICATIONS, useValue: notifications },
     AiResultService,
   ],
 })
@@ -67,6 +120,11 @@ describe('POST /internal/ai/result', () => {
   };
 
   beforeEach(async () => {
+    hud.saved.length = 0;
+    hud.failWith = null;
+    notifications.clear();
+    sessions.row = inCall();
+
     const sink = new Writable({
       write(_c, _e, cb) {
         cb();
@@ -95,7 +153,7 @@ describe('POST /internal/ai/result', () => {
       const response = await post(healthy);
 
       expect(response.status).toBe(200);
-      expect(response.body.data.outcome).toBe('ACCEPTED');
+      expect(response.body.data.outcome).toBe('DELIVERED');
     });
 
     it('refuses a result with no credential', async () => {
@@ -183,6 +241,126 @@ describe('POST /internal/ai/result', () => {
       const response = await post({});
 
       expect(response.status).toBe(400);
+    });
+  });
+
+  // ----------------------------------------------------------- the HUD
+
+  describe('the Redis HUD (T31)', () => {
+    it('stores the result', async () => {
+      await post(healthy);
+
+      expect(hud.saved).toHaveLength(1);
+      expect(hud.saved[0]!.sessionId).toBe(SESSION);
+    });
+
+    it('stores every field, including the model versions T35 will snapshot', async () => {
+      // `06-database-schema.md` §"Snapshot Redis HUD -> session_ai_summaries":
+      // this HUD is the source of that row, so anything the column needs has
+      // to survive here.
+      await post(healthy);
+
+      expect(hud.saved[0]!.payload).toMatchObject({
+        session_id: SESSION,
+        liveness_score: 97,
+        liveness_status: LivenessStatus.LIVE,
+        face_match_score: 95,
+        ocr_status: OcrStatus.PASS,
+        model_versions: { liveness: 'demo-v1', face_match: 'demo-v1', ocr: 'demo-v1' },
+      });
+    });
+
+    it('stamps the instant the Control API took delivery', async () => {
+      // Server time, because the panel reads this to decide the AI has gone
+      // quiet, and a clock the caller chose is one a dead caller could have
+      // left in the future.
+      await post(healthy);
+
+      expect(Date.parse(hud.saved[0]!.payload.updated_at)).not.toBeNaN();
+    });
+
+    it('keeps an absent score absent rather than zero', async () => {
+      await post({ ...healthy, liveness_score: null, liveness_status: LivenessStatus.UNAVAILABLE });
+
+      expect(hud.saved[0]!.payload.liveness_score).toBeNull();
+    });
+
+    it('is still written for a session no agent is on', async () => {
+      // The call ended while the analyzer was mid-cycle, which happens on
+      // almost every call. The verdict transaction may still snapshot it.
+      sessions.row = { ...inCall(), status: SessionStatus.APPROVED, agentId: null };
+
+      const response = await post(healthy);
+
+      expect(response.body.data.outcome).toBe('STORED');
+      expect(hud.saved).toHaveLength(1);
+    });
+  });
+
+  // --------------------------------------------------------- the fan-out
+
+  describe('telling the agent (T31)', () => {
+    it('publishes to the agent on the call', async () => {
+      await post(healthy);
+
+      const sent = notifications.of('aiUpdated');
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.args[0]).toBe(TENANT);
+      expect(sent[0]!.args[1]).toBe(AGENT);
+    });
+
+    it('publishes the HUD itself, so the panel needs no second read', async () => {
+      await post(healthy);
+
+      expect(notifications.of('aiUpdated')[0]!.args[2]).toMatchObject({
+        session_id: SESSION,
+        liveness_status: LivenessStatus.LIVE,
+        model_versions: { liveness: 'demo-v1' },
+      });
+    });
+
+    it('tells nobody when the session has ended', async () => {
+      sessions.row = { ...inCall(), status: SessionStatus.APPROVED, agentId: null };
+
+      await post(healthy);
+
+      expect(notifications.kinds()).toEqual([]);
+    });
+
+    it('tells nobody when no agent holds the session', async () => {
+      sessions.row = { ...inCall(), status: SessionStatus.QUEUED, agentId: null };
+
+      await post(healthy);
+
+      expect(notifications.kinds()).toEqual([]);
+    });
+
+    it('reports an unknown session without publishing', async () => {
+      sessions.row = null;
+
+      const response = await post(healthy);
+
+      expect(response.body.data.outcome).toBe('UNKNOWN_SESSION');
+      expect(notifications.kinds()).toEqual([]);
+    });
+
+    it('never sends anything to the customer', async () => {
+      // R3 makes `ai.updated` an agent event, and the customer is the subject
+      // of it. `aiUpdated` names an agent channel and there is no other call.
+      await post(healthy);
+
+      expect(notifications.kinds()).toEqual(['aiUpdated']);
+    });
+
+    it('still tells the agent when the HUD could not be stored', async () => {
+      // Redis being down costs the summary, not the signal in front of the
+      // agent on a live call.
+      hud.failWith = new Error('redis unavailable');
+
+      const response = await post(healthy);
+
+      expect(response.status).toBe(200);
+      expect(notifications.of('aiUpdated')).toHaveLength(1);
     });
   });
 

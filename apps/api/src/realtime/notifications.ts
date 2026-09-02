@@ -21,7 +21,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import type { SessionStatus } from '@vcip/shared';
+import type { AiHudPayload, SessionStatus } from '@vcip/shared';
 import { AgentEvent, CustomerEvent } from '@vcip/shared';
 import type { Logger } from 'pino';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
@@ -58,6 +58,15 @@ export interface Notifications {
 
   /** T26: the agent's participant is in the room. */
   agentJoined(sessionId: string): Promise<void>;
+
+  /**
+   * T31: the AI has something new to say about a call.
+   *
+   * Addressed to one agent, by tenant and user, because that is the only
+   * channel an agent connection holds — and because `ai.updated` is an agent
+   * event (R3). The customer is never a recipient: they are the subject.
+   */
+  aiUpdated(tenantId: string, userId: string, hud: AiHudPayload): Promise<void>;
 
   /** Any status change worth telling the customer about. */
   sessionUpdated(sessionId: string, status: SessionStatus): Promise<void>;
@@ -123,6 +132,14 @@ export class TransportNotifications implements Notifications {
     await this.send(sessionChannel(sessionId), CustomerEvent.SESSION_OFFERED, {
       session_id: sessionId,
     });
+  }
+
+  async aiUpdated(tenantId: string, userId: string, hud: AiHudPayload): Promise<void> {
+    // The HUD verbatim. It already carries the session id, so the agent's
+    // portal can tell which call it is about when an agent holds more than
+    // one — and it carries `updated_at`, which is what the panel uses to
+    // decide the AI has gone quiet.
+    await this.send(agentChannel(tenantId, userId), AgentEvent.AI_UPDATED, hud);
   }
 
   async sessionClaimedElsewhere(

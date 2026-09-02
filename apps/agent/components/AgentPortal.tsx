@@ -1,6 +1,10 @@
 'use client';
 
+import type { AiHudPayload } from '@vcip/shared';
+import { AgentEvent } from '@vcip/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { applyHudUpdate } from '../lib/ai-hud';
+import { createRealtimeSocket } from '../lib/socket';
 import type { QueuedSession } from '../lib/api';
 import { createAgentApi } from '../lib/api';
 import { apiBaseUrl, HEARTBEAT_INTERVAL_MS } from '../lib/config';
@@ -29,6 +33,7 @@ import {
   workScreen,
 } from '../lib/work-state';
 import { AvailabilityPanel } from './AvailabilityPanel';
+import { AiPanel } from './AiPanel';
 import { CallPanel } from './CallPanel';
 import { LoginForm } from './LoginForm';
 import { OfferPanel } from './OfferPanel';
@@ -106,6 +111,16 @@ export function AgentPortal() {
    * very next beat.
    */
   const token = useRef<string | null>(null);
+
+  /**
+   * Every AI result this portal has received, keyed by session.
+   *
+   * Kept by session rather than as one current value, because an agent may be
+   * handed a second call and a HUD rendered against the wrong session would be
+   * the wrong customer's liveness score on screen. `AiPanel` reads only the
+   * key it is showing.
+   */
+  const [aiUpdates, setAiUpdates] = useState<Record<string, AiHudPayload>>({});
 
   /**
    * The current work, in a ref as well as in state.
@@ -559,6 +574,39 @@ export function AgentPortal() {
   }, [nowMs, readWork, work?.offerExpiresAt, work?.sessionId, work?.status]);
 
   /**
+   * The realtime connection (T31).
+   *
+   * The portal's first socket. Everything on screen still comes from REST —
+   * the poll below is unchanged and remains the authority — so this only makes
+   * one thing arrive sooner than a poll could deliver it: what the AI has to
+   * say about a call in progress, which changes every couple of seconds and
+   * would be absurd to poll for.
+   *
+   * Opened whenever the agent is signed in, not only during a call, because
+   * the gateway hands a connection its current HUD the moment it opens: an
+   * agent who reloads mid-call sees the panel populated rather than blank.
+   */
+  useEffect(() => {
+    if (screen !== 'portal') return;
+
+    const socket = createRealtimeSocket({
+      baseUrl: apiBaseUrl(),
+      mintToken: async () => (await api.wsToken()).token,
+      onMessage: (message) => {
+        if (message.event !== AgentEvent.AI_UPDATED) return;
+        // Every other agent event has a REST reader that already owns it; this
+        // one has no other source, so it is the only one this socket acts on.
+        setAiUpdates((current) => applyHudUpdate(current, message.data as AiHudPayload));
+      },
+    });
+
+    socket.start();
+    return () => {
+      socket.stop();
+    };
+  }, [api, screen]);
+
+  /**
    * The heartbeat loop.
    *
    * Started only when there is a token and the server's last word was a live
@@ -640,7 +688,10 @@ export function AgentPortal() {
           ) : null}
 
           {screenForWork === WorkScreen.CALL && work !== null ? (
-            <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
+            <>
+              <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
+              <AiPanel sessionId={work.sessionId} updates={aiUpdates} />
+            </>
           ) : null}
 
           {screenForWork === WorkScreen.CHECKING ? (

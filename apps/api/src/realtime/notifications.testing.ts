@@ -12,7 +12,7 @@
  */
 
 import { Global, Module } from '@nestjs/common';
-import type { SessionStatus } from '@vcip/shared';
+import type { AiHudPayload, SessionStatus } from '@vcip/shared';
 import type { Notifications } from './notifications.js';
 import { NOTIFICATIONS } from './notifications.js';
 
@@ -60,6 +60,10 @@ export class RecordingNotifications implements Notifications {
   sessionAssigned(sessionId: string, tenantId: string, userId: string): Promise<void> {
     return this.record('sessionAssigned', sessionId, tenantId, userId);
   }
+  aiUpdated(tenantId: string, userId: string, hud: AiHudPayload): Promise<void> {
+    return this.record('aiUpdated', tenantId, userId, hud);
+  }
+
   agentJoined(sessionId: string): Promise<void> {
     return this.record('agentJoined', sessionId);
   }

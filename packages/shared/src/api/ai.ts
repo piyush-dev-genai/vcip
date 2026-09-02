@@ -130,3 +130,40 @@ export const analyzeRequestSchema = z.strictObject({
 });
 
 export type AnalyzeRequest = z.infer<typeof analyzeRequestSchema>;
+
+/**
+ * What `ai.updated` carries, and what the Redis HUD holds (T31).
+ *
+ * The same five facts the AI service reported, plus the instant they were
+ * reported. `updated_at` is the field the agent's panel reads to decide the
+ * HUD has gone stale — an AI service that is killed sends nothing at all
+ * rather than sending `UNAVAILABLE`, so freshness is the only thing that can
+ * tell the difference between "the model says LIVE" and "the model said LIVE
+ * two minutes ago and has not been heard from since".
+ *
+ * Deliberately identical in shape to what T35 snapshots into
+ * `session_ai_summaries`, because it is: `06-database-schema.md` §"Snapshot
+ * Redis HUD -> session_ai_summaries" makes the HUD the source of that row, so
+ * anything the column needs — `model_versions` included — has to survive here.
+ */
+export interface AiHudPayload {
+  readonly session_id: string;
+  readonly liveness_score: number | null;
+  readonly liveness_status: LivenessStatus;
+  readonly face_match_score: number | null;
+  readonly ocr_status: OcrStatus;
+  readonly model_versions: Readonly<Record<string, string>>;
+  /** ISO 8601, server time. When the Control API took delivery of the result. */
+  readonly updated_at: string;
+}
+
+/**
+ * How long an agent's panel trusts a HUD before calling it unavailable.
+ *
+ * Ten seconds — five missed cycles at T30's two-second cadence, so an ordinary
+ * late result never trips it and a dead analyzer trips it quickly. This is the
+ * mechanism behind T32's gate: killing the AI mid-call produces no traffic at
+ * all, and a HUD with no freshness rule would go on showing the last confident
+ * score for the rest of the call.
+ */
+export const AI_HUD_STALE_AFTER_MS = 10_000;

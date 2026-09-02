@@ -3,6 +3,8 @@ import { AuthModule } from '../common/auth/auth.module.js';
 import { LivekitModule } from '../livekit/livekit.module.js';
 import { SessionsModule } from '../sessions/sessions.module.js';
 import { ANALYSIS_STARTER, HttpAnalysisStarter } from './ai-analysis.client.js';
+import { AI_HUD_REPOSITORY, RedisAiHudRepository } from './ai-hud.repository.js';
+import { AI_HUD_SNAPSHOTS, SessionAiHudSnapshots } from './ai-hud.snapshots.js';
 import { AiAnalysisService } from './ai-analysis.service.js';
 import { AiResultController } from './ai-result.controller.js';
 import { AiResultService } from './ai-result.service.js';
@@ -47,6 +49,12 @@ import { AI_CONFIG, aiConfigFromEnv } from './ai.config.js';
  * `AI_CONFIG` is built from the environment at boot, so a deployment that
  * enables AI without saying where it lives fails to start rather than failing
  * silently on the first call.
+ *
+ * T31 adds the HUD: a Redis repository and the snapshot port the WebSocket
+ * gateway asks on connect. `AI_HUD_SNAPSHOTS` is exported for that, and it is
+ * the only thing `RealtimeModule` takes from here — the fan-out itself goes
+ * the other way, through the global `NOTIFICATIONS` port, so T27 keeps owning
+ * transport and this module keeps owning what a HUD is.
  */
 @Module({
   imports: [AuthModule, forwardRef(() => LivekitModule), SessionsModule],
@@ -54,9 +62,11 @@ import { AI_CONFIG, aiConfigFromEnv } from './ai.config.js';
   providers: [
     { provide: AI_CONFIG, useFactory: () => aiConfigFromEnv() },
     { provide: ANALYSIS_STARTER, useClass: HttpAnalysisStarter },
+    { provide: AI_HUD_REPOSITORY, useClass: RedisAiHudRepository },
+    { provide: AI_HUD_SNAPSHOTS, useClass: SessionAiHudSnapshots },
     AiAnalysisService,
     AiResultService,
   ],
-  exports: [AiAnalysisService],
+  exports: [AiAnalysisService, AI_HUD_SNAPSHOTS, AI_HUD_REPOSITORY],
 })
 export class AiModule {}

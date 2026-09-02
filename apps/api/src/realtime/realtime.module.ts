@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { AgentsModule } from '../agents/agents.module.js';
+import { AiModule } from '../ai/ai.module.js';
 import { AuthModule } from '../common/auth/auth.module.js';
 import { NOTIFICATIONS, TransportNotifications } from './notifications.js';
 import { RealtimeGateway } from './realtime.gateway.js';
@@ -34,13 +35,19 @@ import { WsTokenService } from './ws-token.service.js';
  *
  * `AuthModule` supplies the two guards, `TenantGuard`, and the signing secrets.
  *
+ * `AiModule` supplies `AI_HUD_SNAPSHOTS` (T31), which the gateway asks on
+ * connect so an agent's panel is populated before the next AI result arrives
+ * rather than after it. One narrow question — what does this connection
+ * already have coming to it — asked through a port, so the rule below still
+ * holds: this module carries notifications and decides none of them.
+ *
  * Deliberately absent: `SessionsModule`, `QueueModule`, and anything else that
  * owns business state. This module transports notifications; it never decides
  * that one is warranted, and it holds no repository through which it could.
  */
 @Global()
 @Module({
-  imports: [AuthModule, AgentsModule],
+  imports: [AuthModule, AgentsModule, AiModule],
   controllers: [WsTokenController],
   providers: [
     { provide: REALTIME_TRANSPORT, useClass: RedisRealtimeTransport },

@@ -173,13 +173,19 @@ describe('token handling has one implementation', () => {
    * `act` claim, so a leak is worth far less than a session token. The API
    * redacts it from every line it logs about a connection.
    *
-   * This app holds no WebSocket client, so the assertion below is unchanged
-   * and still exact. When one is added, the exception belongs here as a named
-   * allowance for that one parameter on that one URL — never as a relaxation
-   * of the rule.
+   * T31 added that WebSocket client, and with it the one exception this
+   * comment anticipated: `lib/socket.ts` puts a connection token in a query
+   * string, because D9 records that a browser cannot set `Authorization` on a
+   * WS handshake. It is a named allowance for that one parameter on that one
+   * URL, not a relaxation — the token is short-lived, minted per connection,
+   * scoped to tenant and user, names no session, and is redacted from every
+   * line the API logs about a connection.
    */
   it('never builds a URL with a token or password parameter', () => {
-    expect(offenders(/[?&](token|password|access_token)=/)).toEqual([]);
+    expect(offenders(/[?&](token|password|access_token)=/)).toEqual(['lib/socket.ts']);
+    // Still exact for the rest: no password anywhere, and the agent's own
+    // session JWT never reaches a URL.
+    expect(offenders(/[?&](password|access_token)=/)).toEqual([]);
     expect(offenders(/searchParams\.(set|append)\(\s*['"](token|password)/)).toEqual([]);
     expect(offenders(/location\.hash/)).toEqual([]);
   });
@@ -271,22 +277,40 @@ describe('every request goes through the API client', () => {
 
   it('calls none of the endpoints later tasks add', () => {
     // Claim and accept left this list with T21; the media token left it with
-    // T25. Everything still on it is scope, asserted rather than promised.
-    for (const pattern of [/\/verdict\b/, /\/checklist\b/, /\/internal\//, /\/ws-token\b/]) {
+    // T25; the WebSocket connection token left it with T31. Everything still
+    // on it is scope, asserted rather than promised.
+    for (const pattern of [/\/verdict\b/, /\/checklist\b/, /\/internal\//]) {
       expect(offenders(pattern)).toEqual([]);
     }
   });
 
-  it('contains no AI or webhook code', () => {
-    for (const pattern of [/webhook/i, /liveness|face_match|ocr/i]) {
-      expect(offenders(pattern)).toEqual([]);
-    }
+  it('asks for a connection token through the API client and nowhere else', () => {
+    // The socket mints none of its own and never reaches for `fetch`: it is
+    // handed a function, so the credential path stays the one audited above.
+    expect(offenders(/\/ws-token\b/)).toEqual(['lib/api.ts']);
   });
 
-  it('opens no WebSocket of its own — the realtime feed is T27', () => {
+  it('contains no webhook code', () => {
+    // Webhooks are the enterprise's channel and never the portal's.
+    expect(offenders(/webhook/i)).toEqual([]);
+  });
+
+  it('reads AI results in the two modules T31 added, and nowhere else', () => {
+    // The panel renders and `ai-hud.ts` decides what it may say. Nothing else
+    // in the portal touches a liveness score — and neither of them can act on
+    // one: the AI decides nothing (I7) and this app has no verdict path yet.
+    expect(offenders(/liveness|face_match|ocr/i).sort()).toEqual([
+      'components/AiPanel.tsx',
+      'lib/ai-hud.ts',
+    ]);
+  });
+
+  it('opens a WebSocket in exactly one module (T31)', () => {
     // The SFU connection is not this: it is made by the SDK, from a URL this
     // app only reads, and `lib/room.ts` is the one file that talks to it.
-    expect(offenders(/new WebSocket/)).toEqual([]);
+    // `lib/socket.ts` is the Control API's realtime feed, and it is the only
+    // other place a socket is constructed.
+    expect(offenders(/new WebSocket/)).toEqual(['lib/socket.ts']);
   });
 
   it('imports the LiveKit SDK in exactly one module', () => {
