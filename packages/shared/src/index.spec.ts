@@ -98,6 +98,9 @@ const PUBLIC_SURFACE: readonly string[] = [
   'AI_HUD_STALE_AFTER_MS',
   'LIVENESS_STATUS_VALUES',
   'OCR_STATUS_VALUES',
+  'checklistItemSchema',
+  'checklistItemsSchema',
+  'CHECKLIST_ITEM_KEY_PATTERN',
 ];
 
 describe('package entry point', () => {

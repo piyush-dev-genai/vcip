@@ -106,9 +106,14 @@ describe('idempotency is structural, not incidental', () => {
   it('resolves every insert against a natural key', () => {
     const inserts = (SEED_SOURCE.match(/\.insert\(/g) ?? []).length;
     const upserts = (SEED_SOURCE.match(/\.onConflictDo/g) ?? []).length;
-    // Five upserts; the webhook endpoint is a documented look-up-then-insert
-    // because the approved schema has no unique index on (tenant_id, url).
-    expect(upserts).toBe(inserts - 1);
+    // Two documented look-up-then-inserts, and they are look-ups for opposite
+    // reasons:
+    //
+    //   - the webhook endpoint, because the approved schema has no unique
+    //     index on (tenant_id, url) to conflict against;
+    //   - the checklist template, because it has one and must not be
+    //     overwritten through it (T33 — see the pinning tests below).
+    expect(upserts).toBe(inserts - 2);
     expect(SEED_SOURCE).toContain('existingEndpoint');
   });
 
@@ -119,5 +124,37 @@ describe('idempotency is structural, not incidental', () => {
 
   it('does not silently reissue the API key on a re-run', () => {
     expect(SEED_SOURCE).toContain('VCIP_SEED_ROTATE_KEY');
+  });
+});
+
+/**
+ * A pinned template must keep meaning what it meant (T33).
+ *
+ * `sessions.checklist_template_id` pins a session to a template row, and schema
+ * §18 promises that changing a tenant's checklist cannot change what an
+ * existing verification was judged against. The pin holds an *id*, so that
+ * promise only holds while the row it points at is immutable — and the seed is
+ * the one thing in this repository that writes template rows.
+ */
+describe('the checklist template is never rewritten', () => {
+  it('does not upsert over an existing version', () => {
+    // The failure this replaced: `onConflictDoUpdate` on (tenant_id, version)
+    // silently rewrote `items`, retroactively changing every session already
+    // pinned to that row, with nothing in the history to say so.
+    const templateBlock = SEED_SOURCE.slice(
+      SEED_SOURCE.indexOf('4. checklist template'),
+      SEED_SOURCE.indexOf('5. API key'),
+    );
+
+    expect(templateBlock.length).toBeGreaterThan(0);
+    expect(templateBlock).not.toContain('onConflictDo');
+  });
+
+  it('compares what is stored against what is intended', () => {
+    expect(SEED_SOURCE).toContain('fingerprint(');
+  });
+
+  it('fails loudly rather than diverging, and says how to publish a change', () => {
+    expect(SEED_SOURCE).toContain('bump DEMO.checklistVersion');
   });
 });

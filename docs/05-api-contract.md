@@ -2202,6 +2202,168 @@ event is appended. It reports rows that already exist.
 
 
 
+\# 17a. Get Checklist [IMPLEMENTED]
+
+
+
+Returns the verification checklist **pinned to this session**, never the
+
+tenant's currently active one (D8).
+
+
+
+\### Endpoint
+
+
+
+```http
+
+GET /v1/agent/sessions/{session\_id}/checklist
+
+```
+
+
+
+\### Authentication
+
+
+
+Agent JWT. There is no customer path onto this route.
+
+
+
+\### Preconditions
+
+
+
+```text
+
+Agent = assigned agent (sessions.agent\_id)
+
+```
+
+
+
+Any session status. Unlike a media token, this is not a live credential: it is
+
+the list of statements the agent is being held to, and it stays readable after
+
+the verdict — which is when "what exactly did I confirm" is usually asked.
+
+
+
+\### Response
+
+
+
+```json
+
+{
+
+&#x20; "data": {
+
+&#x20;   "session\_id": "9f1c...",
+
+&#x20;   "template\_id": "3ab2...",
+
+&#x20;   "version": 1,
+
+&#x20;   "items": \[
+
+&#x20;     {
+
+&#x20;       "key": "face\_visible",
+
+&#x20;       "label": "Customer face visible",
+
+&#x20;       "required": true
+
+&#x20;     }
+
+&#x20;   ]
+
+&#x20; }
+
+}
+
+```
+
+
+
+`template\_id` and `version` are returned alongside the items because which
+
+checklist a verification was judged against must be answerable after the fact,
+
+from the response the portal actually received.
+
+
+
+\### Pinning
+
+
+
+```text
+
+sessions.checklist\_template\_id  ->  checklist\_templates.id
+
+```
+
+
+
+Written once when the session is created, from the tenant's active template.
+
+Activating a different template afterwards does not change what an existing
+
+session returns (`06-database-schema.md` §18). The join is on the pinned id and
+
+not on `active`, so a superseded template stays readable for every session
+
+pinned to it.
+
+
+
+\### Errors
+
+
+
+```text
+
+403  FORBIDDEN        another agent holds this session, or nobody does yet
+
+404  NOT\_FOUND        no such session in this tenant
+
+500  INTERNAL\_ERROR   no template is pinned, or the pinned template is not a
+
+&#x20;                    valid checklist
+
+```
+
+
+
+The 500 is deliberate and is never an empty item list. A checklist served
+
+shorter than the tenant configured would let a verdict be submitted against
+
+required items the agent was never shown.
+
+
+
+\### Side effects
+
+
+
+None. No session moves and no event is appended. Reading what you are about to
+
+attest to is not a fact about the verification; the answers are, and they are
+
+recorded at the verdict (§18).
+
+
+
+\---
+
+
+
 \# 18. Submit Verdict
 
 

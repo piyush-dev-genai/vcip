@@ -80,6 +80,24 @@ const isNewRow = (row: { createdAt: Date; updatedAt: Date }): boolean =>
   row.createdAt.getTime() === row.updatedAt.getTime();
 
 /**
+ * A stable identity for a checklist, for comparing stored against intended.
+ *
+ * Field by field rather than a byte comparison: PostgreSQL normalises `jsonb`
+ * object key order on the way in, so stringifying both sides would report a
+ * difference that does not exist. Array order *is* preserved by `jsonb` and is
+ * part of what a checklist is, so it is preserved here.
+ */
+const fingerprint = (items: unknown): string => {
+  if (!Array.isArray(items)) return 'not-an-array';
+  return items
+    .map((item: unknown) => {
+      const record = (item ?? {}) as Record<string, unknown>;
+      return [record['key'], record['label'], record['required']].map(String).join('|');
+    })
+    .join(';');
+};
+
+/**
  * Hash an API key for storage. Only this ever reaches PostgreSQL.
  *
  * SHA-256 rather than a password KDF: an API key is generated entropy, not a
@@ -215,31 +233,56 @@ async function main(): Promise<void> {
 
     // ------------------------------------------------ 4. checklist template
     //
-    // Matched on (tenant_id, version). The partial unique index permits only
-    // one active template per tenant, so re-running cannot leave two active.
-    const [template] = await db
-      .insert(checklistTemplates)
-      .values({
-        tenantId: tenant.id,
-        version: DEMO.checklistVersion,
-        items: CHECKLIST_ITEMS,
-        active: true,
-      })
-      .onConflictDoUpdate({
-        target: [checklistTemplates.tenantId, checklistTemplates.version],
-        set: { items: CHECKLIST_ITEMS, active: true, updatedAt: new Date() },
-      })
-      .returning({
-        id: checklistTemplates.id,
-        createdAt: checklistTemplates.createdAt,
-        updatedAt: checklistTemplates.updatedAt,
-      });
+    // Matched on (tenant_id, version), and **never overwritten** (T33).
+    //
+    // This used to be an upsert that rewrote `items`, which quietly defeated
+    // the guarantee the whole pinning mechanism exists for. Sessions store
+    // `checklist_template_id`, so schema §18 promises that changing a tenant's
+    // checklist cannot change what an existing verification was judged
+    // against — but the pin holds an *id*, and rewriting the row it points at
+    // changes the meaning of every session already pinned to it, retroactively
+    // and with nothing in the history to say so.
+    //
+    // So editing CHECKLIST_ITEMS now requires bumping `checklistVersion`,
+    // which is what a new version is for. The partial unique index permits
+    // only one active template per tenant, so activating the new one is a
+    // separate, deliberate step rather than something a re-seed does.
+    const existing = await db
+      .select({ id: checklistTemplates.id, items: checklistTemplates.items })
+      .from(checklistTemplates)
+      .where(
+        and(
+          eq(checklistTemplates.tenantId, tenant.id),
+          eq(checklistTemplates.version, DEMO.checklistVersion),
+        ),
+      )
+      .limit(1);
 
-    if (template === undefined) throw new Error('checklist template upsert returned no row');
-    (isNewRow(template) ? created : kept)(
-      'checklist        ',
-      `v${DEMO.checklistVersion} active, ${CHECKLIST_ITEMS.length} items  ${template.id}`,
-    );
+    const describeTemplate = (id: string): string =>
+      `v${DEMO.checklistVersion} active, ${CHECKLIST_ITEMS.length} items  ${id}`;
+
+    if (existing[0] === undefined) {
+      const [inserted] = await db
+        .insert(checklistTemplates)
+        .values({
+          tenantId: tenant.id,
+          version: DEMO.checklistVersion,
+          items: CHECKLIST_ITEMS,
+          active: true,
+        })
+        .returning({ id: checklistTemplates.id });
+
+      if (inserted === undefined) throw new Error('checklist template insert returned no row');
+      created('checklist        ', describeTemplate(inserted.id));
+    } else if (fingerprint(existing[0].items) !== fingerprint(CHECKLIST_ITEMS)) {
+      throw new Error(
+        `checklist template v${DEMO.checklistVersion} already exists with different items. ` +
+          'Sessions are pinned to it (schema 18), so it must not be rewritten - ' +
+          'bump DEMO.checklistVersion to publish a new version instead.',
+      );
+    } else {
+      kept('checklist        ', describeTemplate(existing[0].id));
+    }
 
     // ---------------------------------------------------------- 5. API key
     //
