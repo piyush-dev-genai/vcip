@@ -277,7 +277,7 @@ gate and report.
 | T27 | 3 | WS gateway + connection tokens + canonical event enum | done |
 | T28 | 3 | Recording start on accept | done |
 | T29 | 4 | FastAPI + three mock providers behind interfaces | done |
-| T30 | 4 | Frame source per D23 -> `/internal/ai/result` | todo |
+| T30 | 4 | Frame source per D23 -> `/internal/ai/result` | done |
 | T31 | 4 | Redis HUD + pub/sub -> WS -> agent HUD | todo |
 | T32 | 4 | (!) Kill AI mid-call -> call survives, HUD "AI unavailable", verdict submittable | todo |
 | T33 | 5 | `GET /v1/agent/sessions/:id/checklist` (pinned template) | todo |

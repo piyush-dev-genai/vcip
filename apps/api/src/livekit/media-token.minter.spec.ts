@@ -13,6 +13,7 @@ import type { LiveKitConfig } from './livekit.config.js';
 import type { MediaParticipantMetadata } from './media-token.minter.js';
 import { LiveKitTokenMinter, grantsFor } from './media-token.minter.js';
 import { MediaRole } from './media-token.rules.js';
+import { isCallRole } from './call.keys.js';
 
 const API_KEY = 'devkey';
 const API_SECRET = 'FAKE-livekit-secret-for-tests-0123456789';
@@ -49,6 +50,16 @@ const mintAgent = (): Promise<string> =>
     sessionId: SESSION,
     tenantId: TENANT,
     userId: AGENT,
+    ttlSeconds: 900,
+  });
+
+const mintAnalyzer = (): Promise<string> =>
+  minter.mint({
+    role: MediaRole.ANALYZER,
+    roomName: ROOM,
+    sessionId: SESSION,
+    tenantId: TENANT,
+    userId: null,
     ttlSeconds: 900,
   });
 
@@ -131,9 +142,90 @@ describe('the grants', () => {
   });
 
   it('never issues a grant without a room, which would be a key to every room', () => {
-    for (const role of [MediaRole.CUSTOMER, MediaRole.AGENT]) {
+    for (const role of [MediaRole.CUSTOMER, MediaRole.AGENT, MediaRole.ANALYZER]) {
       expect(grantsFor(role, ROOM).room).toBe(ROOM);
     }
+  });
+});
+
+/**
+ * The analyzer's credential (T30).
+ *
+ * Held by a service that watches a customer's identity verification, so what
+ * it cannot do matters more than what it can. Every assertion decodes the
+ * token: what the SFU enforces is what is in the JWT, not what the object that
+ * built it looked like.
+ */
+describe('the analyzer credential', () => {
+  it('can subscribe', async () => {
+    const grant = video(await verifier.verify(await mintAnalyzer()));
+
+    expect(grant.canSubscribe).toBe(true);
+    expect(grant.roomJoin).toBe(true);
+  });
+
+  it('cannot publish', async () => {
+    // A token that could publish into a KYC call could impersonate the
+    // customer in the recording that is the evidence of it.
+    const grant = video(await verifier.verify(await mintAnalyzer()));
+
+    expect(grant.canPublish).toBe(false);
+    expect(grant.canPublishData ?? false).toBe(false);
+  });
+
+  it('is hidden, so it is not a participant anyone sees or records', async () => {
+    // Three things ride on this: the customer is not shown a silent third
+    // party, T28's grid composite records two people and not three, and T26's
+    // participant bookkeeping cannot mistake it for one of them.
+    const grant = video(await verifier.verify(await mintAnalyzer()));
+
+    expect(grant.hidden).toBe(true);
+  });
+
+  it('is bound to one room', async () => {
+    const grant = video(await verifier.verify(await mintAnalyzer()));
+
+    expect(grant.room).toBe(ROOM);
+    expect(grant.roomList ?? false).toBe(false);
+  });
+
+  it('denies every control-plane scope, as the other two do', async () => {
+    const grant = video(await verifier.verify(await mintAnalyzer()));
+
+    for (const scope of [
+      'roomCreate',
+      'roomAdmin',
+      'roomList',
+      'roomRecord',
+      'recorder',
+      'ingressAdmin',
+      'canUpdateOwnMetadata',
+      'agent',
+      'canSubscribeMetrics',
+    ] as const) {
+      expect(grant[scope] ?? false).toBe(false);
+    }
+  });
+
+  it('joins under an identity T26 does not treat as a participant', async () => {
+    // `isCallRole` knows `customer` and `agent`. The analyzer arriving must
+    // not read as the call starting, and its leaving must not read as a drop.
+    const claims = await verifier.verify(await mintAnalyzer());
+
+    expect(claims.sub).toBe('analyzer');
+    expect(isCallRole(claims.sub as string)).toBe(false);
+  });
+
+  it('carries no user id, because it is not a person', async () => {
+    const claims = await verifier.verify(await mintAnalyzer());
+    const metadata = JSON.parse(claims.metadata as string) as MediaParticipantMetadata;
+
+    expect(metadata).toEqual({
+      role: MediaRole.ANALYZER,
+      session_id: SESSION,
+      tenant_id: TENANT,
+      user_id: null,
+    });
   });
 });
 

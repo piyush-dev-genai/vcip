@@ -18,6 +18,7 @@ import type { VideoGrant } from 'livekit-server-sdk';
 import type { LiveKitConfig } from './livekit.config.js';
 import { InjectLiveKitConfig } from './livekit.config.js';
 import type { MediaRole } from './media-token.rules.js';
+import { MediaRole as Role } from './media-token.rules.js';
 
 /** What the caller asks to be minted. All of it server-derived. */
 export interface MediaTokenGrantRequest {
@@ -78,15 +79,11 @@ export interface MediaParticipantMetadata {
  * stopped being true.
  */
 export function grantsFor(role: MediaRole, roomName: string): VideoGrant {
-  return {
+  const base: VideoGrant = {
     // Join this room, and only this room. `room` is what binds the credential
     // to one session; without it a join grant is a key to every room.
     roomJoin: true,
     room: roomName,
-
-    // Both roles publish camera and microphone, and subscribe to each other.
-    canPublish: true,
-    canSubscribe: true,
 
     // Everything below is denied on purpose.
     //
@@ -114,12 +111,40 @@ export function grantsFor(role: MediaRole, roomName: string): VideoGrant {
     // who could rewrite it could rewrite the audit trail.
     canUpdateOwnMetadata: false,
 
-    // Neither party is invisible: each must see the other join and leave.
-    hidden: false,
-
     // The agent framework and metrics scopes are unused by this product.
     agent: false,
     canSubscribeMetrics: false,
+
+    canPublish: true,
+    canSubscribe: true,
+
+    // Neither party is invisible: each must see the other join and leave.
+    hidden: false,
+  };
+
+  if (role !== Role.ANALYZER) return base;
+
+  return {
+    ...base,
+
+    // The analyzer reads and never writes. It has no camera, no microphone,
+    // and no reason to be able to acquire one: a token that could publish into
+    // a KYC call is a token that could impersonate the customer in the
+    // recording that is the evidence of it.
+    canPublish: false,
+    canSubscribe: true,
+
+    // Hidden, and this is the load-bearing flag.
+    //
+    // Three things follow from it. The customer is not shown a third
+    // participant silently watching their identity verification. T28 records
+    // the room composite in `grid` layout, and a visible participant is a tile
+    // — the evidence file must be the two people on the call and nothing else.
+    // And T26 reads participant lifecycle events to decide when a call started
+    // and whether somebody dropped; a hidden analyzer cannot be mistaken for
+    // one of them. (`isCallRole` would reject the identity anyway. Two
+    // independent reasons, because getting this wrong corrupts the evidence.)
+    hidden: true,
   };
 }
 
@@ -138,7 +163,10 @@ export class LiveKitTokenMinter implements MediaTokenMinter {
     const token = new AccessToken(this.config.apiKey, this.config.apiSecret, {
       // The role is the identity (design §11.2). One session is one room, so
       // it is unique within it, and a rejoin after a dropped connection lands
-      // as the same participant rather than a second ghost.
+      // as the same participant rather than a second ghost. T30's analyzer
+      // relies on this: it subscribes to the participant called `customer`,
+      // which is a fact this server wrote at mint time from a verified
+      // credential rather than anything a client claimed.
       identity: request.role,
       ttl: request.ttlSeconds,
       metadata: JSON.stringify(metadata),

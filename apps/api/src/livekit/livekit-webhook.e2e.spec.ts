@@ -63,6 +63,10 @@ import { LiveKitWebhookController } from './livekit-webhook.controller.js';
 import type { LiveKitConfig } from './livekit.config.js';
 import { LIVEKIT_CONFIG } from './livekit.config.js';
 import { RecordingService } from './recording.service.js';
+import { AiAnalysisService } from '../ai/ai-analysis.service.js';
+import { ANALYSIS_STARTER } from '../ai/ai-analysis.client.js';
+import { AI_CONFIG } from '../ai/ai.config.js';
+import { MEDIA_TOKEN_MINTER } from './media-token.minter.js';
 import { RECORDING_STARTER } from './recording.client.js';
 import type { RecordingStarter } from './recording.client.js';
 import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
@@ -262,6 +266,25 @@ const tenantStore: TenantConfigStore = {
   findActiveChecklistTemplateId: () => Promise.resolve(null),
 };
 
+/** T30's AI service, recorded rather than called. */
+const analysisStarter = {
+  started: [] as { sessionId: string; roomName: string }[],
+  start(sessionId: string, request: { room_name: string }): Promise<void> {
+    analysisStarter.started.push({ sessionId, roomName: request.room_name });
+    return Promise.resolve();
+  },
+};
+
+const analyzerMinter = {
+  minted: [] as { role: string; roomName: string }[],
+  mint(request: { role: string; roomName: string }): Promise<string> {
+    analyzerMinter.minted.push({ role: request.role, roomName: request.roomName });
+    return Promise.resolve('an.analyzer.token');
+  },
+};
+
+const AI = { enabled: true, baseUrl: 'http://ai.test', startTimeoutMs: 2_000 };
+
 @Module({
   imports: [LoggingModule],
   controllers: [LiveKitWebhookController],
@@ -280,6 +303,13 @@ const tenantStore: TenantConfigStore = {
     // egress container is not part of it.
     { provide: RECORDING_STARTER, useValue: recordingStarter },
     RecordingService,
+    // T30: the same instant also starts the AI analysis. Both collaborators
+    // are doubles for the same reason — this suite is about what a webhook
+    // delivery does, not about an egress container or a Python service.
+    { provide: MEDIA_TOKEN_MINTER, useValue: analyzerMinter },
+    { provide: ANALYSIS_STARTER, useValue: analysisStarter },
+    { provide: AI_CONFIG, useValue: AI },
+    AiAnalysisService,
     CallLifecycleService,
   ],
 })
@@ -298,6 +328,8 @@ describe('the LiveKit webhook over HTTP', () => {
   beforeEach(async () => {
     calls.clear();
     sessions.clear();
+    analysisStarter.started.length = 0;
+    analyzerMinter.minted.length = 0;
 
     const sink = new Writable({
       write(_c, _e, cb) {

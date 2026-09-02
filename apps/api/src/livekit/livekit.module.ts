@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AgentsModule } from '../agents/agents.module.js';
+import { AiModule } from '../ai/ai.module.js';
 import { AuthModule } from '../common/auth/auth.module.js';
 import { SessionsModule } from '../sessions/sessions.module.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
@@ -56,6 +57,13 @@ import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js'
  * `TenantsModule` supplies `agent_reconnect_timeout_seconds` (D18) — the
  * reconnect window is per-tenant configuration, not a server constant.
  *
+ * `AiModule` is imported through `forwardRef`, and the cycle it resolves is
+ * real rather than accidental. This module owns token minting, which the AI
+ * module needs so the analyzer holds no LiveKit signing key of its own; the AI
+ * module owns the analysis, which `CALL_STARTED` here has to start. Both
+ * directions are the right way round, so the dependency is declared rather
+ * than broken by moving one of them somewhere it does not belong.
+ *
  * `AgentsModule` supplies `PresenceService`, because a call that ends without
  * a verdict has to free the agent holding it (R5). That is the one write
  * outside PostgreSQL this module performs, it is not authoritative for
@@ -78,7 +86,7 @@ import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js'
  * does, and `infra/livekit.yaml` closes an empty room after `empty_timeout`.
  */
 @Module({
-  imports: [AuthModule, SessionsModule, TenantsModule, AgentsModule],
+  imports: [AuthModule, SessionsModule, TenantsModule, AgentsModule, forwardRef(() => AiModule)],
   controllers: [
     MediaTokenController,
     LiveKitWebhookController,

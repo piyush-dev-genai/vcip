@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AgentsModule } from './agents/agents.module.js';
+import { AiModule } from './ai/ai.module.js';
 import { AuthModule } from './common/auth/auth.module.js';
 import { DbModule } from './common/db/db.module.js';
 import { IdempotencyModule } from './common/idempotency/idempotency.module.js';
@@ -34,6 +35,7 @@ import { TenantsModule } from './tenants/tenants.module.js';
     AgentsModule,
     RealtimeModule,
     LivekitModule,
+    AiModule,
     HealthModule,
   ],
 })

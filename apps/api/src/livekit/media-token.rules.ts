@@ -23,16 +23,30 @@ import { SessionStatus as Status } from '@vcip/shared';
  * so "customer" and "agent" are unique within it, and the LiveKit webhook (T26)
  * can read a participant's role off the identity without a lookup.
  *
- * `analyzer` is design §11.3's third role and is absent on purpose: nothing
- * mints one until T30 gives the AI service a reason to join, and a role no
- * endpoint issues is a grant nobody reviews.
+ * `analyzer` is design §11.3's third role, added by T30 when the AI service
+ * finally had a reason to join. No endpoint issues it: it is minted internally
+ * on the call-start path and handed to the AI service, which holds no LiveKit
+ * signing credentials of its own.
  */
 export const MediaRole = {
   CUSTOMER: 'customer',
   AGENT: 'agent',
+  ANALYZER: 'analyzer',
 } as const;
 
 export type MediaRole = (typeof MediaRole)[keyof typeof MediaRole];
+
+/**
+ * The two roles a *person* holds.
+ *
+ * The analyzer is deliberately not one, and this type is how that is enforced
+ * rather than remembered: `decideMediaToken` answers "may this caller hold
+ * credentials", and the analyzer has no caller — nobody asks for its token, the
+ * server mints one when a call starts. Narrowing here means a future endpoint
+ * that tried to issue an analyzer token through the authorization path would
+ * fail to compile instead of falling into the agent branch below.
+ */
+export type ParticipantRole = typeof MediaRole.CUSTOMER | typeof MediaRole.AGENT;
 
 /**
  * Statuses in which the customer may hold room credentials (contract §13).
@@ -64,7 +78,7 @@ export const AGENT_MEDIA_STATUSES: readonly SessionStatus[] = Object.freeze([Sta
 /** What the decision is made from. Values only — no rows, no actors, no I/O. */
 export interface MediaTokenRequest {
   /** Derived from the credential, never from the URL or the body. */
-  readonly role: MediaRole;
+  readonly role: ParticipantRole;
   /** `sessions.status`, from PostgreSQL (D1). */
   readonly status: SessionStatus;
   /** `sessions.agent_id`. Null until an agent accepts (T19). */
@@ -82,7 +96,7 @@ export interface MediaTokenRequest {
  * session was in the wrong state, which is both false and unhelpful.
  */
 export type MediaTokenDecision =
-  | { readonly kind: 'ALLOWED'; readonly role: MediaRole }
+  | { readonly kind: 'ALLOWED'; readonly role: ParticipantRole }
   /** The session's status does not permit this role to hold credentials. */
   | { readonly kind: 'WRONG_STATE' }
   /** The session is in call, but with a different agent. */

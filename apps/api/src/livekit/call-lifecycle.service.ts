@@ -31,6 +31,8 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SessionEventType, SessionStatus } from '@vcip/shared';
 import type { Logger } from 'pino';
 import { InjectLogger } from '../common/logging/logging.tokens.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AiAnalysisService } from '../ai/ai-analysis.service.js';
 import { setContextSession } from '../common/logging/request-context.js';
 import type { CallSessionRow, SessionRepository } from '../sessions/session.repository.js';
 import type { Notifications } from '../realtime/notifications.js';
@@ -68,6 +70,7 @@ export class CallLifecycleService {
     @InjectCallRepository() private readonly calls: CallRepository,
     private readonly tenants: TenantsService,
     private readonly recording: RecordingService,
+    private readonly ai: AiAnalysisService,
     @InjectNotifications() private readonly notify: Notifications,
     @InjectLogger() private readonly logger: Logger,
     @Optional() @Inject(CALL_LIFECYCLE_CLOCK) now?: CallClock,
@@ -190,6 +193,9 @@ export class CallLifecycleService {
       'both participants are in the room',
     );
 
+    // T28 and T30 both hang off this instant, deliberately: the recording and
+    // the analysis want the same moment for the same reason.
+    //
     // T28: the evidence recording starts here and nowhere else. The plan calls
     // it "recording start on accept", but at accept nobody has joined and
     // LiveKit refuses room-composite egress on a room that does not exist —
@@ -198,6 +204,13 @@ export class CallLifecycleService {
     // verification, and the retry sweeper tries again for as long as the call
     // lasts.
     await this.recording.start(action.sessionId, session.tenantId, session.roomName ?? null);
+
+    // T30: the AI analysis starts here too, and for the same reason. There is
+    // no customer video to subscribe to until somebody is publishing it, and
+    // analysing a customer waiting alone would spend a core on frames no agent
+    // is going to be shown. Like the recording, it never fails the call: AI is
+    // assistive (D6) and a blank HUD costs a signal, not a verification.
+    await this.ai.start(action.sessionId, session.tenantId, session.roomName ?? null);
   }
 
   /**

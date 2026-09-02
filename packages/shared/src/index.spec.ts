@@ -22,6 +22,15 @@ const PUBLIC_SURFACE: readonly string[] = [
   'isAgentPresence',
   'isBillCategory',
 
+  // AI vocabulary (T30). Persisted in `session_ai_summaries` and mirrored by
+  // hand in `apps/ai`, which cannot import this package.
+  'LivenessStatus',
+  'LIVENESS_STATUSES',
+  'OcrStatus',
+  'OCR_STATUSES',
+  'isLivenessStatus',
+  'isOcrStatus',
+
   // state machine
   'SESSION_TRANSITIONS',
   'TERMINAL_SESSION_STATUSES',
@@ -84,6 +93,10 @@ const PUBLIC_SURFACE: readonly string[] = [
   'agentClaimSchema',
   'agentHeartbeatSchema',
   'AGENT_AVAILABILITY_VALUES',
+  'aiResultSchema',
+  'analyzeRequestSchema',
+  'LIVENESS_STATUS_VALUES',
+  'OCR_STATUS_VALUES',
 ];
 
 describe('package entry point', () => {

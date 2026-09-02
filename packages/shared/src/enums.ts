@@ -102,3 +102,64 @@ export function isAgentPresence(value: unknown): value is AgentPresence {
 export function isBillCategory(value: unknown): value is BillCategory {
   return typeof value === 'string' && (BILL_CATEGORIES as readonly string[]).includes(value);
 }
+
+/**
+ * `session_ai_summaries.liveness_status` (`06-database-schema.md` §19,
+ * `03-system-design.md` §17).
+ *
+ * `UNKNOWN` and `UNAVAILABLE` are both undecided and are not the same fact.
+ * `UNKNOWN` means the check ran and could not tell; `UNAVAILABLE` means it
+ * never ran. The agent HUD renders those differently — one is a signal about
+ * the customer, the other a signal about us — so they stay distinct all the way
+ * from the AI service to the column.
+ *
+ * `apps/ai` mirrors this list in Python. The dependency graph in
+ * `05-development-plan.md` §4 makes that mirroring the contract between them:
+ * the Python service cannot import this package, so this file and
+ * `apps/ai/app/providers/results.py` are two statements of one vocabulary, each
+ * with a test that pins the strings.
+ */
+export const LivenessStatus = {
+  LIVE: 'LIVE',
+  NOT_LIVE: 'NOT_LIVE',
+  UNKNOWN: 'UNKNOWN',
+  UNAVAILABLE: 'UNAVAILABLE',
+} as const;
+
+export type LivenessStatus = (typeof LivenessStatus)[keyof typeof LivenessStatus];
+
+export const LIVENESS_STATUSES: readonly LivenessStatus[] = Object.freeze(
+  Object.values(LivenessStatus),
+);
+
+/**
+ * `session_ai_summaries.ocr_status`.
+ *
+ * The vocabulary is `05-api-contract.md` §23's (`"ocr_status": "PASS"`), not
+ * the `DOCUMENT_DETECTED`/`OCR_PASS`/`OCR_FAILED` sketch in
+ * `03-system-design.md` §19, which predates the contract the Control API
+ * stores and is introduced there as what the output "can be".
+ *
+ * `NO_DOCUMENT` is an answer rather than a failure: OCR runs against a frame
+ * the customer was asked to produce, and "nothing was being held up" is the
+ * honest result. Reporting it as `FAIL` would put a red mark on the HUD for a
+ * customer who has done nothing wrong.
+ */
+export const OcrStatus = {
+  PASS: 'PASS',
+  FAIL: 'FAIL',
+  NO_DOCUMENT: 'NO_DOCUMENT',
+  UNAVAILABLE: 'UNAVAILABLE',
+} as const;
+
+export type OcrStatus = (typeof OcrStatus)[keyof typeof OcrStatus];
+
+export const OCR_STATUSES: readonly OcrStatus[] = Object.freeze(Object.values(OcrStatus));
+
+export function isLivenessStatus(value: unknown): value is LivenessStatus {
+  return typeof value === 'string' && (LIVENESS_STATUSES as readonly string[]).includes(value);
+}
+
+export function isOcrStatus(value: unknown): value is OcrStatus {
+  return typeof value === 'string' && (OCR_STATUSES as readonly string[]).includes(value);
+}

@@ -2,7 +2,7 @@
   "name": "@vcip/ai",
   "version": "0.0.0",
   "private": true,
-  "description": "V-CIP AI service — liveness, face match, OCR (assistive only)",
+  "description": "V-CIP AI service \u2014 liveness, face match, OCR (assistive only)",
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/py.mjs -m uvicorn app.main:app --reload --port 8000",
@@ -10,6 +10,7 @@
     "typecheck": "node scripts/py.mjs -m compileall -q app tests",
     "test": "node scripts/py.mjs -m pytest -q",
     "lint:py": "node scripts/py.mjs -m ruff check app tests",
-    "format:py": "node scripts/py.mjs -m ruff format app tests"
+    "format:py": "node scripts/py.mjs -m ruff format app tests",
+    "verify:analysis": "node scripts/py.mjs scripts/verify_analysis.py"
   }
 }

@@ -10,6 +10,8 @@
 import { SessionEventType, SessionStatus } from '@vcip/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createLogger } from '../common/logging/logger.js';
+import type { AiAnalysisService } from '../ai/ai-analysis.service.js';
+import { AiAnalysisOutcome } from '../ai/ai-analysis.service.js';
 import type {
   AcceptCommand,
   AgentWorkRow,
@@ -223,7 +225,18 @@ class FakeRecording {
   }
 }
 
+/** T30's analyzer trigger, recorded rather than performed. */
+class FakeAi {
+  readonly started: { sessionId: string; tenantId: string; roomName: string | null }[] = [];
+
+  start(sessionId: string, tenantId: string, roomName: string | null): Promise<AiAnalysisOutcome> {
+    this.started.push({ sessionId, tenantId, roomName });
+    return Promise.resolve(AiAnalysisOutcome.STARTED);
+  }
+}
+
 let recording: FakeRecording;
+let ai: FakeAi;
 let calls: FakeCalls;
 let sessions: FakeSessions;
 let service: CallLifecycleService;
@@ -232,11 +245,13 @@ beforeEach(() => {
   calls = new FakeCalls();
   sessions = new FakeSessions();
   recording = new FakeRecording();
+  ai = new FakeAi();
   service = new CallLifecycleService(
     sessions,
     calls,
     new TenantsService(tenantStore),
     recording as unknown as RecordingService,
+    ai as unknown as AiAnalysisService,
     new RecordingNotifications(),
     createLogger({ level: 'silent' }),
     () => NOW,
@@ -458,5 +473,57 @@ describe('the evidence recording (T28)', () => {
     await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
 
     expect(recording.started).toEqual([]);
+  });
+});
+
+/**
+ * Starting the AI analysis (T30).
+ *
+ * The same instant as the recording, for a related reason: there is no
+ * customer video to subscribe to until somebody is publishing it, and a
+ * customer waiting alone is not a call worth spending a core decoding.
+ */
+describe('the AI analysis', () => {
+  const bothJoin = async (): Promise<void> => {
+    await service.handle(event({ participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+  };
+
+  it('starts when both participants are in the room', async () => {
+    await bothJoin();
+
+    expect(ai.started).toEqual([
+      { sessionId: SESSION, tenantId: TENANT, roomName: `vcip_${SESSION}` },
+    ]);
+  });
+
+  it('does not start for one participant alone', async () => {
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(ai.started).toEqual([]);
+  });
+
+  it('is asked for after CALL_STARTED, never instead of it', async () => {
+    await bothJoin();
+
+    expect(types()).toContain(SessionEventType.CALL_STARTED);
+    expect(ai.started).toHaveLength(1);
+  });
+
+  it('is asked for exactly once per call, like the recording', async () => {
+    await bothJoin();
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(ai.started).toHaveLength(1);
+  });
+
+  it('does not hold up the recording', async () => {
+    // Both hang off the same moment, and the evidence is the one that matters:
+    // an AI service that is slow or missing must not cost the recording.
+    await bothJoin();
+
+    expect(recording.started).toHaveLength(1);
+    expect(ai.started).toHaveLength(1);
   });
 });

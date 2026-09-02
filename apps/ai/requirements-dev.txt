@@ -1,4 +1,7 @@
 -r requirements.txt
 pytest>=8.3,<9.0
-httpx>=0.27,<1.0
+
+# Minting LiveKit tokens, for scripts/verify_analysis.py only. The service
+# itself never mints one: the Control API does, and hands it over (T30).
+livekit-api>=1.0,<2.0
 ruff>=0.7,<1.0
