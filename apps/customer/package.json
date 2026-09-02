@@ -4,9 +4,9 @@
   "private": true,
   "description": "V-CIP customer web application",
   "scripts": {
-    "dev": "next dev --port 3000",
+    "dev": "node ../../scripts/with-env.mjs next dev --port 3000",
     "build": "next build",
-    "start": "next start --port 3000",
+    "start": "node ../../scripts/with-env.mjs next start --port 3000",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
