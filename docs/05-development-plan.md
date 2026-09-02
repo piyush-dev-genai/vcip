@@ -281,7 +281,7 @@ gate and report.
 | T31 | 4 | Redis HUD + pub/sub -> WS -> agent HUD | done |
 | T32 | 4 | (!) Kill AI mid-call -> call survives, HUD "AI unavailable", verdict submittable | done |
 | T33 | 5 | `GET /v1/agent/sessions/:id/checklist` (pinned template) | done |
-| T34 | 5 | Checklist submit + required-item validation | todo |
+| T34 | 5 | Checklist submit + required-item validation | done |
 | T35 | 5 | Verdict transaction: single-winner guard + billing + AI snapshot + outbox | todo |
 | T36 | 5 | (!) Duplicate verdict -> one verdict, one billing row | todo |
 | T37 | 5 | (!) Verdict racing disconnect -> one terminal outcome, loser 409 | todo |

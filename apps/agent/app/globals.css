@@ -435,3 +435,47 @@ button.primary {
   font-size: 0.7rem;
   text-align: center;
 }
+
+/* --------------------------------------------------- T33/T34 checklist */
+
+.hint {
+  margin: 0.6rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.checks {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.checks label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.checks label:hover {
+  background: var(--line);
+}
+
+.checks input {
+  /* Deliberately large. This is ticked during a live call by someone who is
+     also talking to a customer and watching video. */
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: none;
+  cursor: pointer;
+}
+
+.checks .required {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}

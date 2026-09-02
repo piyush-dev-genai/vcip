@@ -101,6 +101,10 @@ const PUBLIC_SURFACE: readonly string[] = [
   'checklistItemSchema',
   'checklistItemsSchema',
   'CHECKLIST_ITEM_KEY_PATTERN',
+  'checklistAnswerSchema',
+  'checklistSubmissionSchema',
+  'validateSubmission',
+  'approvalReady',
 ];
 
 describe('package entry point', () => {

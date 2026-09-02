@@ -137,15 +137,27 @@ describe('token handling has one implementation', () => {
     expect(offenders(/localStorage/)).toEqual([]);
   });
 
-  it('touches browser storage in exactly two modules, both in lib', () => {
-    // The credential (T16) and the session being worked (T21). Both are
-    // sessionStorage, both are injected as a host so they are testable, and no
+  it('touches browser storage in exactly three modules, all in lib', () => {
+    // The credential (T16), the session being worked (T21), and the agent's
+    // unsubmitted checklist ticks (T34). All three are sessionStorage, all
+    // three inject the storage surface as a host so they are testable, and no
     // component reaches for storage directly — which is what keeps the rules
-    // about what may be persisted in files that state them.
+    // about what may be persisted in the files that state them.
     expect(offenders(/sessionStorage|setItem\(|getItem\(/)).toEqual([
+      'lib/checklist.ts',
       'lib/token.ts',
       'lib/work.ts',
     ]);
+  });
+
+  it('persists no customer data in the checklist ticks', () => {
+    // What T34 remembers is item keys and booleans — the tenant's own
+    // checklist configuration and the agent's unsubmitted answers to it.
+    // Nothing about the customer, and nothing that authenticates.
+    const checklist = sources.find((file) => file.path === 'lib/checklist.ts');
+    for (const pattern of [/external_ref/, /access_token/, /latitude|longitude/, /password/i]) {
+      expect(checklist?.text ?? '').not.toMatch(pattern);
+    }
   });
 
   it('persists no customer data and no credential beside the session id', () => {
@@ -228,6 +240,7 @@ describe('every request goes through the API client', () => {
     expect([...routes].sort()).toEqual([
       "'/accept'",
       "'/availability'",
+      "'/checklist'",
       "'/claim'",
       "'/heartbeat'",
       "'/login'",
@@ -249,13 +262,14 @@ describe('every request goes through the API client', () => {
 
   it('reads with GET and acts with POST, and never the other way round', () => {
     const client = sources.find((file) => file.path === 'lib/api.ts');
-    // Four GETs: the queue, one session, the media token, and the agent's own
-    // work. All four are reads in the API contract too, so no mutation can be
-    // smuggled onto the read verb. The media token is a read in the strongest
-    // sense — T24 mints it without writing a row, an event, or a billing entry —
-    // and so is the work listing, which reports rows that already exist.
+    // Five GETs: the queue, one session, the media token, the agent's own work,
+    // and the pinned checklist. All five are reads in the API contract too, so
+    // no mutation can be smuggled onto the read verb. The media token is a read
+    // in the strongest sense — T24 mints it without writing a row, an event, or
+    // a billing entry — and so is the checklist, which T33 serves without
+    // appending anything to the session.
     const gets = [...(client?.text.matchAll(/method: 'GET'/g) ?? [])];
-    expect(gets).toHaveLength(4);
+    expect(gets).toHaveLength(5);
     // And a GET never carries a body: the client only attaches one for POST.
     expect(client?.text).toMatch(/method === 'POST' \? \{ body:/);
   });
@@ -277,11 +291,24 @@ describe('every request goes through the API client', () => {
 
   it('calls none of the endpoints later tasks add', () => {
     // Claim and accept left this list with T21; the media token left it with
-    // T25; the WebSocket connection token left it with T31. Everything still
-    // on it is scope, asserted rather than promised.
-    for (const pattern of [/\/verdict\b/, /\/checklist\b/, /\/internal\//]) {
+    // T25; the WebSocket connection token left it with T31; the checklist left
+    // it with T33. Everything still on it is scope, asserted rather than
+    // promised — the verdict is T35, and until then nothing in this portal may
+    // reach for it.
+    for (const pattern of [/\/verdict\b/, /\/internal\//]) {
       expect(offenders(pattern)).toEqual([]);
     }
+  });
+
+  it('reaches the checklist only through the API client', () => {
+    // T33's read is on the allowlist above. What is asserted here is that it
+    // goes through the one client like everything else: a component fetching
+    // it directly would bypass the credential handling and the error mapping
+    // that client owns.
+    // The quoted route literal, not the bare word: `lib/checklist.ts` is a
+    // module path, and matching that would make this guard about imports
+    // rather than about who builds a URL.
+    expect(offenders(/'\/checklist'/)).toEqual(['lib/api.ts']);
   });
 
   it('asks for a connection token through the API client and nowhere else', () => {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHECKLIST_ITEM_KEY_PATTERN,
+  approvalReady,
   checklistItemSchema,
   checklistItemsSchema,
+  validateSubmission,
 } from './checklist.js';
 
 const item = (over: Record<string, unknown> = {}) => ({
@@ -71,5 +73,142 @@ describe('a template of items', () => {
     const parsed = checklistItemsSchema.parse(ordered);
 
     expect(parsed.map((entry) => entry.key)).toEqual(['face_visible', 'document_shown']);
+  });
+});
+
+// ------------------------------------------------------------- submission
+
+const TEMPLATE = [
+  { key: 'face_visible', label: 'Customer face visible', required: true },
+  { key: 'document_shown', label: 'Original document shown', required: true },
+  { key: 'notes_taken', label: 'Notes taken', required: false },
+];
+
+const answers = (over: Record<string, boolean> = {}) =>
+  TEMPLATE.map((entry) => ({ key: entry.key, checked: over[entry.key] ?? true }));
+
+const approving = { requireAllChecked: true };
+const rejecting = { requireAllChecked: false };
+
+describe('validating a submitted checklist', () => {
+  it('accepts a complete, fully checked submission', () => {
+    const decision = validateSubmission(TEMPLATE, answers(), approving);
+
+    expect(decision.kind).toBe('ACCEPTED');
+  });
+
+  it('returns the items in template order, not submission order', () => {
+    // These rows are the record of what was asked and answered. The order a
+    // client happened to serialise them in is not part of that.
+    const shuffled = [...answers()].reverse();
+    const decision = validateSubmission(TEMPLATE, shuffled, approving);
+
+    expect(decision.kind === 'ACCEPTED' && decision.items.map((item) => item.key)).toEqual([
+      'face_visible',
+      'document_shown',
+      'notes_taken',
+    ]);
+  });
+
+  it('refuses a submission that skips an item rather than reading it as unchecked', () => {
+    // "The agent left it blank" and "the portal is running against an older
+    // template" arrive looking identical. Recording the second as the first
+    // would write down an attestation nobody made.
+    const partial = answers().slice(0, 2);
+    const decision = validateSubmission(TEMPLATE, partial, approving);
+
+    expect(decision).toEqual({ kind: 'MISSING_ITEMS', keys: ['notes_taken'] });
+  });
+
+  it('refuses answers to items this template does not contain', () => {
+    const extra = [...answers(), { key: 'invented', checked: true }];
+    const decision = validateSubmission(TEMPLATE, extra, approving);
+
+    expect(decision).toEqual({ kind: 'UNKNOWN_ITEMS', keys: ['invented'] });
+  });
+
+  it('reports an unknown item before an unchecked one', () => {
+    // A caller sending keys the template never had is most likely running a
+    // stale portal; telling them which required item was unticked would answer
+    // a question they did not ask.
+    const both = [
+      { key: 'face_visible', checked: false },
+      { key: 'invented', checked: true },
+    ];
+
+    expect(validateSubmission(TEMPLATE, both, approving).kind).toBe('UNKNOWN_ITEMS');
+  });
+
+  it('refuses an approval with a required item unchecked', () => {
+    const decision = validateSubmission(TEMPLATE, answers({ document_shown: false }), approving);
+
+    expect(decision).toEqual({ kind: 'REQUIRED_UNCHECKED', keys: ['document_shown'] });
+  });
+
+  it('names every unchecked required item, not just the first', () => {
+    const decision = validateSubmission(
+      TEMPLATE,
+      answers({ face_visible: false, document_shown: false }),
+      approving,
+    );
+
+    expect(decision).toEqual({
+      kind: 'REQUIRED_UNCHECKED',
+      keys: ['face_visible', 'document_shown'],
+    });
+  });
+
+  it('ignores an unchecked optional item', () => {
+    expect(validateSubmission(TEMPLATE, answers({ notes_taken: false }), approving).kind).toBe(
+      'ACCEPTED',
+    );
+  });
+
+  it('lets a rejection through with required items unchecked', () => {
+    // The reading of contract §18 that makes rejection possible at all: an
+    // agent rejects *because* a required check failed.
+    const decision = validateSubmission(TEMPLATE, answers({ face_visible: false }), rejecting);
+
+    expect(decision.kind).toBe('ACCEPTED');
+  });
+
+  it('records the rejection exactly as answered', () => {
+    // What varies by verdict is whether the checklist gates, never whether it
+    // is kept. The unchecked item is the answer to "why was this rejected".
+    const decision = validateSubmission(TEMPLATE, answers({ face_visible: false }), rejecting);
+
+    expect(decision.kind === 'ACCEPTED' && decision.items[0]).toEqual({
+      key: 'face_visible',
+      checked: false,
+    });
+  });
+
+  it('still demands completeness on a rejection', () => {
+    // Gating is what relaxes. Answering a different set of questions is not.
+    const decision = validateSubmission(TEMPLATE, answers().slice(0, 1), rejecting);
+
+    expect(decision.kind).toBe('MISSING_ITEMS');
+  });
+});
+
+describe('whether an approval is ready', () => {
+  it('is true only when every required item is checked', () => {
+    expect(approvalReady(TEMPLATE, answers())).toBe(true);
+    expect(approvalReady(TEMPLATE, answers({ face_visible: false }))).toBe(false);
+  });
+
+  it('is false before every item has been answered', () => {
+    expect(approvalReady(TEMPLATE, [])).toBe(false);
+  });
+
+  it('agrees with the rule the server applies', () => {
+    // The portal enables its approve control from this; the API refuses from
+    // `validateSubmission`. Two implementations would drift into a button that
+    // promises what the server declines.
+    for (const submitted of [answers(), answers({ document_shown: false }), []]) {
+      expect(approvalReady(TEMPLATE, submitted)).toBe(
+        validateSubmission(TEMPLATE, submitted, approving).kind === 'ACCEPTED',
+      );
+    }
   });
 });

@@ -30,6 +30,7 @@ import {
   agentLoginSchema,
   type AgentAvailabilityRequest,
   type AgentLoginRequest,
+  type ChecklistResult,
 } from '@vcip/shared';
 import { ApiError, NetworkError } from './errors';
 
@@ -195,6 +196,15 @@ export interface AgentApi {
    * only when this agent is the one `sessions.agent_id` names.
    */
   mediaToken(sessionId: string): Promise<MediaTokenResult>;
+
+  /**
+   * The checklist this session is pinned to (T33).
+   *
+   * A read, and the template is fixed for the life of the session, so the
+   * portal fetches it once when the call screen opens rather than polling it.
+   * The agent must be the assigned agent; the server takes that from the JWT.
+   */
+  checklist(sessionId: string): Promise<ChecklistResult>;
 
   /**
    * A short-lived credential for the WebSocket (T27, D9).
@@ -403,6 +413,13 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
 
     async mediaToken(sessionId) {
       return request<MediaTokenResult>(agentSessionUrl(deps.baseUrl, sessionId, '/media-token'), {
+        method: 'GET',
+        authenticated: true,
+      });
+    },
+
+    async checklist(sessionId) {
+      return request<ChecklistResult>(agentSessionUrl(deps.baseUrl, sessionId, '/checklist'), {
         method: 'GET',
         authenticated: true,
       });

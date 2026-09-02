@@ -89,6 +89,12 @@ class FakeChecklistRepository implements ChecklistRepository {
         : null;
     return Promise.resolve(found);
   }
+
+  saveAnswers(): Promise<never> {
+    // No route reaches this. The answers travel with the verdict (T35), and a
+    // GET that wrote them would be the bug this refusal catches.
+    throw new Error('reading a checklist must never write one');
+  }
 }
 
 const agentJwt = (tenantId: string, userId: string): string =>

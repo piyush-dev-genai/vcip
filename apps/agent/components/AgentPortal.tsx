@@ -34,6 +34,7 @@ import {
 } from '../lib/work-state';
 import { AvailabilityPanel } from './AvailabilityPanel';
 import { AiPanel } from './AiPanel';
+import { ChecklistPanel } from './ChecklistPanel';
 import { CallPanel } from './CallPanel';
 import { LoginForm } from './LoginForm';
 import { OfferPanel } from './OfferPanel';
@@ -691,6 +692,7 @@ export function AgentPortal() {
             <>
               <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
               <AiPanel sessionId={work.sessionId} updates={aiUpdates} />
+              <ChecklistPanel sessionId={work.sessionId} api={api} />
             </>
           ) : null}
 

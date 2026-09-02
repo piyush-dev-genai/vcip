@@ -2470,9 +2470,55 @@ Session = IN\_CALL
 
 Agent = assigned agent
 
-Required checklist items = checked
+Required checklist items = checked   (APPROVED only; see below)
 
 ```
+
+
+
+\### Checklist [T34]
+
+
+
+The submission must answer **every** item in the template the session is pinned
+
+to (section 17a). An item left out is refused rather than recorded as
+
+unchecked: a blank answer and a portal running against an older template arrive
+
+looking identical, and recording the second as the first would store an
+
+attestation nobody made. Answers naming items the template does not contain are
+
+refused for the same reason.
+
+
+
+`required` gates **`APPROVED` only.** Read literally, the precondition above
+
+would make a rejection impossible in the case rejections exist for: an agent
+
+rejects *because* a required check failed, so demanding every required item be
+
+`true` first would leave the only submittable rejection one where nothing was
+
+wrong. `REJECTED` and `ABORTED` record the checklist exactly as answered.
+
+
+
+The checklist is stored in full for every verdict either way. What varies is
+
+whether it gates, not whether it is kept -- the unchecked item is the answer to
+
+"why was this rejected".
+
+
+
+Refusals are `422 UNPROCESSABLE` and name the offending item keys. The answers
+
+are written to `session\_checklist\_items` inside the verdict transaction
+
+(`06-database-schema.md` §45), so they commit with the verdict or not at all.
 
 
 
