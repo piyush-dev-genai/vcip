@@ -54,6 +54,13 @@ class FakeQueueRepository implements QueueRepository {
     this.sets.set(key, set);
   }
 
+  prune(): Promise<number> {
+    // The customer-facing queue path never prunes. T17's agent view owns the
+    // repair, because it is the only reader that confirms a whole page of
+    // candidates against PostgreSQL and therefore knows which are dead.
+    throw new Error('the customer queue path must not prune');
+  }
+
   async rank(member: QueueMember): Promise<number | null> {
     await Promise.resolve();
     this.rankCalls += 1;

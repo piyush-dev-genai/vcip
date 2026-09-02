@@ -93,6 +93,8 @@ const stored = (over: Partial<StoredSession> & { id: string }): StoredSession =>
 class FakeQueueRepository implements QueueRepository {
   readonly sets = new Map<string, Map<string, number>>();
   readonly rangeCalls: Array<{ key: string; limit: number }> = [];
+  readonly pruneCalls: Array<{ tenantId: string; language: string; sessionIds: string[] }> = [];
+  pruneFails = false;
 
   seed(tenantId: string, language: string, sessionId: string, score: number): void {
     const key = queueKey(tenantId, language);
@@ -104,6 +106,18 @@ class FakeQueueRepository implements QueueRepository {
   add(entry: QueueEntry): Promise<void> {
     this.seed(entry.tenantId, entry.language, entry.sessionId, entry.score);
     return Promise.resolve();
+  }
+
+  prune(tenantId: string, language: string, sessionIds: readonly string[]): Promise<number> {
+    if (this.pruneFails) return Promise.reject(new Error('redis is not answering'));
+    const set = this.sets.get(queueKey(tenantId, language));
+    if (set === undefined) return Promise.resolve(0);
+    let removed = 0;
+    for (const sessionId of sessionIds) {
+      if (set.delete(sessionId)) removed += 1;
+    }
+    this.pruneCalls.push({ tenantId, language, sessionIds: [...sessionIds] });
+    return Promise.resolve(removed);
   }
 
   rank(member: QueueMember): Promise<number | null> {
@@ -500,15 +514,134 @@ describe('AgentQueueService', () => {
       expect(await ids(actor(AGENT_EN, TENANT_A))).toEqual([]);
     });
 
-    it('returns the live sessions around a stale member without disturbing it', async () => {
+    it('returns the live sessions around a stale member', async () => {
       enqueue(stored({ id: 'live-1', queuedAt: new Date(NOW - 300_000) }));
       sessions.seed(stored({ id: 'stale', status: SessionStatus.DROPPED_QUEUED }));
       queue.seed(TENANT_A, 'en', 'stale', NOW - 200_000);
       enqueue(stored({ id: 'live-2', queuedAt: new Date(NOW - 100_000) }));
 
       expect(await ids(actor(AGENT_EN, TENANT_A))).toEqual(['live-1', 'live-2']);
-      // Still in Redis: cleaning it up belongs to the task that owns removal.
-      expect(queue.sets.get(queueKey(TENANT_A, 'en'))!.has('stale')).toBe(true);
+    });
+
+    it('removes it, rather than leaving it to accumulate', async () => {
+      // This used to assert the opposite — that cleanup "belongs to the task
+      // that owns removal". No task ever did, so every completed verification
+      // left a member behind for good.
+      sessions.seed(stored({ id: 'stale', status: SessionStatus.DROPPED_QUEUED }));
+      queue.seed(TENANT_A, 'en', 'stale', NOW - 200_000);
+
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(queue.sets.get(queueKey(TENANT_A, 'en'))?.has('stale')).toBe(false);
+    });
+
+    it('leaves a live member alone', async () => {
+      enqueue(stored({ id: 'live-1', queuedAt: new Date(NOW - 300_000) }));
+
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(queue.sets.get(queueKey(TENANT_A, 'en'))?.has('live-1')).toBe(true);
+    });
+
+    it('prunes from the language queue the member is actually in', async () => {
+      sessions.seed(stored({ id: 'stale-hi', status: SessionStatus.APPROVED, language: 'hi' }));
+      queue.seed(TENANT_A, 'hi', 'stale-hi', NOW - 200_000);
+
+      await service.view(actor(AGENT_EN_HI, TENANT_A));
+
+      expect(queue.sets.get(queueKey(TENANT_A, 'hi'))?.has('stale-hi')).toBe(false);
+    });
+
+    it('prunes nothing when every candidate is live', async () => {
+      enqueue(stored({ id: 'live-1', queuedAt: new Date(NOW - 300_000) }));
+
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(queue.pruneCalls).toEqual([]);
+    });
+
+    it('still answers when the prune itself fails', async () => {
+      // A repair, not the answer. The confirmation against PostgreSQL is what
+      // makes the response correct, and an agent asking what is waiting should
+      // get it even when Redis will not take a write.
+      enqueue(stored({ id: 'live-1', queuedAt: new Date(NOW - 300_000) }));
+      sessions.seed(stored({ id: 'stale', status: SessionStatus.APPROVED }));
+      queue.seed(TENANT_A, 'en', 'stale', NOW - 400_000);
+      queue.pruneFails = true;
+
+      expect(await ids(actor(AGENT_EN, TENANT_A))).toEqual(['live-1']);
+    });
+  });
+
+  describe('a queue whose head is entirely dead', () => {
+    /** Fill the head of the queue with members no longer QUEUED. */
+    const buryUnder = (deadCount: number): void => {
+      for (let i = 0; i < deadCount; i += 1) {
+        const id = `dead-${String(i).padStart(3, '0')}`;
+        sessions.seed(stored({ id, status: SessionStatus.APPROVED }));
+        queue.seed(TENANT_A, 'en', id, NOW - 900_000 + i);
+      }
+    };
+
+    it('finds a live session buried under a full page of dead members', async () => {
+      // The reported bug, exactly. Nothing removed a member when a session
+      // left QUEUED, so 20 finished verifications sat at the head of the ZSET;
+      // the bounded read returned only those, PostgreSQL confirmed none, and
+      // the agent saw an empty queue while a customer waited behind them.
+      buryUnder(AGENT_QUEUE_LIMIT);
+      enqueue(stored({ id: 'waiting', queuedAt: new Date(NOW - 60_000) }));
+
+      expect(await ids(actor(AGENT_EN, TENANT_A))).toEqual(['waiting']);
+    });
+
+    it('finds them on the first request, not after a refresh', async () => {
+      // Pruning and then returning the same empty page would technically fix
+      // the queue while still showing the agent nothing.
+      buryUnder(AGENT_QUEUE_LIMIT);
+      enqueue(stored({ id: 'waiting', queuedAt: new Date(NOW - 60_000) }));
+
+      const view = await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(view.sessions.map((s) => s.session_id)).toEqual(['waiting']);
+    });
+
+    it('clears the dead members it read', async () => {
+      buryUnder(AGENT_QUEUE_LIMIT);
+      enqueue(stored({ id: 'waiting', queuedAt: new Date(NOW - 60_000) }));
+
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(queue.sets.get(queueKey(TENANT_A, 'en'))?.size).toBe(1);
+    });
+
+    it('reads at most twice, however dead the queue is', async () => {
+      // The repair is bounded: a request path is not the place for a loop that
+      // walks an arbitrarily long queue. Successive requests continue it.
+      buryUnder(AGENT_QUEUE_LIMIT * 3);
+
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(queue.rangeCalls).toHaveLength(2);
+    });
+
+    it('converges across requests', async () => {
+      buryUnder(AGENT_QUEUE_LIMIT * 2);
+      enqueue(stored({ id: 'waiting', queuedAt: new Date(NOW - 60_000) }));
+
+      // First request clears two pages and does not reach the live session.
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(await ids(actor(AGENT_EN, TENANT_A))).toEqual(['waiting']);
+    });
+
+    it('does not retry when the page was merely short', async () => {
+      // Fewer sessions than the limit, none of them dead. A second read would
+      // be a wasted round trip on every quiet queue in the deployment.
+      enqueue(stored({ id: 'live-1', queuedAt: new Date(NOW - 300_000) }));
+
+      await service.view(actor(AGENT_EN, TENANT_A));
+
+      expect(queue.rangeCalls).toHaveLength(1);
     });
   });
 
@@ -636,7 +769,12 @@ describe('AgentQueueService', () => {
   });
 
   describe('read-only', () => {
-    it('does not add, remove, or re-score any queue member', async () => {
+    it('adds no member and re-scores none', async () => {
+      // The view now removes members PostgreSQL has disowned — that is the
+      // repair, and the test below covers it. What it still must never do is
+      // put a session *into* a queue or move one: the score is `queued_at`,
+      // this read does not own it, and re-scoring would send a waiting
+      // customer to the back of the line.
       enqueue(stored({ id: 'live' }));
       sessions.seed(stored({ id: 'stale', status: SessionStatus.OFFERED }));
       queue.seed(TENANT_A, 'en', 'stale', NOW - 500_000);
@@ -645,10 +783,24 @@ describe('AgentQueueService', () => {
 
       await service.view(actor(AGENT_EN_HI, TENANT_A));
 
-      expect(queue.sets.size).toBe(before.size);
       for (const [key, set] of queue.sets) {
-        expect([...set.entries()].sort()).toEqual([...before.get(key)!.entries()].sort());
+        for (const [sessionId, score] of set) {
+          // Every surviving member was already there, at the same score.
+          expect(before.get(key)?.get(sessionId)).toBe(score);
+        }
       }
+    });
+
+    it('removes only members it proved were not queued', async () => {
+      enqueue(stored({ id: 'live' }));
+      sessions.seed(stored({ id: 'stale', status: SessionStatus.OFFERED }));
+      queue.seed(TENANT_A, 'en', 'stale', NOW - 500_000);
+
+      await service.view(actor(AGENT_EN_HI, TENANT_A));
+
+      const members = queue.sets.get(queueKey(TENANT_A, 'en'));
+      expect(members?.has('live')).toBe(true);
+      expect(members?.has('stale')).toBe(false);
     });
 
     it('does not touch any session row', async () => {

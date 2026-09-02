@@ -4,10 +4,15 @@
  * Two operations, and deliberately no more: add a member at a score, and read a
  * member's rank. Everything the MVP queue does is built from those.
  *
- * **No `remove`.** T15 has no code path that needs one — Redis is only written
- * after the database has committed, so a failed `ZADD` leaves nothing behind to
- * clean up. Removal arrives with its first real caller in T18's claim. An
- * exported method with no caller is a method nobody has ever run.
+ * **`prune` is the projection's repair.** T15 shipped without any removal, on
+ * the reasoning that Redis is written only after the database commits and every
+ * read confirms its candidates against PostgreSQL — so a member outliving its
+ * status was harmless. It was not. Nothing removed a member when a session was
+ * claimed, aborted, dropped or decided, so dead members accumulated forever,
+ * and a bounded read at the head of the queue eventually returned nothing but
+ * corpses: an agent staring at an empty queue with a customer waiting in it.
+ * `prune` is what makes "confirm against PostgreSQL" repair the projection
+ * instead of merely tolerating it.
  *
  * Port and adapter, as with `SessionRepository` (T12) and `SessionEventWriter`
  * (T13): the service depends on the interface, so the queue's rules are
@@ -82,6 +87,27 @@ export interface QueueRepository {
    * a queued session.
    */
   range(tenantId: string, language: string, limit: number): Promise<readonly QueueCandidate[]>;
+
+  /**
+   * Drop members PostgreSQL has already disowned.
+   *
+   * The projection's one repair. A member outliving its status was always
+   * permitted — the read confirms every candidate against the database — but
+   * "permitted" quietly became "forever": nothing removed a member when a
+   * session was claimed, aborted, dropped or decided, so every completed
+   * verification left one behind. With a bounded read at the head of the
+   * queue, enough dead members ahead of a live one make it unreachable, and
+   * the agent sees an empty queue while a customer waits.
+   *
+   * Called only with ids the caller has just proved are not queued in this
+   * tenant. Safe to repeat and safe to race: `ZREM` on an absent member is a
+   * no-op, and a member is only ever added after the row it names has
+   * committed, so a candidate the database disowns is genuinely stale.
+   *
+   * Returns how many were actually removed, which is what distinguishes a
+   * repair from a no-op for the caller and the log.
+   */
+  prune(tenantId: string, language: string, sessionIds: readonly string[]): Promise<number>;
 }
 
 export const QUEUE_REPOSITORY = Symbol('QUEUE_REPOSITORY');
@@ -126,6 +152,14 @@ export class RedisQueueRepository implements QueueRepository {
       candidates.push({ sessionId, score });
     }
     return candidates;
+  }
+
+  async prune(tenantId: string, language: string, sessionIds: readonly string[]): Promise<number> {
+    if (sessionIds.length === 0) return 0;
+
+    // One `ZREM` with every member rather than one per id: the caller has a
+    // whole page of stale candidates, and this runs on a request path.
+    return await this.redis.zrem(queueKey(tenantId, language), ...sessionIds);
   }
 
   async rank(member: QueueMember): Promise<number | null> {

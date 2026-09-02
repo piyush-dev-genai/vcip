@@ -79,6 +79,10 @@ class FaultyQueueRepository implements QueueRepository {
     return this.inner.add(entry);
   }
 
+  prune(): Promise<number> {
+    throw new Error('verify-queue does not exercise the prune');
+  }
+
   rank(member: QueueMember): Promise<number | null> {
     if (this.failing) return Promise.reject(new Error('ECONNREFUSED'));
     return this.inner.rank(member);

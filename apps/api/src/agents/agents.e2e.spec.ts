@@ -240,6 +240,16 @@ class FakeQueueRepository implements QueueRepository {
     return Promise.resolve();
   }
 
+  prune(tenantId: string, language: string, sessionIds: readonly string[]): Promise<number> {
+    const set = this.sets.get(queueKey(tenantId, language));
+    if (set === undefined) return Promise.resolve(0);
+    let removed = 0;
+    for (const sessionId of sessionIds) {
+      if (set.delete(sessionId)) removed += 1;
+    }
+    return Promise.resolve(removed);
+  }
+
   rank(member: QueueMember): Promise<number | null> {
     const set = this.sets.get(queueKey(member.tenantId, member.language));
     if (set === undefined || !set.has(member.sessionId)) return Promise.resolve(null);
@@ -1592,8 +1602,12 @@ describe('agent identity and presence over HTTP', () => {
       const response = await get(await loginAs());
 
       expect(response.body.data.sessions).toEqual([]);
-      // Still in Redis: removal belongs to the task that owns it.
-      expect(queueStore.sets.get(queueKey(TENANT_A, 'en'))?.size).toBe(excluded.length);
+      // And gone from Redis afterwards. This used to assert the opposite —
+      // that removal "belongs to the task that owns it" — and no task ever
+      // did, so dead members accumulated at the head of the queue until a
+      // bounded read could see nothing else and an agent was shown an empty
+      // queue with a customer waiting in it.
+      expect(queueStore.sets.get(queueKey(TENANT_A, 'en'))?.size ?? 0).toBe(0);
     });
 
     it('returns the live sessions around a stale member', async () => {
@@ -1704,16 +1718,24 @@ describe('agent identity and presence over HTTP', () => {
       expect(sessionStore.singleReads).toBe(0);
     });
 
-    it('changes no queue membership or score', async () => {
+    it('enqueues nothing and re-scores nothing', async () => {
+      // Reading the queue removes members PostgreSQL has disowned — that is
+      // the repair. What it must never do is put a session into a queue or
+      // move one: the score is `queued_at`, a GET does not own it, and
+      // re-scoring would send a waiting customer to the back of the line.
       enqueue('one');
       seedStale('stale-member', SessionStatus.ABORTED);
-      const snapshot = (): string =>
-        JSON.stringify([...queueStore.sets].map(([k, v]) => [k, [...v.entries()].sort()]));
-      const before = snapshot();
+      const scores = (): Map<string, number> =>
+        new Map(queueStore.sets.get(queueKey(TENANT_A, 'en')) ?? []);
+      const before = scores();
 
       await get(await loginAs());
 
-      expect(snapshot()).toBe(before);
+      for (const [sessionId, score] of scores()) {
+        expect(before.get(sessionId)).toBe(score);
+      }
+      expect(scores().has('one')).toBe(true);
+      expect(scores().has('stale-member')).toBe(false);
     });
 
     it('does not create a presence', async () => {

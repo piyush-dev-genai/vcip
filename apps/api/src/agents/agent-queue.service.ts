@@ -16,13 +16,22 @@
  * sorting by `queued_at` would be a full-table read on a request path and would
  * quietly make the queue projection decorative.
  *
- * **Nothing here writes.** No claim, no offer, no `BUSY`, no session event, no
- * billing row, no version bump — and, less obviously, no queue repair. T15
- * heals a missing member lazily inside `QueueService.positionFor`, which
- * performs a `ZADD`; calling it here would put a Redis write on a GET. The
- * consequence is accepted and documented: a session that is `QUEUED` in
- * PostgreSQL but absent from Redis is invisible to agents until the customer's
- * own status poll reconciles it.
+ * **Nothing here writes business state.** No claim, no offer, no `BUSY`, no
+ * session event, no billing row, no version bump.
+ *
+ * It does write one thing, and it is not business state: it **prunes the
+ * candidates PostgreSQL disowned**. T17 originally wrote nothing at all, on the
+ * reasoning that a GET should not carry a Redis write. That was wrong in one
+ * direction, and the failure was real — nothing anywhere removed a member when
+ * a session left `QUEUED`, so dead members accumulated at the head of the queue
+ * until a bounded read returned nothing but corpses and an agent saw an empty
+ * queue with a customer waiting in it. Confirming candidates against PostgreSQL
+ * and then discarding the answer left the projection to rot.
+ *
+ * The other direction is unchanged: a session `QUEUED` in PostgreSQL but absent
+ * from Redis is still not re-added here. That heal is a `ZADD` with a score
+ * this read does not own, and T15 does it inside `QueueService.positionFor` on
+ * the customer's own status poll.
  *
  * **The agent is whoever the JWT says.** Every method takes an `AgentActor` a
  * guard verified. There is no parameter here — and no query parameter on the
@@ -135,6 +144,44 @@ export class AgentQueueService {
       return { sessions: [] };
     }
 
+    const first = await this.read(actor, languages);
+
+    // A page made entirely of members PostgreSQL has disowned is not an empty
+    // queue — it is a queue whose head is dead, hiding whatever is behind it.
+    // Pruning is what makes the next read see past them, and doing it here
+    // rather than on some later request is the difference between an agent
+    // seeing a waiting customer now and seeing them after a refresh.
+    //
+    // Once. The prune removed a whole page of corpses, so a second read is
+    // either the live head or a page just as dead — and a request path is not
+    // where an unbounded repair loop belongs. Successive requests continue the
+    // repair a page at a time.
+    const page =
+      first.stale > 0 && first.merged.length > first.sessions.length
+        ? await this.read(actor, languages)
+        : first;
+
+    this.log(actor, languages, page.merged.length, page.sessions.length, first.stale);
+    return { sessions: page.sessions };
+  }
+
+  /**
+   * One pass: read the candidates, confirm them, and drop what is provably dead.
+   *
+   * The confirmation was always here — T15's projection permits a member to
+   * outlive its status, so nothing may be shown without a row behind it. What
+   * is new is acting on the answer: an id in a tenant's queue that
+   * `findQueued` did not return is a member the database has disowned, because
+   * a member is only ever added after the row it names has committed.
+   */
+  private async read(
+    actor: AgentActor,
+    languages: readonly string[],
+  ): Promise<{
+    readonly merged: readonly QueueCandidate[];
+    readonly sessions: readonly QueuedSessionView[];
+    readonly stale: number;
+  }> {
     // One bounded read per language, concurrently. `AGENT_QUEUE_LIMIT` from
     // each rather than a share of it: the merged top-N may come entirely from
     // one queue, so a smaller per-queue bound could drop a session that belongs
@@ -144,10 +191,7 @@ export class AgentQueueService {
     );
 
     const merged = mergeCandidates(lists).slice(0, AGENT_QUEUE_LIMIT);
-    if (merged.length === 0) {
-      this.log(actor, languages, 0, 0);
-      return { sessions: [] };
-    }
+    if (merged.length === 0) return { merged, sessions: [], stale: 0 };
 
     // One statement for the whole candidate set. Tenant and status are both
     // predicates inside it, so a stale member or a foreign id yields no row.
@@ -157,11 +201,57 @@ export class AgentQueueService {
     );
     const byId = new Map<string, QueuedSessionRow>(rows.map((row) => [row.id, row]));
 
-    const nowMs = this.now().getTime();
-    const sessions = this.project(merged, byId, languages, nowMs);
+    const stale = await this.pruneStale(actor, languages, lists, byId);
 
-    this.log(actor, languages, merged.length, sessions.length);
-    return { sessions };
+    const nowMs = this.now().getTime();
+    return { merged, sessions: this.project(merged, byId, languages, nowMs), stale };
+  }
+
+  /**
+   * Remove the candidates PostgreSQL did not confirm.
+   *
+   * Per language, because a member lives in one language's key and that is the
+   * key it has to be removed from. Only ids with **no** confirmed row are
+   * touched: a row that came back is a live session, and a queue view is not
+   * the place to start second-guessing which key it belongs in.
+   *
+   * Never fails the request. This is a repair, and an agent asking what is
+   * waiting should get the answer even when the repair cannot be written —
+   * the confirmation against PostgreSQL already makes the response correct.
+   */
+  private async pruneStale(
+    actor: AgentActor,
+    languages: readonly string[],
+    lists: readonly (readonly QueueCandidate[])[],
+    byId: ReadonlyMap<string, QueuedSessionRow>,
+  ): Promise<number> {
+    let removed = 0;
+
+    await Promise.all(
+      languages.map(async (language, index) => {
+        const dead = (lists[index] ?? [])
+          .map((candidate) => candidate.sessionId)
+          .filter((sessionId) => !byId.has(sessionId));
+        if (dead.length === 0) return;
+
+        try {
+          removed += await this.queue.prune(actor.tenantId, language, dead);
+        } catch (error) {
+          this.logger.warn(
+            {
+              event: 'agent.queue.prune_failed',
+              tenant_id: actor.tenantId,
+              language,
+              stale_count: dead.length,
+              err: error,
+            },
+            'could not prune stale queue members; the view is still correct',
+          );
+        }
+      }),
+    );
+
+    return removed;
   }
 
   /**
@@ -214,6 +304,7 @@ export class AgentQueueService {
     languages: readonly string[],
     candidates: number,
     returned: number,
+    pruned = 0,
   ): void {
     this.logger.info(
       {
@@ -223,6 +314,9 @@ export class AgentQueueService {
         languages,
         candidate_count: candidates,
         returned_count: returned,
+        // A steadily non-zero count here means something upstream is leaving
+        // members behind faster than the head of the queue moves.
+        pruned_count: pruned,
       },
       'agent queue viewed',
     );
