@@ -330,8 +330,23 @@ export const sessions = pgTable(
     check('sessions_status_check', oneOf('status', SESSION_STATUSES)),
     check('sessions_export_status_check', oneOf('export_status', EXPORT_STATUSES)),
 
-    // A verdict, when recorded, is one of the two terminal call outcomes.
-    check('sessions_verdict_check', sql`verdict IS NULL OR verdict IN ('APPROVED', 'REJECTED')`),
+    // A verdict, when recorded, is one an agent may actually submit.
+    //
+    // `ABORTED` was missing until T35 and the omission was a real one: contract
+    // §18 lists all three as submittable verdicts and §45 writes `verdict =
+    // :verdict` for whichever was submitted, so an agent ending a call as
+    // `ABORTED` hit this constraint rather than a row.
+    //
+    // Note what is still absent. `DROPPED_IN_CALL`, `DROPPED_QUEUED` and
+    // `PREFLIGHT_FAILED` are terminal *statuses* but never verdicts — they are
+    // things that happen to a session, not judgements a person made — and the
+    // sweeper's own `ABORTED` (an agent's reconnect window lapsing) leaves this
+    // column null for the same reason. A non-null `verdict` means a named agent
+    // decided something.
+    check(
+      'sessions_verdict_check',
+      sql`verdict IS NULL OR verdict IN ('APPROVED', 'REJECTED', 'ABORTED')`,
+    ),
 
     // Billing shape only. WHICH outcome bills what is @vcip/shared's decision,
     // not the database's; this just refuses a half-written pair or a negative

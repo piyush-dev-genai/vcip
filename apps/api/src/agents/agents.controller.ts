@@ -33,13 +33,18 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import type { AgentAvailabilityRequest, AgentLoginRequest } from '@vcip/shared';
+import type {
+  AgentAvailabilityRequest,
+  AgentLoginRequest,
+  AgentVerdictRequest,
+} from '@vcip/shared';
 import {
   agentAvailabilitySchema,
   agentAcceptSchema,
   agentClaimSchema,
   agentHeartbeatSchema,
   agentLoginSchema,
+  agentVerdictSchema,
 } from '@vcip/shared';
 import { AgentJwtGuard } from '../common/auth/agent-jwt.guard.js';
 import { Auth } from '../common/auth/auth.decorators.js';
@@ -56,6 +61,9 @@ import { AgentAcceptService } from './agent-accept.service.js';
 import type { ClaimResult } from './agent-claim.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentClaimService } from './agent-claim.service.js';
+import type { VerdictResult } from './agent-verdict.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AgentVerdictService } from './agent-verdict.service.js';
 import type { AgentQueueResult } from './agent-queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentQueueService } from './agent-queue.service.js';
@@ -91,6 +99,7 @@ export class AgentsController {
     private readonly work: AgentWorkService,
     private readonly claims: AgentClaimService,
     private readonly accepts: AgentAcceptService,
+    private readonly verdicts: AgentVerdictService,
   ) {}
 
   /**
@@ -229,5 +238,33 @@ export class AgentsController {
     @Body(new ZodValidationPipe(agentAcceptSchema)) _body: unknown,
   ): Promise<ApiData<AcceptResult>> {
     return data(await this.accepts.accept(asAgent(actor), id));
+  }
+
+  /**
+   * Submit the verdict: `IN_CALL -> APPROVED | REJECTED | ABORTED` (T35, §18).
+   *
+   * The one route in this controller that charges money, and the only one whose
+   * body carries a decision rather than nothing. The checklist travels with it
+   * because the answers and the verdict are one act, recorded in one
+   * transaction (§45).
+   *
+   * `Idempotency-Key` is required, as §18 says. It matters more here than on
+   * the claim: a retried verdict must land on the reply the first one produced,
+   * not on a second attempt that the single-winner guard would answer 409 —
+   * which would tell an agent their verdict failed when it had committed.
+   *
+   * 200 rather than 201: the session existed and this moved it.
+   */
+  @Post('sessions/:id/verdict')
+  @HttpCode(200)
+  @UseGuards(AgentJwtGuard, TenantGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent('POST /v1/agent/sessions/{id}/verdict')
+  async submitVerdict(
+    @Auth() actor: Actor,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body(new ZodValidationPipe(agentVerdictSchema)) body: AgentVerdictRequest,
+  ): Promise<ApiData<VerdictResult>> {
+    return data(await this.verdicts.submit(asAgent(actor), id, body));
   }
 }

@@ -20,7 +20,8 @@
     "db:verify-agent-claim": "tsx scripts/verify-agent-claim.ts",
     "db:verify-agent-accept": "tsx scripts/verify-agent-accept.ts",
     "db:verify-media-token": "tsx scripts/verify-media-token.ts",
-    "db:verify-day2-gate": "nest build && tsx scripts/verify-day2-gate.ts"
+    "db:verify-day2-gate": "nest build && tsx scripts/verify-day2-gate.ts",
+    "db:verify-verdict": "node ../../scripts/with-env.mjs tsx scripts/verify-verdict.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

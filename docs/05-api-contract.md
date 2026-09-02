@@ -2364,7 +2364,7 @@ recorded at the verdict (§18).
 
 
 
-\# 18. Submit Verdict
+\# 18. Submit Verdict [IMPLEMENTED]
 
 
 

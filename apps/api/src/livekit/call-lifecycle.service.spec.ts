@@ -151,6 +151,10 @@ class FakeSessions implements SessionRepository {
     return Promise.resolve(this.appended.some((e) => e.type === eventType));
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('a webhook must never submit a verdict');
+  }
+
   endCall(command: EndCallCommand): Promise<EndedCallRow | null> {
     this.ended.push(command);
     return Promise.resolve({

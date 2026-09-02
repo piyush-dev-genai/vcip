@@ -3,7 +3,7 @@ import { AuthModule } from '../common/auth/auth.module.js';
 import { LivekitModule } from '../livekit/livekit.module.js';
 import { SessionsModule } from '../sessions/sessions.module.js';
 import { ANALYSIS_STARTER, HttpAnalysisStarter } from './ai-analysis.client.js';
-import { AI_HUD_REPOSITORY, RedisAiHudRepository } from './ai-hud.repository.js';
+import { AiHudModule } from './ai-hud.module.js';
 import { AI_HUD_SNAPSHOTS, SessionAiHudSnapshots } from './ai-hud.snapshots.js';
 import { AiAnalysisService } from './ai-analysis.service.js';
 import { AiResultController } from './ai-result.controller.js';
@@ -57,16 +57,18 @@ import { AI_CONFIG, aiConfigFromEnv } from './ai.config.js';
  * transport and this module keeps owning what a HUD is.
  */
 @Module({
-  imports: [AuthModule, forwardRef(() => LivekitModule), SessionsModule],
+  imports: [AuthModule, forwardRef(() => LivekitModule), SessionsModule, AiHudModule],
   controllers: [AiResultController],
   providers: [
     { provide: AI_CONFIG, useFactory: () => aiConfigFromEnv() },
     { provide: ANALYSIS_STARTER, useClass: HttpAnalysisStarter },
-    { provide: AI_HUD_REPOSITORY, useClass: RedisAiHudRepository },
     { provide: AI_HUD_SNAPSHOTS, useClass: SessionAiHudSnapshots },
     AiAnalysisService,
     AiResultService,
   ],
-  exports: [AiAnalysisService, AI_HUD_SNAPSHOTS, AI_HUD_REPOSITORY],
+  // Not `AI_HUD_REPOSITORY`: it is `AiHudModule`'s to export now, and a module
+  // may only export what it provides or re-exports. Anything needing the HUD
+  // imports that module directly, which is the dependency it actually has.
+  exports: [AiAnalysisService, AI_HUD_SNAPSHOTS],
 })
 export class AiModule {}

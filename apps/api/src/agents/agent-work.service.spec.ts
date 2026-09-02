@@ -76,6 +76,10 @@ class FakeSessions implements SessionRepository {
     throw new Error('reading work must not drive call lifecycle');
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('listing work must not submit a verdict');
+  }
+
   endCall(): Promise<EndedCallRow | null> {
     throw new Error('reading work must not drive call lifecycle');
   }

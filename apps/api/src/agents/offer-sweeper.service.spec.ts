@@ -119,6 +119,10 @@ class FakeSessions implements SessionRepository {
     throw new Error('the offer sweeper must not drive call lifecycle');
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('expiring an offer must not submit a verdict');
+  }
+
   endCall(): Promise<EndedCallRow | null> {
     throw new Error('the offer sweeper must not drive call lifecycle');
   }

@@ -161,6 +161,10 @@ class FakeSessions implements SessionRepository {
     throw new Error('the media-token routes must not drive call lifecycle');
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('issuing a token must not submit a verdict');
+  }
+
   endCall(): Promise<EndedCallRow | null> {
     throw new Error('the media-token routes must not drive call lifecycle');
   }

@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { AiHudModule } from '../ai/ai-hud.module.js';
+import { ChecklistModule } from '../checklist/checklist.module.js';
 import { AuthModule } from '../common/auth/auth.module.js';
 import { IdempotencyModule } from '../common/idempotency/idempotency.module.js';
 import { QueueModule } from '../queue/queue.module.js';
@@ -6,6 +8,7 @@ import { SessionsModule } from '../sessions/sessions.module.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
 import { AGENT_REPOSITORY, DrizzleAgentRepository } from './agent.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
+import { AgentVerdictService } from './agent-verdict.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentWorkService } from './agent-work.service.js';
@@ -58,7 +61,15 @@ import { PresenceService } from './presence.service.js';
  * internal-token route kept for tests and operations.
  */
 @Module({
-  imports: [AuthModule, IdempotencyModule, QueueModule, SessionsModule, TenantsModule],
+  imports: [
+    AuthModule,
+    IdempotencyModule,
+    QueueModule,
+    SessionsModule,
+    TenantsModule,
+    ChecklistModule,
+    AiHudModule,
+  ],
   controllers: [AgentsController, OfferSweeperController],
   providers: [
     { provide: AGENT_REPOSITORY, useClass: DrizzleAgentRepository },
@@ -69,6 +80,7 @@ import { PresenceService } from './presence.service.js';
     AgentWorkService,
     AgentClaimService,
     AgentAcceptService,
+    AgentVerdictService,
     // The timer runs in the application; test modules build their own graph
     // and leave it off, so no background pass fires between cases.
     { provide: OFFER_SWEEP_ENABLED, useValue: true },

@@ -24,7 +24,8 @@
  */
 
 import { z } from 'zod';
-import { AgentPresence } from '../enums.js';
+import { AgentPresence, SessionStatus } from '../enums.js';
+import { checklistSubmissionSchema } from './checklist.js';
 
 // ----------------------------------------------------------------- login
 
@@ -143,3 +144,43 @@ export type AgentClaimRequest = z.infer<typeof agentClaimSchema>;
 export const agentAcceptSchema = z.strictObject({});
 
 export type AgentAcceptRequest = z.infer<typeof agentAcceptSchema>;
+
+// --------------------------------------------------------------- verdict
+
+/**
+ * The three outcomes an agent may submit (`05-api-contract.md` §18).
+ *
+ * Written as literals so zod infers this exact union rather than the whole
+ * `SessionStatus` type, and `agent.spec.ts` asserts each one is a status the
+ * state machine can reach from `IN_CALL`. The other terminal statuses —
+ * `DROPPED_IN_CALL`, `DROPPED_QUEUED`, `PREFLIGHT_FAILED` — are things that
+ * happen to a session, not decisions a person makes, and no request may name
+ * them.
+ */
+export const VERDICT_VALUES = [
+  SessionStatus.APPROVED,
+  SessionStatus.REJECTED,
+  SessionStatus.ABORTED,
+] as const;
+
+export type Verdict = (typeof VERDICT_VALUES)[number];
+
+/**
+ * `POST /v1/agent/sessions/{session_id}/verdict` (T35, §18).
+ *
+ * Two fields, and the checklist travels with the verdict rather than through a
+ * save of its own: the answers and the decision are one act, recorded in one
+ * transaction, so there is no interval in which a session holds an attestation
+ * for a verdict nobody submitted.
+ *
+ * Strict, like every other agent request. The agent is in the JWT, the session
+ * is in the path, and the billing amount is the server's to derive — a request
+ * offering a `bill_amount_paise` is a 400 rather than a field the server has to
+ * remember not to trust.
+ */
+export const agentVerdictSchema = z.strictObject({
+  verdict: z.enum(VERDICT_VALUES),
+  checklist: checklistSubmissionSchema,
+});
+
+export type AgentVerdictRequest = z.infer<typeof agentVerdictSchema>;

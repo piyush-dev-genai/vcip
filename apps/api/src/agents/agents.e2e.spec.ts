@@ -75,6 +75,8 @@ import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './age
 import { AGENT_REPOSITORY } from './agent.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
+import type { ChecklistService } from '../checklist/checklist.service.js';
+import { AgentVerdictService } from './agent-verdict.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentWorkService } from './agent-work.service.js';
 import { NOTIFICATIONS } from '../realtime/notifications.js';
@@ -406,6 +408,10 @@ class FakeSessionStore implements SessionRepository {
 
   hasEvent(): Promise<boolean> {
     throw new Error('no agent route drives call lifecycle; T26 has its own controller');
+  }
+
+  submitVerdict(): Promise<never> {
+    throw new Error('no agent identity route submits a verdict');
   }
 
   endCall(): Promise<EndedCallRow | null> {
@@ -775,6 +781,40 @@ const tenantStore = new FakeTenantConfigStore();
         TenantScope,
         LOGGER,
       ],
+    },
+    // T35's verdict service, present only because the controller constructor
+    // requires it. No case in this suite submits a verdict — this file is about
+    // identity, presence and the queue — so every collaborator it would reach
+    // for is one that raises, and a verdict route exercised here would fail
+    // loudly rather than quietly work against a half-built graph.
+    {
+      provide: AgentVerdictService,
+      useFactory: (sessions: SessionRepository, presence: PresenceService, logger) =>
+        new AgentVerdictService(
+          sessions,
+          {
+            validate: () => {
+              throw new Error('no agent identity route validates a checklist');
+            },
+            record: () => {
+              throw new Error('no agent identity route records a checklist');
+            },
+          } as unknown as ChecklistService,
+          {
+            save: () => {
+              throw new Error('no agent identity route writes the AI HUD');
+            },
+            read: () => {
+              throw new Error('no agent identity route reads the AI HUD');
+            },
+          },
+          presence,
+          new TenantScope(),
+          notifications,
+          logger,
+          () => new Date(clockMs),
+        ),
+      inject: [SESSION_REPOSITORY, PresenceService, LOGGER],
     },
   ],
 })

@@ -105,6 +105,8 @@ const PUBLIC_SURFACE: readonly string[] = [
   'checklistSubmissionSchema',
   'validateSubmission',
   'approvalReady',
+  'agentVerdictSchema',
+  'VERDICT_VALUES',
 ];
 
 describe('package entry point', () => {

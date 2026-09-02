@@ -200,6 +200,10 @@ class FakeSessionRepository implements SessionRepository {
     throw new Error('the queue view must not drive call lifecycle');
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('reading the queue must not submit a verdict');
+  }
+
   endCall(): Promise<EndedCallRow | null> {
     throw new Error('the queue view must not drive call lifecycle');
   }

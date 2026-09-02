@@ -58,6 +58,10 @@ class FakeSessions implements SessionRepository {
   findUnrecordedCalls(): Promise<readonly UnrecordedCallRow[]> {
     throw new Error('the retry sweeper reads that, not this service');
   }
+  submitVerdict(): Promise<never> {
+    throw new Error('starting a recording must not submit a verdict');
+  }
+
   endCall(_c: EndCallCommand): Promise<EndedCallRow | null> {
     throw new Error('starting a recording must not end a call');
   }

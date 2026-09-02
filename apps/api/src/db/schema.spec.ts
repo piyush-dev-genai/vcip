@@ -29,9 +29,19 @@ const migrationSql = (): string =>
     .map((f) => readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8'))
     .join('\n');
 
-/** The value list from a `col IN ('A', 'B')` CHECK, in declaration order. */
+/**
+ * The value list from a `col IN ('A', 'B')` CHECK, in declaration order.
+ *
+ * The **last** matching line, not the first: migrations accumulate, and a
+ * constraint that was later dropped and re-added is defined by its most recent
+ * definition. Reading the first would assert against a shape the database no
+ * longer has.
+ */
 const checkValues = (sql: string, constraint: string): string[] => {
-  const line = sql.split('\n').find((l) => l.includes(`"${constraint}"`) && l.includes(' IN ('));
+  const line = sql
+    .split('\n')
+    .reverse()
+    .find((l) => l.includes(`"${constraint}"`) && l.includes(' IN ('));
   if (line === undefined) throw new Error(`no IN-list CHECK named ${constraint}`);
   const inList = /IN \(([^)]*)\)/.exec(line);
   if (inList === null) throw new Error(`could not parse the IN list of ${constraint}`);
@@ -109,12 +119,24 @@ describe('status values cannot drift from @vcip/shared', () => {
     expect(business.filter((v) => evidence.includes(v))).toEqual([]);
   });
 
-  it('admits only the terminal call outcomes as a verdict', () => {
-    const verdicts = ['APPROVED', 'REJECTED'];
-    for (const verdict of verdicts) {
-      expect(TERMINAL_SESSION_STATUSES).toContain(verdict);
-      expect(sql).toContain(`'${verdict}'`);
+  it('admits exactly the verdicts an agent may submit', () => {
+    // Contract §18's three, and T35 added `ABORTED`, which the original
+    // constraint omitted — an agent ending a call as aborted hit a constraint
+    // rather than a row.
+    expect(checkValues(sql, 'sessions_verdict_check')).toEqual(['APPROVED', 'REJECTED', 'ABORTED']);
+  });
+
+  it('admits no terminal status that is not a decision somebody made', () => {
+    // `DROPPED_IN_CALL`, `DROPPED_QUEUED` and `PREFLIGHT_FAILED` are things
+    // that happen to a session. A non-null `verdict` means a named agent
+    // decided something, and the sweeper's own `ABORTED` leaves it null.
+    const verdicts = checkValues(sql, 'sessions_verdict_check');
+    for (const status of TERMINAL_SESSION_STATUSES) {
+      if (verdicts.includes(status)) expect(TERMINAL_SESSION_STATUSES).toContain(status);
     }
+    expect(verdicts).not.toContain('DROPPED_IN_CALL');
+    expect(verdicts).not.toContain('DROPPED_QUEUED');
+    expect(verdicts).not.toContain('PREFLIGHT_FAILED');
   });
 
   it('stores no agent presence value - presence is Redis state, not a column', () => {

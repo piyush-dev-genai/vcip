@@ -154,6 +154,10 @@ class FakeSessionRepository implements SessionRepository {
     throw new Error('claiming a session must not drive call lifecycle');
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('claiming a session must not submit a verdict');
+  }
+
   endCall(): Promise<EndedCallRow | null> {
     throw new Error('claiming a session must not drive call lifecycle');
   }

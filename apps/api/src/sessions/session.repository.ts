@@ -25,12 +25,18 @@ import { Inject, Injectable } from '@nestjs/common';
 // Value imports: T17's queued-session read filters on the status literal in
 // SQL and T26's call reads filter on the event-type literal, so both enums have
 // to survive compilation rather than be erased.
+import type { AiHudPayload, ResolvedChecklistItem } from '@vcip/shared';
 import { SessionEventType, SessionStatus } from '@vcip/shared';
-import { and, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { sessions, users } from '../../db/schema.js';
 import { InjectDatabase } from '../common/db/db.tokens.js';
-import type { EventActorType, EventPayload, SessionEventWriter } from '../common/events/index.js';
+import type {
+  DbExecutor,
+  EventActorType,
+  EventPayload,
+  SessionEventWriter,
+} from '../common/events/index.js';
 import { InjectSessionEventWriter } from '../common/events/index.js';
 
 // Re-exported, not redefined: T13 moved the actor union to the event writer,
@@ -324,6 +330,73 @@ export interface EndedCallRow {
 }
 
 /**
+ * An agent's verdict (T35, schema §45): `IN_CALL -> APPROVED | REJECTED | ABORTED`.
+ *
+ * Everything the transaction writes, decided before it opens. No policy is
+ * derived in here: the billing amounts come from `@vcip/shared`, the checklist
+ * has already been validated against the pinned template (T34), and the AI
+ * summary is whatever the HUD held — this command is the list of facts, and
+ * `submitVerdict` is the atomicity.
+ *
+ * `now` is one clock reading doing four jobs: `verdict_at`, `ended_at`, the
+ * billing timestamp, and the month the invoice falls in. Four readings could
+ * disagree, and a verdict billed to the wrong month because a request crossed
+ * midnight between two `now()` calls is the kind of bug nobody finds until an
+ * invoice is disputed.
+ */
+export interface SubmitVerdictCommand {
+  readonly sessionId: string;
+  readonly tenantId: string;
+  /** The agent the row must already name. Half the single-winner guard (D17). */
+  readonly agentId: string;
+  /** `APPROVED`, `REJECTED`, or `ABORTED`. Validated before it reaches here. */
+  readonly verdict: SessionStatus;
+  readonly now: Date;
+  /** From `@vcip/shared`'s billing table. Never computed here. */
+  readonly billCategory: string;
+  readonly billAmountPaise: number;
+  /** Validated against the pinned template (T34), in template order. */
+  readonly checklist: readonly ResolvedChecklistItem[];
+  /**
+   * The AI HUD as it stood, or null when there was none.
+   *
+   * Null is the honest answer for a call the AI never analysed (T32) or whose
+   * HUD outlived its Redis key. No row is written in that case: a summary of
+   * all-nulls would assert the models ran and decided nothing, which is a
+   * different claim from "there was no AI".
+   */
+  readonly aiSummary: AiHudPayload | null;
+  /** `VERDICT_SUBMITTED` and `BILLING_CREATED`, appended in that order. */
+  readonly events: readonly SessionEventInput[];
+  /** The `session.completed` body, minus the evidence keys (D21). */
+  readonly webhookPayload: Record<string, unknown>;
+  readonly webhookEventType: string;
+}
+
+/** What a committed verdict reports back. */
+export interface VerdictRow {
+  readonly id: string;
+  readonly status: SessionStatus;
+  readonly verdict: string;
+  readonly billCategory: string;
+  readonly billAmountPaise: number;
+  readonly talkMs: number | null;
+}
+
+/**
+ * Whether this caller's verdict was the one that committed (D17).
+ *
+ * `LOST` covers every way the guarded UPDATE can match nothing: the customer
+ * dropped and the sweeper got there first, a duplicate request arrived behind
+ * the winner, or the agent no longer holds the session. The service turns it
+ * into a 409 without guessing which, because from the loser's side they are the
+ * same fact — this session already has a terminal outcome and it is not this
+ * one.
+ */
+export type SubmitVerdictOutcome =
+  { readonly kind: 'COMMITTED'; readonly session: VerdictRow } | { readonly kind: 'LOST' };
+
+/**
  * One session an agent is currently holding.
  *
  * The answer to "what am I working on", which nothing in the contract could
@@ -603,6 +676,23 @@ export interface SessionRepository {
    * The billing row and the event are written in the same transaction.
    */
   endCall(command: EndCallCommand): Promise<EndedCallRow | null>;
+
+  /**
+   * The verdict transaction (T35, schema §45).
+   *
+   * The most important write in the system, and the reason it is one statement
+   * list rather than several calls: §46 spells out the two states nobody wants
+   * — a session `APPROVED` with no billing row, and a billing row for a session
+   * that never reached a verdict. Both are impossible only if the transition,
+   * the charge, the attestation, the AI snapshot, the history and the outbox
+   * commit together.
+   *
+   * Single-winner (D17). The guarded UPDATE demands `IN_CALL`, this tenant,
+   * this agent, and `verdict IS NULL`; a customer disconnect that got there
+   * first leaves the row somewhere else and this matches nothing, reporting
+   * `LOST` rather than overwriting a terminal outcome (I11).
+   */
+  submitVerdict(command: SubmitVerdictCommand): Promise<SubmitVerdictOutcome>;
 
   /**
    * Calls that are under way with no recording running (T28).
@@ -1012,6 +1102,13 @@ export class DrizzleSessionRepository implements SessionRepository {
              WHERE e.session_id = ${command.sessionId}::uuid
                AND e.event_type = ${SessionEventType.CALL_STARTED}::text
           ))) * 1000)::int) END`,
+          // The denormalised mirror of the billing row inserted below, written
+          // here for the reason T35 writes it on the verdict path: these columns
+          // exist for cheap listing queries, and a listing where verdicts show a
+          // charge and dropped calls show none would be worse than no column at
+          // all. `billing_entries` remains authoritative.
+          billCategory: command.billCategory,
+          billAmountPaise: command.billAmountPaise,
           version: sql`${sessions.version} + 1`,
           updatedAt: command.now,
         })
@@ -1068,6 +1165,210 @@ export class DrizzleSessionRepository implements SessionRepository {
         agentId: updated.agentId,
       };
     });
+  }
+
+  async submitVerdict(command: SubmitVerdictCommand): Promise<SubmitVerdictOutcome> {
+    const at = command.now.toISOString();
+
+    return this.db.transaction(async (tx) => {
+      // The single-winner guard (D17), and every predicate earns its place:
+      //
+      //   - `status = 'IN_CALL'` — the only state a verdict may be submitted
+      //     from, and what a customer disconnect will have already changed.
+      //   - `agent_id = :agent` — the agent on the call, not merely an agent in
+      //     the tenant. Checked here rather than only in the service, so the
+      //     window between reading the row and writing it cannot be used.
+      //   - `verdict IS NULL` — belt and braces with the status check. §45 names
+      //     it explicitly, and it is what makes a replay that somehow reached a
+      //     row still `IN_CALL` land on nothing rather than charge twice.
+      const [updated] = await tx
+        .update(sessions)
+        .set({
+          status: command.verdict,
+          verdict: command.verdict,
+          verdictAt: command.now,
+          endedAt: command.now,
+          // Same derivation as `endCall`, and for the same reason: measured
+          // from `CALL_STARTED` rather than from the accept, and null when
+          // both parties were never in the room together.
+          talkMs: sql`CASE WHEN (
+            SELECT min(e.server_ts) FROM session_events e
+             WHERE e.session_id = ${command.sessionId}::uuid
+               AND e.event_type = ${SessionEventType.CALL_STARTED}::text
+          ) IS NULL THEN NULL ELSE GREATEST(0, (EXTRACT(EPOCH FROM (${at}::timestamptz - (
+            SELECT min(e.server_ts) FROM session_events e
+             WHERE e.session_id = ${command.sessionId}::uuid
+               AND e.event_type = ${SessionEventType.CALL_STARTED}::text
+          ))) * 1000)::int) END`,
+          billCategory: command.billCategory,
+          billAmountPaise: command.billAmountPaise,
+          // §45. The evidence pipeline (T38) picks the session up from here;
+          // setting it inside this transaction is what stops a verdict existing
+          // that nothing will ever export.
+          exportStatus: 'EXPORTING',
+          version: sql`${sessions.version} + 1`,
+          updatedAt: command.now,
+        })
+        .where(
+          and(
+            eq(sessions.id, command.sessionId),
+            eq(sessions.tenantId, command.tenantId),
+            eq(sessions.status, SessionStatus.IN_CALL),
+            eq(sessions.agentId, command.agentId),
+            isNull(sessions.verdict),
+          ),
+        )
+        .returning({
+          id: sessions.id,
+          status: sessions.status,
+          verdict: sessions.verdict,
+          billCategory: sessions.billCategory,
+          billAmountPaise: sessions.billAmountPaise,
+          talkMs: sessions.talkMs,
+        });
+
+      // Nothing matched. Rolling back an untouched transaction, and the caller
+      // answers 409 (D17).
+      if (updated === undefined) return { kind: 'LOST' };
+
+      // The attestation. Written after the transition rather than before, so a
+      // checklist can never exist for a verdict that lost the race.
+      await this.saveChecklist(tx, command);
+
+      // The AI summary (§19, §20). Only when there was one — see `aiSummary`.
+      if (command.aiSummary !== null) await this.saveAiSummary(tx, command.aiSummary);
+
+      // `billing_entries.session_id` is the primary key, so a duplicate is a
+      // constraint violation rather than a second charge. Reaching here twice
+      // for one session is already impossible — the UPDATE above matched
+      // exactly once — and the key is the structural guarantee behind that.
+      await tx.execute(sql`
+        INSERT INTO billing_entries (session_id, tenant_id, category, amount_paise, billed_at, invoice_month)
+        VALUES (
+          ${command.sessionId}::uuid,
+          ${command.tenantId}::uuid,
+          ${command.billCategory}::text,
+          ${command.billAmountPaise}::int,
+          ${at}::timestamptz,
+          date_trunc('month', ${at}::timestamptz)::date
+        )
+      `);
+
+      for (const event of command.events) {
+        await this.events.append(
+          {
+            sessionId: command.sessionId,
+            tenantId: command.tenantId,
+            eventType: event.type,
+            actorType: event.actorType,
+            actorId: event.actorId,
+            payload: event.payload,
+          },
+          tx,
+        );
+      }
+
+      await this.saveOutbox(tx, command);
+
+      return {
+        kind: 'COMMITTED',
+        session: {
+          id: updated.id,
+          status: updated.status as SessionStatus,
+          verdict: updated.verdict as string,
+          billCategory: updated.billCategory as string,
+          billAmountPaise: updated.billAmountPaise as number,
+          talkMs: updated.talkMs,
+        },
+      };
+    });
+  }
+
+  /**
+   * The answers, as one statement.
+   *
+   * An upsert because the verdict route carries an `Idempotency-Key` and a
+   * replay must land on the same rows rather than a primary-key violation.
+   * `checked_at` is derived from `checked` here so the table's CHECK constraint
+   * cannot be violated by a caller that sent one without the other.
+   */
+  private async saveChecklist(tx: DbExecutor, command: SubmitVerdictCommand): Promise<void> {
+    if (command.checklist.length === 0) return;
+
+    const values = command.checklist.map(
+      (item) =>
+        sql`(${command.sessionId}::uuid, ${item.key}, ${item.checked}, ${
+          item.checked ? sql`${command.now.toISOString()}::timestamptz` : sql`NULL`
+        }, ${command.now.toISOString()}::timestamptz)`,
+    );
+
+    await tx.execute(sql`
+      INSERT INTO session_checklist_items (session_id, item_key, checked, checked_at, updated_at)
+      VALUES ${sql.join(values, sql`, `)}
+      ON CONFLICT (session_id, item_key) DO UPDATE
+         SET checked    = EXCLUDED.checked,
+             checked_at = EXCLUDED.checked_at,
+             updated_at = EXCLUDED.updated_at
+    `);
+  }
+
+  /**
+   * The AI snapshot (§19, §20).
+   *
+   * A snapshot, not a stream: the live results went to Redis every couple of
+   * seconds during the call, and exactly one row of them becomes durable. This
+   * is what keeps PostgreSQL from becoming a telemetry store (D2).
+   *
+   * `model_versions` is carried because "which model made the call that is
+   * being disputed" is the question this row exists to answer months later.
+   */
+  private async saveAiSummary(tx: DbExecutor, hud: AiHudPayload): Promise<void> {
+    await tx.execute(sql`
+      INSERT INTO session_ai_summaries (session_id, liveness_score, liveness_status, face_match_score, ocr_status, model_versions)
+      VALUES (
+        ${hud.session_id}::uuid,
+        ${hud.liveness_score}::numeric,
+        ${hud.liveness_status}::text,
+        ${hud.face_match_score}::numeric,
+        ${hud.ocr_status}::text,
+        ${JSON.stringify(hud.model_versions)}::jsonb
+      )
+      ON CONFLICT (session_id) DO UPDATE
+         SET liveness_score   = EXCLUDED.liveness_score,
+             liveness_status  = EXCLUDED.liveness_status,
+             face_match_score = EXCLUDED.face_match_score,
+             ocr_status       = EXCLUDED.ocr_status,
+             model_versions   = EXCLUDED.model_versions,
+             updated_at       = now()
+    `);
+  }
+
+  /**
+   * The transactional outbox row (§27, D21).
+   *
+   * `INSERT ... SELECT` from `webhook_endpoints` rather than a read followed by
+   * an insert: the endpoint is chosen and the row written in one statement, so
+   * there is no interval in which an endpoint could be deactivated between the
+   * two. A tenant with no active endpoint produces no row and no error — the
+   * verification is complete either way, and the enterprise that configured no
+   * webhook is not waiting for one.
+   *
+   * The payload is written without the evidence keys, because they do not exist
+   * yet (D21). T42 enriches this same row when the export resolves.
+   */
+  private async saveOutbox(tx: DbExecutor, command: SubmitVerdictCommand): Promise<void> {
+    await tx.execute(sql`
+      INSERT INTO webhook_events (tenant_id, session_id, endpoint_id, event_type, payload, status)
+      SELECT ${command.tenantId}::uuid,
+             ${command.sessionId}::uuid,
+             we.id,
+             ${command.webhookEventType}::text,
+             ${JSON.stringify(command.webhookPayload)}::jsonb,
+             'PENDING'
+        FROM webhook_endpoints we
+       WHERE we.tenant_id = ${command.tenantId}::uuid
+         AND we.active = true
+    `);
   }
 
   async findUnrecordedCalls(limit: number): Promise<readonly UnrecordedCallRow[]> {

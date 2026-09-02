@@ -115,6 +115,10 @@ class FakeSessions implements SessionRepository {
     });
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('the sweeper ends calls; it never submits a verdict');
+  }
+
   endCall(command: EndCallCommand): Promise<EndedCallRow | null> {
     // The real statement is guarded on IN_CALL; so is this.
     if (this.status !== SessionStatus.IN_CALL) return Promise.resolve(null);

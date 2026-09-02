@@ -317,6 +317,10 @@ class InMemorySessionRepository implements SessionRepository {
     throw new Error('the customer lifecycle must not drive call lifecycle');
   }
 
+  submitVerdict(): Promise<never> {
+    throw new Error('the customer lifecycle must not submit a verdict');
+  }
+
   endCall(): Promise<EndedCallRow | null> {
     throw new Error('the customer lifecycle must not drive call lifecycle');
   }

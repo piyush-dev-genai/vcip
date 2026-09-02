@@ -1,0 +1,2 @@
+ALTER TABLE "sessions" DROP CONSTRAINT "sessions_verdict_check";--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_verdict_check" CHECK (verdict IS NULL OR verdict IN ('APPROVED', 'REJECTED', 'ABORTED'));
