@@ -398,6 +398,54 @@ No dedicated column is added to `sessions`. See D18.
 
 ---
 
+## D26 — A call that never begins is timed out
+
+Every other deadline in the call lifecycle is armed by a *departure*: the
+customer leaves and gets `CUSTOMER_GRACE_SECONDS`, the agent leaves and gets
+`agent_reconnect_timeout_seconds` (D18). That left one case with no clock at
+all, because a participant who never arrives never leaves.
+
+An agent could accept a session, join the room, and sit in it indefinitely —
+`IN_CALL`, capacity consumed, `BUSY`, no billing row, no verdict, and no exit
+but closing the tab, which then charged the customer Rs 5 as `ABORTED` through
+the agent-disconnect path. Nothing in the approved scenarios covered it.
+
+A third deadline is armed whenever somebody is in the room alone and
+`CALL_STARTED` has not been appended, and disarmed the moment both parties are
+present.
+
+```text
+first arrival (either party, session IN_CALL)
+   |
+   +-- both present within 120s  -> disarmed; CALL_STARTED as usual
+   |
+   +-- 120s elapse               -> DROPPED_IN_CALL, billed Rs 5,
+                                     talk_ms NULL, verdict NULL
+```
+
+**Two minutes, and a constant rather than a tenant column.** The same reasoning
+`CUSTOMER_GRACE_SECONDS` records: D18 provides one configurable timeout and
+adding schema for a number nobody has asked to vary is inventing a requirement.
+Measured from the first arrival rather than from the accept, so an agent who is
+slow to load the call screen does not spend the customer's allowance.
+
+**`DROPPED_IN_CALL`, billed Rs 5.** The customer reached the queue, so the
+session is past `BILLING_ELIGIBILITY_START`, and every other abandonment past
+that point bills Rs 5 (R4). `talk_ms` stays null and the `CALL_ENDED` payload
+carries `call_never_started`, which is what distinguishes it in the record from
+a customer who joined and then vanished.
+
+**The sweeper re-checks history before acting.** A start deadline that fires on
+a call which did begin is a member that outlived its meaning, and terminating a
+live verification on a stale timer would be the worst outcome this mechanism
+could have. PostgreSQL is asked whether `CALL_STARTED` exists; Redis is not,
+because that is durable history (D1).
+
+*Adds to:* `01-product-flow.md` §10 — a thirteenth scenario the approved list
+did not name.
+
+---
+
 ## Resolved secondary ambiguities
 
 These follow from the decisions above and are recorded so implementation does not

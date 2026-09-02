@@ -28,8 +28,10 @@ import {
   agentClaimSchema,
   agentHeartbeatSchema,
   agentLoginSchema,
+  agentVerdictSchema,
   type AgentAvailabilityRequest,
   type AgentLoginRequest,
+  type AgentVerdictRequest,
   type ChecklistResult,
 } from '@vcip/shared';
 import { ApiError, NetworkError } from './errors';
@@ -138,6 +140,21 @@ export interface MediaTokenResult {
   readonly expires_at: string;
 }
 
+/**
+ * `POST /v1/agent/sessions/{id}/verdict` (contract §18).
+ *
+ * Exactly the five documented fields. `bill_amount_paise` comes back from the
+ * row that was written rather than being recomputed here, so what the agent is
+ * shown is what the ledger holds.
+ */
+export interface VerdictResult {
+  readonly session_id: string;
+  readonly status: string;
+  readonly verdict: string;
+  readonly bill_category: string;
+  readonly bill_amount_paise: number;
+}
+
 /** `POST /v1/agent/heartbeat`. */
 export interface HeartbeatResult {
   readonly agent_id: string;
@@ -173,6 +190,20 @@ export interface AgentApi {
 
   /** Take up the offer this agent holds. Same rules as `claim`. */
   accept(sessionId: string, idempotencyKey: string): Promise<AcceptResult>;
+
+  /**
+   * Submit the verdict and the checklist together (T35).
+   *
+   * The one call this portal makes that charges money, which is why the key
+   * matters more here than anywhere else: a retried verdict must land on the
+   * reply the first one produced rather than on the single-winner guard, which
+   * would tell an agent their verdict failed when it had committed.
+   */
+  verdict(
+    sessionId: string,
+    body: AgentVerdictRequest,
+    idempotencyKey: string,
+  ): Promise<VerdictResult>;
 
   /**
    * Read one session's current state.
@@ -391,6 +422,15 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
     async accept(sessionId, idempotencyKey) {
       const valid = agentAcceptSchema.parse({});
       return request<AcceptResult>(agentSessionUrl(deps.baseUrl, sessionId, '/accept'), {
+        body: valid,
+        authenticated: true,
+        idempotencyKey,
+      });
+    },
+
+    async verdict(sessionId, body, idempotencyKey) {
+      const valid = agentVerdictSchema.parse(body);
+      return request<VerdictResult>(agentSessionUrl(deps.baseUrl, sessionId, '/verdict'), {
         body: valid,
         authenticated: true,
         idempotencyKey,

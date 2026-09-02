@@ -1,6 +1,6 @@
 'use client';
 
-import type { AiHudPayload } from '@vcip/shared';
+import type { AiHudPayload, ChecklistAnswer } from '@vcip/shared';
 import { AgentEvent } from '@vcip/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { applyHudUpdate } from '../lib/ai-hud';
@@ -34,7 +34,8 @@ import {
 } from '../lib/work-state';
 import { AvailabilityPanel } from './AvailabilityPanel';
 import { AiPanel } from './AiPanel';
-import { ChecklistPanel } from './ChecklistPanel';
+import { ChecklistPanel, clearChecklist } from './ChecklistPanel';
+import { VerdictPanel } from './VerdictPanel';
 import { CallPanel } from './CallPanel';
 import { LoginForm } from './LoginForm';
 import { OfferPanel } from './OfferPanel';
@@ -122,6 +123,19 @@ export function AgentPortal() {
    * key it is showing.
    */
   const [aiUpdates, setAiUpdates] = useState<Record<string, AiHudPayload>>({});
+
+  /**
+   * The checklist as the agent has filled it in, lifted out of `ChecklistPanel`.
+   *
+   * It lives here because two components need it: the panel that collects the
+   * ticks, and the verdict that submits them. `ready` is `approvalReady` from
+   * `@vcip/shared` — the same rule the Control API applies — so the approve
+   * button cannot promise what the server will refuse.
+   */
+  const [checklist, setChecklist] = useState<{
+    readonly answers: readonly ChecklistAnswer[];
+    readonly ready: boolean;
+  }>({ answers: [], ready: false });
 
   /**
    * The current work, in a ref as well as in state.
@@ -221,6 +235,26 @@ export function AgentPortal() {
     // back to a live call.
     void syncWork();
   }, [host, workHost, syncWork]);
+
+  /**
+   * The verification is over: let go of it.
+   *
+   * The verdict has committed by the time this runs, so nothing here can undo
+   * it and nothing here is authoritative. It clears the local traces — the
+   * remembered session, its idempotency keys, and the unsubmitted ticks — and
+   * asks the server what this agent holds now, which is what actually decides
+   * the next screen (D1).
+   */
+  const finishWork = useCallback(
+    (sessionId: string): void => {
+      clearChecklist(sessionId);
+      setChecklist({ answers: [], ready: false });
+      forgetWork(workHost, sessionId);
+      setWork(null);
+      void syncWork();
+    },
+    [workHost, syncWork],
+  );
 
   const signOut = useCallback((): void => {
     token.current = null;
@@ -692,7 +726,17 @@ export function AgentPortal() {
             <>
               <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
               <AiPanel sessionId={work.sessionId} updates={aiUpdates} />
-              <ChecklistPanel sessionId={work.sessionId} api={api} />
+              <ChecklistPanel sessionId={work.sessionId} api={api} onChange={setChecklist} />
+              <VerdictPanel
+                sessionId={work.sessionId}
+                api={api}
+                answers={checklist.answers}
+                approvable={checklist.ready}
+                idempotencyKey={idempotencyKeyFor(workHost, 'verdict', work.sessionId)}
+                onSubmitted={() => {
+                  finishWork(work.sessionId);
+                }}
+              />
             </>
           ) : null}
 

@@ -74,6 +74,55 @@ export function participantsKey(sessionId: string): string {
  */
 export const PARTICIPANTS_TTL_SECONDS = 12 * 60 * 60;
 
+/**
+ * Why a deadline is armed.
+ *
+ * The two participant roles, plus `start` — a clock that runs while the call
+ * has not begun. Deliberately a wider type than `CallRole`: a role is who
+ * someone is in a room, and `start` is nobody. Keeping them separate is what
+ * stops `classify` accepting a LiveKit participant whose identity is literally
+ * "start".
+ */
+export const CallDeadline = {
+  /** The customer left and has not come back (R4). */
+  CUSTOMER: CallRole.CUSTOMER,
+  /** The agent left and has not come back (D18). */
+  AGENT: CallRole.AGENT,
+  /**
+   * Somebody is in the room alone and the call has never started.
+   *
+   * Every other deadline here hangs off a *departure*, which leaves one case
+   * with no clock at all: a participant who never arrives never leaves. An
+   * agent could sit in an empty room forever, `IN_CALL`, capacity consumed,
+   * with no billing row and no way out but closing the tab.
+   */
+  START: 'start',
+} as const;
+
+export type CallDeadline = (typeof CallDeadline)[keyof typeof CallDeadline];
+
+const CALL_DEADLINES: readonly CallDeadline[] = Object.freeze(Object.values(CallDeadline));
+
+export function isCallDeadline(value: string): value is CallDeadline {
+  return (CALL_DEADLINES as readonly string[]).includes(value);
+}
+
+/**
+ * How long a call has to begin once somebody is in the room.
+ *
+ * Two minutes, measured from the first arrival rather than from the accept:
+ * an agent who takes twenty seconds to load the call screen should not spend
+ * that from the customer's allowance. Long enough for a camera permission
+ * prompt, a device picker and a slow join; short enough that an agent is not
+ * parked on a customer who is never coming.
+ *
+ * A constant rather than a tenant column, for the reason `CUSTOMER_GRACE_SECONDS`
+ * is one: D18 provides `agent_reconnect_timeout_seconds` and nothing else, and
+ * adding schema for a number nobody has asked to vary is inventing a
+ * requirement.
+ */
+export const CALL_START_TIMEOUT_SECONDS = 120;
+
 /** Every armed deadline, scored by the instant it falls due. One ZSET. */
 export const DEADLINES_KEY = 'call:deadlines';
 
@@ -86,13 +135,13 @@ export const DEADLINES_KEY = 'call:deadlines';
  * D18). Encoding it here means the sweeper reads the outcome off the member
  * rather than inferring it from which key it came from.
  */
-export function deadlineMember(sessionId: string, role: CallRole): string {
-  return `${sessionId}:${role}`;
+export function deadlineMember(sessionId: string, reason: CallDeadline): string {
+  return `${sessionId}:${reason}`;
 }
 
 export interface ParsedDeadline {
   readonly sessionId: string;
-  readonly role: CallRole;
+  readonly reason: CallDeadline;
 }
 
 /**
@@ -106,9 +155,9 @@ export function parseDeadlineMember(member: string): ParsedDeadline | null {
   const separator = member.lastIndexOf(':');
   if (separator <= 0) return null;
   const sessionId = member.slice(0, separator);
-  const role = member.slice(separator + 1);
-  if (!UUID.test(sessionId) || !isCallRole(role)) return null;
-  return { sessionId: sessionId.toLowerCase(), role };
+  const reason = member.slice(separator + 1);
+  if (!UUID.test(sessionId) || !isCallDeadline(reason)) return null;
+  return { sessionId: sessionId.toLowerCase(), reason };
 }
 
 /** The instant a departure stops being forgiven. */

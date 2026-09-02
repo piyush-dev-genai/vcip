@@ -45,7 +45,7 @@ import type {
 } from '../sessions/session.repository.js';
 import { CallSweeper } from './call-sweeper.service.js';
 import type { CallRepository, DueDeadline } from './call.repository.js';
-import { deadlineMember } from './call.keys.js';
+import { CallDeadline, deadlineMember } from './call.keys.js';
 import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
@@ -136,8 +136,23 @@ class FakeSessions implements SessionRepository {
   appendCallEvent(_s: string, _e: SessionEventInput): Promise<boolean> {
     throw new Error('the sweeper appends its event inside endCall');
   }
-  hasEvent(): Promise<boolean> {
-    throw new Error('the sweeper does not read events');
+  /**
+   * Whether `CALL_STARTED` was ever appended.
+   *
+   * Asked only on the call-start deadline, and asked of PostgreSQL rather than
+   * of the participant set because "did this call ever begin" is durable
+   * history (D1). The two departure deadlines read their outcome off the
+   * member and never ask.
+   */
+  callStarted = false;
+  hasEventCalls = 0;
+
+  hasEvent(_sessionId: string, eventType: SessionEventType): Promise<boolean> {
+    this.hasEventCalls += 1;
+    if (eventType !== SessionEventType.CALL_STARTED) {
+      throw new Error('the sweeper only ever asks whether the call started');
+    }
+    return Promise.resolve(this.callStarted);
   }
   create(_i: CreateSessionInput): Promise<SessionRow> {
     throw new Error('the sweeper must not create');
@@ -354,5 +369,91 @@ describe('a deadline that cannot be read', () => {
 describe('an empty pass', () => {
   it('reports zeros and writes nothing', async () => {
     await expect(sweeper.sweep()).resolves.toEqual({ due: 0, dropped: 0, aborted: 0, stale: 0 });
+  });
+});
+
+/**
+ * A call that never began.
+ *
+ * The gap this closes: every other deadline is armed by a departure, so a
+ * participant who never arrived armed nothing and the sweeper never looked. A
+ * session could sit `IN_CALL` indefinitely with an agent parked in an empty
+ * room, their capacity consumed and no billing row written.
+ */
+describe('a call that never started', () => {
+  const armStart = (dueOffsetMs = -1000): void => {
+    calls.deadlines.set(deadlineMember(SESSION, CallDeadline.START), NOW.getTime() + dueOffsetMs);
+  };
+
+  it('is DROPPED_IN_CALL, billed Rs 5', async () => {
+    // The customer reached the queue and an agent was assigned, so the session
+    // is past billing eligibility. It lands where a customer who vanishes
+    // mid-call lands, for the same reason and at the same price.
+    armStart();
+
+    const result = await sweeper.sweep();
+
+    expect(result.dropped).toBe(1);
+    expect(sessions.ended[0]?.status).toBe(SessionStatus.DROPPED_IN_CALL);
+    expect(sessions.ended[0]?.billAmountPaise).toBe(500);
+  });
+
+  it('says in the history that the call never began', async () => {
+    // `call_never_started` and `customer_disconnected` reach the same status at
+    // the same price, so this string is the only place the record tells them
+    // apart — that, and a null `talk_ms`.
+    armStart();
+
+    await sweeper.sweep();
+
+    expect(sessions.ended[0]?.event.payload).toMatchObject({ reason: 'call_never_started' });
+  });
+
+  it('frees the agent from a call that never happened', async () => {
+    armStart();
+
+    await sweeper.sweep();
+
+    expect(presenceStore.entries.get(AGENT)?.status).toBe(AgentPresence.AVAILABLE);
+  });
+
+  it('does nothing when the call did start', async () => {
+    // A member that outlived its meaning: both parties arrived, the deadline
+    // was disarmed, and this delivery is late. Ending a live call on a stale
+    // timeout would be the worst outcome this mechanism could have.
+    sessions.callStarted = true;
+    armStart();
+
+    const result = await sweeper.sweep();
+
+    expect(sessions.ended).toEqual([]);
+    expect(result.stale).toBe(1);
+  });
+
+  it('takes the deadline either way, so it cannot fire twice', async () => {
+    sessions.callStarted = true;
+    armStart();
+
+    await sweeper.sweep();
+
+    expect(calls.deadlines.has(deadlineMember(SESSION, CallDeadline.START))).toBe(false);
+  });
+
+  it('is not acted on before it falls due', async () => {
+    armStart(60_000);
+
+    expect(await sweeper.sweep()).toMatchObject({ due: 0 });
+  });
+});
+
+describe('which deadlines ask whether the call started', () => {
+  it('only the start one', async () => {
+    // A departure deadline reads its outcome off the member alone. Asking
+    // PostgreSQL for those would be a query on every sweep for no answer.
+    calls.deadlines.set(deadlineMember(SESSION, 'customer'), NOW.getTime() - 1000);
+
+    await sweeper.sweep();
+
+    expect(sessions.hasEventCalls).toBe(0);
   });
 });

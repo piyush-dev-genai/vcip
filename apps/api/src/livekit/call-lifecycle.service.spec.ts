@@ -39,7 +39,7 @@ import { CallLifecycleService } from './call-lifecycle.service.js';
 import type { RecordingService } from './recording.service.js';
 import { RecordingOutcome } from './recording.service.js';
 import type { CallRepository, DueDeadline } from './call.repository.js';
-import { deadlineMember } from './call.keys.js';
+import { CallDeadline, deadlineMember } from './call.keys.js';
 import { RecordingNotifications } from '../realtime/notifications.testing.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
@@ -91,20 +91,18 @@ class FakeCalls implements CallRepository {
     return Promise.resolve();
   }
 
-  armDeadline(sessionId: string, role: string, dueAtMs: number): Promise<void> {
-    this.deadlines.set(deadlineMember(sessionId, role as 'customer' | 'agent'), dueAtMs);
+  armDeadline(sessionId: string, reason: CallDeadline, dueAtMs: number): Promise<void> {
+    this.deadlines.set(deadlineMember(sessionId, reason), dueAtMs);
     return Promise.resolve();
   }
 
-  disarmDeadline(sessionId: string, role: string): Promise<boolean> {
-    return Promise.resolve(
-      this.deadlines.delete(deadlineMember(sessionId, role as 'customer' | 'agent')),
-    );
+  disarmDeadline(sessionId: string, reason: CallDeadline): Promise<boolean> {
+    return Promise.resolve(this.deadlines.delete(deadlineMember(sessionId, reason)));
   }
 
   disarmAll(sessionId: string): Promise<void> {
-    for (const role of ['customer', 'agent'] as const) {
-      this.deadlines.delete(deadlineMember(sessionId, role));
+    for (const reason of ['customer', 'agent', 'start'] as const) {
+      this.deadlines.delete(deadlineMember(sessionId, reason));
     }
     return Promise.resolve();
   }
@@ -583,5 +581,73 @@ describe('the AI analysis', () => {
 
     expect(recording.started).toHaveLength(1);
     expect(ai.started).toHaveLength(1);
+  });
+});
+
+/**
+ * The clock on a call that has not begun.
+ *
+ * Every other deadline here hangs off a departure, which left one case with no
+ * clock at all: a participant who never arrives never leaves. An agent could
+ * sit in an empty room indefinitely — `IN_CALL`, capacity consumed, no billing
+ * row — with no way out but closing the tab.
+ */
+describe('the call-start deadline', () => {
+  const startMember = deadlineMember(SESSION, CallDeadline.START);
+
+  it('is armed when the agent is in the room alone', async () => {
+    await service.handle(event({ participantIdentity: 'agent' }));
+
+    expect(calls.deadlines.has(startMember)).toBe(true);
+  });
+
+  it('is armed when the customer is in the room alone', async () => {
+    // The mirror case: an agent who accepted and never joined leaves the
+    // customer waiting on a call that will never begin.
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(calls.deadlines.has(startMember)).toBe(true);
+  });
+
+  it('falls due two minutes after the arrival', async () => {
+    await service.handle(event({ participantIdentity: 'agent' }));
+
+    expect(calls.deadlines.get(startMember)).toBe(NOW.getTime() + 120_000);
+  });
+
+  it('is disarmed the moment both parties are present', async () => {
+    await service.handle(event({ participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+
+    expect(calls.deadlines.has(startMember)).toBe(false);
+  });
+
+  it('is not armed against a session that already ended', async () => {
+    // A stale tab reloading into the room of a finished verification.
+    sessions.row = { ...sessions.row, status: SessionStatus.APPROVED } as CallSessionRow;
+
+    await service.handle(event({ participantIdentity: 'agent' }));
+
+    expect(calls.deadlines.has(startMember)).toBe(false);
+  });
+
+  it('is re-armed when the lone agent reloads', async () => {
+    // A fresh window rather than the remains of the last one: the customer
+    // should not lose their allowance to the agent's refresh.
+    await service.handle(event({ participantIdentity: 'agent' }));
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'agent' }));
+
+    expect(calls.deadlines.get(startMember)).toBe(NOW.getTime() + 120_000);
+  });
+
+  it('does not disturb the departure deadlines', async () => {
+    // Three clocks, three meanings. The start clock must not clear the window
+    // a departing customer is being given.
+    await service.handle(event({ participantIdentity: 'agent' }));
+    await service.handle(event({ participantIdentity: 'customer' }));
+    await service.handle(event({ event: 'participant_left', participantIdentity: 'customer' }));
+
+    expect(calls.deadlines.has(deadlineMember(SESSION, CallDeadline.CUSTOMER))).toBe(true);
   });
 });

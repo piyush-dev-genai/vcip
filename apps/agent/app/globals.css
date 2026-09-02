@@ -479,3 +479,54 @@ button.primary {
   font-size: 0.75rem;
   color: var(--ink-soft);
 }
+
+/* ------------------------------------------------------- T35 verdict */
+
+.verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.verdict-button {
+  flex: 1 1 12rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.verdict-button:disabled {
+  /* Visibly unavailable rather than invisible: an agent who cannot approve
+     should see why, not wonder where the button went. */
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.verdict-button:not(:disabled):hover {
+  border-color: var(--accent, var(--line));
+}
+
+.verdict-hint {
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.verdict-button.approve:not(:disabled) {
+  border-color: #2f7d4f;
+}
+
+.verdict-button.reject:not(:disabled) {
+  border-color: #a33a3a;
+}

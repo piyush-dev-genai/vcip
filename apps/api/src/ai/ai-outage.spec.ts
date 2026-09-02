@@ -48,7 +48,7 @@ import { createLogger } from '../common/logging/logger.js';
 import type { CallWebhookEvent } from '../livekit/call-events.rules.js';
 import { CallLifecycleService } from '../livekit/call-lifecycle.service.js';
 import type { CallRepository, DueDeadline } from '../livekit/call.repository.js';
-import { deadlineMember } from '../livekit/call.keys.js';
+import { CallDeadline, deadlineMember } from '../livekit/call.keys.js';
 import type { LiveKitConfig } from '../livekit/livekit.config.js';
 import type { MediaTokenGrantRequest, MediaTokenMinter } from '../livekit/media-token.minter.js';
 import type { RecordingService } from '../livekit/recording.service.js';
@@ -168,20 +168,18 @@ class FakeCalls implements CallRepository {
     return Promise.resolve();
   }
 
-  armDeadline(sessionId: string, role: string, dueAtMs: number): Promise<void> {
-    this.deadlines.set(deadlineMember(sessionId, role as 'customer' | 'agent'), dueAtMs);
+  armDeadline(sessionId: string, reason: CallDeadline, dueAtMs: number): Promise<void> {
+    this.deadlines.set(deadlineMember(sessionId, reason), dueAtMs);
     return Promise.resolve();
   }
 
-  disarmDeadline(sessionId: string, role: string): Promise<boolean> {
-    return Promise.resolve(
-      this.deadlines.delete(deadlineMember(sessionId, role as 'customer' | 'agent')),
-    );
+  disarmDeadline(sessionId: string, reason: CallDeadline): Promise<boolean> {
+    return Promise.resolve(this.deadlines.delete(deadlineMember(sessionId, reason)));
   }
 
   disarmAll(sessionId: string): Promise<void> {
-    for (const role of ['customer', 'agent'] as const) {
-      this.deadlines.delete(deadlineMember(sessionId, role));
+    for (const reason of ['customer', 'agent', 'start'] as const) {
+      this.deadlines.delete(deadlineMember(sessionId, reason));
     }
     return Promise.resolve();
   }

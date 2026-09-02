@@ -41,7 +41,7 @@ const SESSION_KEY = 'vcip.agent.work';
 const IDEMPOTENCY_PREFIX = 'vcip.agent.idem.';
 
 /** The intents that need an idempotency key. Closed, so no caller invents one. */
-export type WorkIntent = 'claim' | 'accept';
+export type WorkIntent = 'claim' | 'accept' | 'verdict';
 
 /**
  * The remembered session.
@@ -108,7 +108,7 @@ export function forgetWork(host: WorkHost, sessionId?: string): void {
   if (host.storage === null) return;
   safely(() => host.storage?.removeItem(SESSION_KEY), undefined);
   if (sessionId === undefined) return;
-  for (const intent of ['claim', 'accept'] as const) {
+  for (const intent of ['claim', 'accept', 'verdict'] as const) {
     safely(() => host.storage?.removeItem(idempotencyKeyName(intent, sessionId)), undefined);
   }
 }

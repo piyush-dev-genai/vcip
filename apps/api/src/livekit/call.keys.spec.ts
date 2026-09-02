@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   CALL_ROLES,
+  CALL_START_TIMEOUT_SECONDS,
   CUSTOMER_GRACE_SECONDS,
+  CallDeadline,
   DEADLINES_KEY,
   deadlineAt,
   deadlineMember,
+  isCallDeadline,
   isCallRole,
   parseDeadlineMember,
   participantsKey,
@@ -58,27 +61,51 @@ describe('roles', () => {
 });
 
 describe('deadline members', () => {
-  it('round-trips a session and a role', () => {
-    for (const role of CALL_ROLES) {
-      expect(parseDeadlineMember(deadlineMember(SESSION, role))).toEqual({
+  it('round-trips a session and a reason', () => {
+    for (const reason of [CallDeadline.CUSTOMER, CallDeadline.AGENT, CallDeadline.START]) {
+      expect(parseDeadlineMember(deadlineMember(SESSION, reason))).toEqual({
         sessionId: SESSION,
-        role,
+        reason,
       });
     }
   });
 
   /**
-   * The role is in the member because the two deadlines end the session
-   * differently — customer to `DROPPED_IN_CALL`, agent to `ABORTED` (R4, D18).
+   * The reason is in the member because the three deadlines end the session
+   * differently — customer to `DROPPED_IN_CALL`, agent to `ABORTED` (R4, D18),
+   * and a call that never began to `DROPPED_IN_CALL` with no talk time.
    */
-  it('keeps the two roles distinguishable', () => {
-    expect(deadlineMember(SESSION, 'customer')).not.toBe(deadlineMember(SESSION, 'agent'));
+  it('keeps the reasons distinguishable', () => {
+    const members = [CallDeadline.CUSTOMER, CallDeadline.AGENT, CallDeadline.START].map((reason) =>
+      deadlineMember(SESSION, reason),
+    );
+    expect(new Set(members).size).toBe(3);
+  });
+
+  it('carries every deadline reason, and no participant role beyond them', () => {
+    // `start` is a deadline and never an identity: a LiveKit participant whose
+    // identity is literally "start" must not be read as one of the roles.
+    expect(isCallDeadline('start')).toBe(true);
+    expect(isCallRole('start')).toBe(false);
+    for (const role of CALL_ROLES) expect(isCallDeadline(role)).toBe(true);
   });
 
   it('returns null for anything unreadable, so the sweeper can discard it', () => {
     for (const member of ['', ':', SESSION, `${SESSION}:analyzer`, 'nonsense:agent', ':agent']) {
       expect(parseDeadlineMember(member)).toBeNull();
     }
+  });
+});
+
+describe('the call-start window', () => {
+  it('is long enough for a camera prompt and a slow join', () => {
+    expect(CALL_START_TIMEOUT_SECONDS).toBe(120);
+  });
+
+  it('is longer than the window a customer gets to come back', () => {
+    // Arriving for the first time involves a permission prompt and a device
+    // picker; returning does not.
+    expect(CALL_START_TIMEOUT_SECONDS).toBeGreaterThan(CUSTOMER_GRACE_SECONDS);
   });
 });
 

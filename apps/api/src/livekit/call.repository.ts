@@ -15,7 +15,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import { InjectRedis } from '../common/redis/redis.tokens.js';
-import type { CallRole } from './call.keys.js';
+import type { CallDeadline, CallRole } from './call.keys.js';
 import {
   DEADLINES_KEY,
   PARTICIPANTS_TTL_SECONDS,
@@ -51,7 +51,7 @@ export interface CallRepository {
   clearParticipants(sessionId: string): Promise<void>;
 
   /** Arm a deadline. Re-arming an existing one moves it. */
-  armDeadline(sessionId: string, role: CallRole, dueAtMs: number): Promise<void>;
+  armDeadline(sessionId: string, reason: CallDeadline, dueAtMs: number): Promise<void>;
 
   /**
    * Disarm a deadline, reporting whether one was actually armed.
@@ -60,7 +60,7 @@ export interface CallRepository {
    * true means this participant had been away and a deadline was counting down,
    * which is precisely when `AGENT_RECONNECTED` belongs in the log.
    */
-  disarmDeadline(sessionId: string, role: CallRole): Promise<boolean>;
+  disarmDeadline(sessionId: string, reason: CallDeadline): Promise<boolean>;
 
   /** Disarm every deadline for a session, whatever the role. */
   disarmAll(sessionId: string): Promise<void>;
@@ -106,19 +106,23 @@ export class RedisCallRepository implements CallRepository {
     await this.redis.del(participantsKey(sessionId));
   }
 
-  async armDeadline(sessionId: string, role: CallRole, dueAtMs: number): Promise<void> {
+  async armDeadline(sessionId: string, reason: CallDeadline, dueAtMs: number): Promise<void> {
     // ZADD on an existing member updates its score, so a participant who leaves
     // twice gets one deadline measured from the second departure.
-    await this.redis.zadd(DEADLINES_KEY, dueAtMs, deadlineMember(sessionId, role));
+    await this.redis.zadd(DEADLINES_KEY, dueAtMs, deadlineMember(sessionId, reason));
   }
 
-  async disarmDeadline(sessionId: string, role: CallRole): Promise<boolean> {
-    const removed = await this.redis.zrem(DEADLINES_KEY, deadlineMember(sessionId, role));
+  async disarmDeadline(sessionId: string, reason: CallDeadline): Promise<boolean> {
+    const removed = await this.redis.zrem(DEADLINES_KEY, deadlineMember(sessionId, reason));
     return removed > 0;
   }
 
   async disarmAll(sessionId: string): Promise<void> {
-    const members = (['customer', 'agent'] as const).map((role) => deadlineMember(sessionId, role));
+    // Every reason, not the two participant ones: a session that has ended has
+    // no clock left running against it, including the call-start clock.
+    const members = (['customer', 'agent', 'start'] as const).map((reason) =>
+      deadlineMember(sessionId, reason),
+    );
     await this.redis.zrem(DEADLINES_KEY, ...members);
   }
 

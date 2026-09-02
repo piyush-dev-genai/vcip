@@ -46,7 +46,13 @@ import type { CallRepository } from './call.repository.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { RecordingService } from './recording.service.js';
 import { InjectCallRepository } from './call.repository.js';
-import { CUSTOMER_GRACE_SECONDS, CallRole, deadlineAt } from './call.keys.js';
+import {
+  CALL_START_TIMEOUT_SECONDS,
+  CUSTOMER_GRACE_SECONDS,
+  CallDeadline,
+  CallRole,
+  deadlineAt,
+} from './call.keys.js';
 
 /** What one delivery did, for the response and for tests. */
 export interface CallEventOutcome {
@@ -168,11 +174,30 @@ export class CallLifecycleService {
       await this.notify.agentJoined(action.sessionId);
     }
 
-    if (!bothPresent(present)) return;
+    if (!bothPresent(present)) {
+      // Somebody is in the room alone. Every other deadline in this module
+      // hangs off a departure, which leaves this case with no clock at all: a
+      // participant who never arrives never leaves, so nothing was ever armed
+      // and the sweeper never looked. A session could sit `IN_CALL` forever
+      // with an agent parked in an empty room, capacity consumed, no billing
+      // row, and no way out but closing the tab.
+      //
+      // Armed on every lone arrival rather than only the first, so an agent
+      // who reloads gives the customer a fresh window rather than inheriting
+      // the remains of the last one. `ZADD` on an existing member re-scores it.
+      await this.armCallStart(action.sessionId, session);
+      return;
+    }
 
-    // Both are here. `CALL_STARTED` is once per session, and PostgreSQL is what
-    // says so — Redis knows only who is in the room right now, and a room the
-    // customer rejoins twice must not produce a second start.
+    // Both are here, so the call has begun and the start clock is moot.
+    // Disarmed before `CALL_STARTED` is appended: if the append fails, the
+    // worst outcome is a call with no start event, not a live call the sweeper
+    // is still counting down.
+    await this.calls.disarmDeadline(action.sessionId, CallDeadline.START);
+
+    // `CALL_STARTED` is once per session, and PostgreSQL is what says so —
+    // Redis knows only who is in the room right now, and a room the customer
+    // rejoins twice must not produce a second start.
     const firstArrival = !(await this.sessions.hasEvent(
       action.sessionId,
       SessionEventType.CALL_STARTED,
@@ -198,6 +223,30 @@ export class CallLifecycleService {
     if (session.status === SessionStatus.IN_CALL) {
       await this.ai.start(action.sessionId, session.tenantId, session.roomName ?? null);
     }
+  }
+
+  /**
+   * Start the clock on a call that has not begun.
+   *
+   * Only while the session is `IN_CALL`. A participant wandering into the room
+   * of a session that has already ended — a customer reloading a tab after a
+   * verdict, a stale token — must not arm a deadline against a terminal row;
+   * the sweeper would find nothing, but the honest thing is not to arm it.
+   */
+  private async armCallStart(sessionId: string, session: CallSessionRow): Promise<void> {
+    if (session.status !== SessionStatus.IN_CALL) return;
+
+    const due = deadlineAt(this.now(), CALL_START_TIMEOUT_SECONDS);
+    await this.calls.armDeadline(sessionId, CallDeadline.START, due);
+
+    this.logger.info(
+      {
+        event: 'call.start.armed',
+        session_id: sessionId,
+        deadline: new Date(due).toISOString(),
+      },
+      'somebody is in the room alone; the call has to begin before this',
+    );
   }
 
   /**

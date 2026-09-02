@@ -246,6 +246,7 @@ describe('every request goes through the API client', () => {
       "'/login'",
       "'/media-token'",
       "'/queue'",
+      "'/verdict'",
       "'/work'",
     ]);
   });
@@ -276,10 +277,13 @@ describe('every request goes through the API client', () => {
 
   it('sends an Idempotency-Key on exactly the two operations that need one', () => {
     const client = sources.find((file) => file.path === 'lib/api.ts');
-    // D13 protects claim and accept. Login, availability, heartbeat and the two
-    // reads carry no key, so the header cannot drift into a transport default.
+    // D13 protects claim, accept and the verdict. Login, availability,
+    // heartbeat and the reads carry no key, so the header cannot drift into a
+    // transport default. The verdict is the one that matters most: a retry that
+    // presented a fresh key would be answered by the single-winner guard, which
+    // would tell an agent their verdict failed when it had committed.
     const uses = [...(client?.text.matchAll(/idempotencyKey,/g) ?? [])];
-    expect(uses).toHaveLength(2);
+    expect(uses).toHaveLength(3);
   });
 
   it('never mints an idempotency key inside the API client', () => {
@@ -290,14 +294,20 @@ describe('every request goes through the API client', () => {
   });
 
   it('calls none of the endpoints later tasks add', () => {
-    // Claim and accept left this list with T21; the media token left it with
-    // T25; the WebSocket connection token left it with T31; the checklist left
-    // it with T33. Everything still on it is scope, asserted rather than
-    // promised — the verdict is T35, and until then nothing in this portal may
-    // reach for it.
-    for (const pattern of [/\/verdict\b/, /\/internal\//]) {
-      expect(offenders(pattern)).toEqual([]);
-    }
+    // Claim and accept left this list with T21; the media token with T25; the
+    // WebSocket connection token with T31; the checklist with T33; the verdict
+    // with T35. What remains is the internal surface, which is not routed
+    // publicly at all (D10) and which no browser may ever reach.
+    expect(offenders(/\/internal\//)).toEqual([]);
+  });
+
+  it('submits a verdict only through the API client', () => {
+    // The one request this portal makes that charges money. A component
+    // building that URL itself would bypass the idempotency key `lib/work.ts`
+    // owns, and a retried verdict without the original key is answered by the
+    // single-winner guard — telling an agent their verdict failed when it had
+    // in fact committed.
+    expect(offenders(/'\/verdict'/)).toEqual(['lib/api.ts']);
   });
 
   it('reaches the checklist only through the API client', () => {
@@ -408,6 +418,9 @@ describe('presence rules live where they can be checked', () => {
       'components/AgentPortal.tsx',
       'components/OfferPanel.tsx',
       'components/QueuePanel.tsx',
+      // T35: the verdict panel matches on "accept" only because it renders the
+      // word in a button hint. It issues no claim and no accept.
+      'components/VerdictPanel.tsx',
       'lib/api.ts',
       'lib/work.ts',
     ]);

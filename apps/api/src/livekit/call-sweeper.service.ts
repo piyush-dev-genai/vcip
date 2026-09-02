@@ -38,7 +38,20 @@ import { InjectSessionRepository } from '../sessions/session.repository.js';
 import { PresenceService } from '../agents/presence.service.js';
 import type { CallRepository } from './call.repository.js';
 import { InjectCallRepository } from './call.repository.js';
-import { CallRole, parseDeadlineMember } from './call.keys.js';
+import { CallDeadline, parseDeadlineMember } from './call.keys.js';
+
+/**
+ * Why each terminal transition happened, for the session history.
+ *
+ * Three deadlines, three different facts. `customer_never_joined` and
+ * `customer_disconnected` both end as `DROPPED_IN_CALL` and both cost Rs 5, so
+ * this string is the only place the record says which one it was.
+ */
+const SWEEP_REASONS: Readonly<Record<CallDeadline, string>> = Object.freeze({
+  [CallDeadline.CUSTOMER]: 'customer_disconnected',
+  [CallDeadline.AGENT]: 'agent_disconnect_timeout',
+  [CallDeadline.START]: 'call_never_started',
+});
 
 /** What one pass did. Counts only — no identifiers (D10's routes are not a directory). */
 export interface CallSweepResult {
@@ -119,14 +132,14 @@ export class CallSweeper {
         continue;
       }
 
-      const outcome = await this.terminate(parsed.sessionId, parsed.role, now);
+      const outcome = await this.terminate(parsed.sessionId, parsed.reason, now);
       if (outcome === SessionStatus.DROPPED_IN_CALL) dropped += 1;
       else if (outcome === SessionStatus.ABORTED) aborted += 1;
       else stale += 1;
 
       // Taken either way. A deadline that resolved to nothing is a deadline
       // that will resolve to nothing forever.
-      await this.calls.disarmDeadline(parsed.sessionId, parsed.role);
+      await this.calls.disarmDeadline(parsed.sessionId, parsed.reason);
     }
 
     if (due.length > 0) {
@@ -148,16 +161,29 @@ export class CallSweeper {
    */
   private async terminate(
     sessionId: string,
-    role: CallRole,
+    reason: CallDeadline,
     now: Date,
   ): Promise<SessionStatus | null> {
     const session = await this.sessions.findForCallEvent(sessionId);
     if (session === null || session.status !== SessionStatus.IN_CALL) return null;
 
+    // A call-start deadline that fires on a call which did start is not a
+    // timeout — the customer arrived, both clocks were disarmed, and this is a
+    // member that outlived its meaning. PostgreSQL is asked rather than Redis
+    // because "did this call ever begin" is durable history (D1).
+    if (reason === CallDeadline.START) {
+      const started = await this.sessions.hasEvent(sessionId, SessionEventType.CALL_STARTED);
+      if (started) return null;
+    }
+
     // R4: which side vanished decides the outcome, and the two are different
-    // facts about the verification even though both cost Rs 5.
+    // facts about the verification even though both cost Rs 5. A call that
+    // never began is the customer failing to appear — the agent accepted and
+    // was in the room — so it lands where a customer who vanishes mid-call
+    // lands. `talk_ms` stays null, which is what tells the two apart in the
+    // record, along with the reason on the event.
     const status =
-      role === CallRole.CUSTOMER ? SessionStatus.DROPPED_IN_CALL : SessionStatus.ABORTED;
+      reason === CallDeadline.AGENT ? SessionStatus.ABORTED : SessionStatus.DROPPED_IN_CALL;
 
     // The amount comes from the shared billing table and from nowhere else.
     const billing = getBillingForOutcome(status);
@@ -186,7 +212,7 @@ export class CallSweeper {
         payload: {
           from: SessionStatus.IN_CALL,
           to: status,
-          reason: role === CallRole.CUSTOMER ? 'customer_disconnected' : 'agent_disconnect_timeout',
+          reason: SWEEP_REASONS[reason],
         },
       },
     });
@@ -211,7 +237,7 @@ export class CallSweeper {
         event: 'call.ended',
         session_id: sessionId,
         status,
-        role,
+        reason,
         talk_ms: ended.talkMs,
       },
       'call ended without a verdict',
