@@ -1,8 +1,8 @@
 'use client';
 
-import { SessionStatus } from '@vcip/shared';
+import { SessionStatus, isTerminalSessionStatus } from '@vcip/shared';
 import type { AbortResult, SessionView } from '@/lib/session';
-import { canAbort, gatesOf } from '@/lib/screen';
+import { canAbort, canJoinQueue, gatesOf, outcomeMessage } from '@/lib/screen';
 
 /**
  * Screen 4 — status.
@@ -56,15 +56,31 @@ export function Status({
 }) {
   const gates = gatesOf(session);
   const queued = session.status === SessionStatus.QUEUED;
-  // "Ready" is the pre-queue state: all three gates passed and still CREATED.
-  const ready = gates.consent && gates.preflight && gates.location && !queued;
+  // Asked, not recomputed. This screen used to decide for itself that a
+  // session with its gates passed and no queue place was "ready" — which is
+  // true of every finished verification, so an approved or rejected session
+  // offered a live "Join Queue" button. `canJoinQueue` is the routing
+  // decision itself, so the button and the screen cannot disagree.
+  const ready = canJoinQueue(session);
+  const finished = isTerminalSessionStatus(session.status);
+  const outcome = outcomeMessage(session);
 
   return (
     <section className="card">
       <p className="step">Verification status</p>
-      <h1>{queued ? 'In the queue' : ready ? 'Ready for an agent' : 'Verification status'}</h1>
+      <h1>
+        {finished
+          ? 'Verification complete'
+          : queued
+            ? 'In the queue'
+            : ready
+              ? 'Ready for an agent'
+              : 'Verification status'}
+      </h1>
 
-      {queued ? (
+      {finished ? (
+        <p>{outcome ?? 'This verification has ended.'}</p>
+      ) : queued ? (
         <p>
           You are in the queue. An agent will join your call shortly — please keep this page open.
         </p>

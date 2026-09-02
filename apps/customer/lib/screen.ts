@@ -79,6 +79,25 @@ export function screenFor(session: SessionView): Screen {
 }
 
 /**
+ * Whether the join-queue action may be offered.
+ *
+ * Defined *as* the routing decision rather than as a second rule that agrees
+ * with it. The status screen used to compute its own — all three gates passed
+ * and the session not `QUEUED` — which is true of every terminal session too:
+ * an approved, rejected or aborted verification passed its gates and is
+ * certainly not queued. So a finished session rendered a live "Join Queue"
+ * button under the heading "Ready for an agent", and pressing it earned a 409
+ * from a server that was right to refuse.
+ *
+ * The bug was not the predicate being wrong so much as it existing twice.
+ * `READY_FOR_QUEUE` already meant exactly this, and asking for it is what makes
+ * the two impossible to disagree.
+ */
+export function canJoinQueue(session: SessionView): boolean {
+  return screenFor(session) === Screen.READY_FOR_QUEUE;
+}
+
+/**
  * Whether the abort action may be offered.
  *
  * Mirrors T12's `ABORT_TARGET`: `QUEUED` and `OFFERED` abort to
@@ -112,4 +131,31 @@ export function gatesOf(session: SessionView): GateSummary {
     preflight: session.preflight_ok,
     location: session.geo_ok,
   };
+}
+
+/**
+ * What a finished verification is told, in words a customer can read.
+ *
+ * A status code is the server's vocabulary, not a sentence: `DROPPED_IN_CALL`
+ * means nothing to the person it happened to. The raw status is still shown
+ * beside this — support asks for it — but it is not the explanation.
+ *
+ * Null for anything not terminal, so a caller cannot render a conclusion about
+ * a verification that is still running. `PREFLIGHT_FAILED` is terminal and gets
+ * no message here: it has its own screen, which explains which check failed.
+ */
+export function outcomeMessage(session: SessionView): string | null {
+  switch (session.status) {
+    case SessionStatus.APPROVED:
+      return 'Your verification is complete and was approved.';
+    case SessionStatus.REJECTED:
+      return 'Your verification is complete. It was not approved.';
+    case SessionStatus.ABORTED:
+      return 'This verification was stopped before it could be completed.';
+    case SessionStatus.DROPPED_QUEUED:
+    case SessionStatus.DROPPED_IN_CALL:
+      return 'This verification ended because the connection was lost.';
+    default:
+      return null;
+  }
 }

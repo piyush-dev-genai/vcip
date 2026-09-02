@@ -7,9 +7,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SessionStatus } from '@vcip/shared';
+import { SESSION_STATUSES, SessionStatus } from '@vcip/shared';
 import type { SessionView } from './session';
-import { Screen, canAbort, gatesOf, screenFor } from './screen';
+import { Screen, canAbort, canJoinQueue, gatesOf, outcomeMessage, screenFor } from './screen';
 
 const view = (overrides: Partial<SessionView> = {}): SessionView => ({
   session_id: '22222222-2222-4222-8222-222222222222',
@@ -188,5 +188,104 @@ describe('gatesOf', () => {
       preflight: true,
       location: false,
     });
+  });
+});
+
+describe('canJoinQueue', () => {
+  const passedGates = { consent_ok: true, preflight_ok: true, geo_ok: true };
+
+  it('offers the queue once all three gates pass and nothing has happened yet', () => {
+    expect(canJoinQueue(view({ status: SessionStatus.CREATED, ...passedGates }))).toBe(true);
+  });
+
+  it.each([
+    ['consent', { ...passedGates, consent_ok: false }],
+    ['preflight', { ...passedGates, preflight_ok: false }],
+    ['location', { ...passedGates, geo_ok: false }],
+  ])('refuses while %s is outstanding', (_gate, gates) => {
+    expect(canJoinQueue(view({ status: SessionStatus.CREATED, ...gates }))).toBe(false);
+  });
+
+  it('refuses a session already in the queue', () => {
+    expect(canJoinQueue(view({ status: SessionStatus.QUEUED, ...passedGates }))).toBe(false);
+  });
+
+  it.each([
+    SessionStatus.APPROVED,
+    SessionStatus.REJECTED,
+    SessionStatus.ABORTED,
+    SessionStatus.DROPPED_QUEUED,
+    SessionStatus.DROPPED_IN_CALL,
+    SessionStatus.PREFLIGHT_FAILED,
+  ])('refuses a session that has already finished as %s', (status) => {
+    // The reported bug. A finished verification has passed its gates and is
+    // certainly not queued, so a rule of "gates passed and not queued" — which
+    // is what the status screen used to compute for itself — said yes to every
+    // one of these and offered a live "Join Queue" button on a session the
+    // server would refuse with a 409.
+    expect(canJoinQueue(view({ status, ...passedGates }))).toBe(false);
+  });
+
+  it.each([SessionStatus.OFFERED, SessionStatus.IN_CALL])(
+    'refuses a session already being worked (%s)',
+    (status) => {
+      expect(canJoinQueue(view({ status, ...passedGates }))).toBe(false);
+    },
+  );
+
+  it('agrees with the screen the session routes to, by construction', () => {
+    // The two cannot drift, because the predicate *is* the routing decision.
+    for (const status of SESSION_STATUSES) {
+      const session = view({ status, ...passedGates });
+      expect(canJoinQueue(session)).toBe(screenFor(session) === Screen.READY_FOR_QUEUE);
+    }
+  });
+
+  it('is never true at the same time as canAbort', () => {
+    // Joining and stopping are mutually exclusive: one is pre-queue, the other
+    // needs the session to have left it.
+    for (const status of SESSION_STATUSES) {
+      const session = view({ status, ...passedGates });
+      expect(canJoinQueue(session) && canAbort(session)).toBe(false);
+    }
+  });
+});
+
+describe('outcomeMessage', () => {
+  it('says something a customer can read for every terminal outcome', () => {
+    for (const status of [
+      SessionStatus.APPROVED,
+      SessionStatus.REJECTED,
+      SessionStatus.ABORTED,
+      SessionStatus.DROPPED_QUEUED,
+      SessionStatus.DROPPED_IN_CALL,
+    ]) {
+      const message = outcomeMessage(view({ status }));
+      expect(message).not.toBeNull();
+      // Not the status code. `DROPPED_IN_CALL` means nothing to the person it
+      // happened to.
+      expect(message).not.toContain(status);
+    }
+  });
+
+  it('distinguishes an approval from a rejection', () => {
+    expect(outcomeMessage(view({ status: SessionStatus.APPROVED }))).not.toBe(
+      outcomeMessage(view({ status: SessionStatus.REJECTED })),
+    );
+  });
+
+  it('says nothing about a verification still running', () => {
+    for (const status of [
+      SessionStatus.CREATED,
+      SessionStatus.QUEUED,
+      SessionStatus.OFFERED,
+      SessionStatus.IN_CALL,
+    ]) {
+      expect(outcomeMessage(view({ status }))).toBeNull();
+    }
+  });
+
+  it('leaves PREFLIGHT_FAILED to its own screen', () => {
+    expect(outcomeMessage(view({ status: SessionStatus.PREFLIGHT_FAILED }))).toBeNull();
   });
 });
