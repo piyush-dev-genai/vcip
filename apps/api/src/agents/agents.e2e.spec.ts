@@ -393,6 +393,10 @@ class FakeSessionStore implements SessionRepository {
     throw new Error('a claim goes through claim(), not the customer guarded update');
   }
 
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('the agent surface must not abort a session');
+  }
+
   findById(sessionId: string): Promise<SessionRow | null> {
     this.singleReads += 1;
     const row = this.rows.get(sessionId);

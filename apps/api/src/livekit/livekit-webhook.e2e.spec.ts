@@ -209,6 +209,10 @@ class FakeSessions implements SessionRepository {
   update(_c: GuardedUpdate): Promise<SessionRow | null> {
     throw new Error('no');
   }
+
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('a webhook must not abort a session');
+  }
   claim(_c: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('no');
   }

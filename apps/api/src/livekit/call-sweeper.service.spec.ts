@@ -160,6 +160,10 @@ class FakeSessions implements SessionRepository {
   update(_c: GuardedUpdate): Promise<SessionRow | null> {
     throw new Error('the sweeper must not use the customer update path');
   }
+
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('the sweeper ends calls; a customer abort is a different path');
+  }
   claim(_c: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the sweeper must not claim');
   }

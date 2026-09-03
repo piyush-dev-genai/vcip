@@ -194,6 +194,10 @@ class FakeSessionRepository implements SessionRepository {
     throw new Error('the queue view must not update sessions');
   }
 
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('the queue view must not abort sessions');
+  }
+
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('the queue view must not claim sessions');
   }

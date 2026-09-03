@@ -57,6 +57,7 @@ import type {
   ExpiredOfferRow,
   SessionAcceptOutcome,
   SessionClaimOutcome,
+  AbortSessionCommand,
   GuardedUpdate,
   QueuedSessionRow,
   SessionRepository,
@@ -183,6 +184,13 @@ interface StoredEvent {
 class InMemorySessionRepository implements SessionRepository {
   readonly rows = new Map<string, SessionRow>();
   readonly events: StoredEvent[] = [];
+  /**
+   * `billing_entries`, keyed by session id as the real table's primary key is.
+   *
+   * Present so the abort path's charge is observable. Before T12 wrote one, the
+   * response told the customer an abort cost Rs 5 and nothing recorded it.
+   */
+  readonly billing = new Map<string, { category: string; amountPaise: number; billedAt: Date }>();
   createCalls = 0;
 
   private hop(): Promise<void> {
@@ -298,6 +306,64 @@ class InMemorySessionRepository implements SessionRepository {
       actorType: command.event.actorType,
       payload: command.event.payload,
     });
+    return updated;
+  }
+
+  /**
+   * The abort transaction (T12).
+   *
+   * Guarded exactly as `update` is, and then it also charges. The billing map
+   * is keyed by session id because the real table's primary key is, so a second
+   * row raises here for the same reason it raises in PostgreSQL rather than
+   * being quietly tolerated by a fake that is more forgiving than the schema.
+   *
+   * All-or-nothing, like the transaction it stands for: a lost guard writes no
+   * status, no event and no charge.
+   */
+  async abortSession(command: AbortSessionCommand): Promise<SessionRow | null> {
+    await this.hop();
+    if (this.failNextUpdate) {
+      this.failNextUpdate = false;
+      return null;
+    }
+    const row = this.rows.get(command.sessionId);
+    if (
+      row === undefined ||
+      row.tenantId !== command.tenantId ||
+      row.status !== command.expectedStatus ||
+      row.version !== command.expectedVersion
+    ) {
+      return null;
+    }
+
+    if (this.billing.has(command.sessionId)) {
+      throw new Error('billing_entries.session_id is the primary key: a second charge is refused');
+    }
+    this.billing.set(command.sessionId, {
+      category: command.billCategory,
+      amountPaise: command.billAmountPaise,
+      billedAt: command.now,
+    });
+
+    const updated: SessionRow = {
+      ...row,
+      status: command.status,
+      endedAt: command.now,
+      version: row.version + 1,
+      updatedAt: command.now,
+    };
+    this.rows.set(updated.id, updated);
+
+    for (const event of command.events) {
+      this.events.push({
+        sessionId: updated.id,
+        tenantId: command.tenantId,
+        type: event.type,
+        actorType: event.actorType,
+        payload: event.payload,
+      });
+    }
+
     return updated;
   }
 
@@ -1917,12 +1983,76 @@ describe('session lifecycle over HTTP', () => {
       expect(repository.rows.get(id)?.status).toBe('ABORTED');
     });
 
-    it('reports the server-derived amount without writing a billing row', async () => {
+    it('writes the billing row the response promises', async () => {
       const { id, token } = await queuedSession();
       const response = await abort(id, token);
+
       expect(response.body.data.bill_amount_paise).toBe(500);
       expect(response.body.data.bill_category).toBe('FAILED');
+      // The row, not just the number. These disagreed once: the response said
+      // Rs 5 and `billing_entries` held nothing, so an aborted verification was
+      // announced as charged and invoiced as free.
+      expect(repository.billing.get(id)).toMatchObject({
+        category: 'FAILED',
+        amountPaise: 500,
+      });
+    });
+
+    it('bills both abort targets at Rs 5', async () => {
+      const { id: queued, token: queuedToken } = await queuedSession();
+      await abort(queued, queuedToken);
+
+      const created = await createSession();
+      const inCall = created.body.data.session_id;
+      repository.place(inCall, { status: SessionStatus.IN_CALL });
+      await abort(inCall, created.body.data.customer_token);
+
+      // DROPPED_QUEUED and ABORTED are different facts (R4) but the same price.
+      expect(repository.rows.get(queued)?.status).toBe('DROPPED_QUEUED');
+      expect(repository.rows.get(inCall)?.status).toBe('ABORTED');
+      expect(repository.billing.get(queued)?.amountPaise).toBe(500);
+      expect(repository.billing.get(inCall)?.amountPaise).toBe(500);
+    });
+
+    it('records the charge in the history, beside the transition', async () => {
+      const { id, token } = await queuedSession();
+      await abort(id, token);
+
+      expect(repository.eventsFor(id).map((event) => event.type)).toEqual([
+        'SESSION_CREATED',
+        'SESSION_ABORTED',
+        'BILLING_CREATED',
+      ]);
+      const billing = repository.eventsFor(id).find((e) => e.type === 'BILLING_CREATED');
+      expect(billing?.actorType).toBe('SYSTEM');
+      expect(billing?.payload).toMatchObject({ category: 'FAILED', amount_paise: 500 });
+    });
+
+    it('charges nothing when the transition loses its guard', async () => {
+      const { id, token } = await queuedSession();
+      repository.failNextUpdate = true;
+
+      const response = await abort(id, token);
+
+      // All or nothing. A charge for a transition that rolled back is the one
+      // outcome worse than no charge at all.
+      expect(response.status).toBe(409);
+      expect(repository.billing.has(id)).toBe(false);
+      expect(repository.rows.get(id)?.status).toBe('QUEUED');
       expect(JSON.stringify(repository.eventsFor(id))).not.toContain('BILLING_CREATED');
+    });
+
+    it('charges once however many aborts arrive', async () => {
+      const { id, token } = await queuedSession();
+
+      await abort(id, token);
+      const second = await abort(id, token);
+
+      // The second is refused by the guard, so it never reaches the insert that
+      // the primary key would refuse anyway.
+      expect(second.status).toBe(409);
+      expect(repository.billing.get(id)?.amountPaise).toBe(500);
+      expect(repository.eventsFor(id).filter((e) => e.type === 'BILLING_CREATED')).toHaveLength(1);
     });
 
     it('ignores a client-supplied bill amount', async () => {
@@ -2080,29 +2210,91 @@ describe('session lifecycle over HTTP', () => {
       );
     });
 
+    /**
+     * The abort's command, captured.
+     *
+     * A sibling of `commandFor` rather than a parameter on it: the abort left
+     * the `update` path when it started writing a billing row, and a helper
+     * that quietly followed it there would stop proving that consent, preflight
+     * and location are still on the path with no billing columns at all.
+     */
+    const abortCommandFor = async (
+      place: Partial<SessionRow>,
+      body: object = {},
+    ): Promise<AbortSessionCommand> => {
+      const created = await createSession();
+      const id = created.body.data.session_id;
+      repository.place(id, place);
+      const before = repository.rows.get(id) as SessionRow;
+
+      const seen: AbortSessionCommand[] = [];
+      const original = repository.abortSession.bind(repository);
+      repository.abortSession = (command: AbortSessionCommand) => {
+        seen.push(command);
+        return original(command);
+      };
+      try {
+        await request(app.getHttpServer())
+          .post(`/v1/sessions/${id}/abort`)
+          .set('Authorization', `Bearer ${created.body.data.customer_token}`)
+          .set('Idempotency-Key', idem())
+          .send(body);
+      } finally {
+        repository.abortSession = original;
+      }
+
+      const command = seen[0];
+      if (command === undefined) throw new Error('no abort command was issued');
+      expect(command.sessionId).toBe(id);
+      expect(command.tenantId).toBe(TENANT_A);
+      expect(command.expectedStatus).toBe(before.status);
+      expect(command.expectedVersion).toBe(before.version);
+      return command;
+    };
+
     it('abort guards on the observed status and version', async () => {
-      const command = await commandFor(
-        (id, token) =>
-          request(app.getHttpServer())
-            .post(`/v1/sessions/${id}/abort`)
-            .set('Authorization', `Bearer ${token}`)
-            .set('Idempotency-Key', idem())
-            .send({}),
-        { status: SessionStatus.IN_CALL },
-      );
+      const command = await abortCommandFor({ status: SessionStatus.IN_CALL });
+
       expect(command.expectedStatus).toBe('IN_CALL');
-      expect(command.set.status).toBe('ABORTED');
+      expect(command.status).toBe('ABORTED');
+    });
+
+    it('abort derives its own charge and takes none from the client', async () => {
+      const command = await abortCommandFor(
+        { status: SessionStatus.IN_CALL },
+        { verdict: 'APPROVED', bill_amount_paise: 999, bill_category: 'SUCCESS' },
+      );
+
+      // The two billing columns the abort *does* own now, and they come from
+      // the shared outcome table rather than from the body above.
+      expect(command.billCategory).toBe('FAILED');
+      expect(command.billAmountPaise).toBe(500);
+    });
+
+    it('the abort command cannot express a column T12 does not own', async () => {
+      const command = await abortCommandFor(
+        { status: SessionStatus.IN_CALL },
+        { verdict: 'APPROVED', agent_id: 'someone', export_status: 'EXPORTED' },
+      );
+
+      // The command is a fixed set of fields rather than a `set` bag, so these
+      // are unreachable by construction. Asserted anyway: the type stops a
+      // future edit at compile time, this stops one that casts around it.
+      for (const forbidden of ['verdict', 'agentId', 'exportStatus', 'queuedAt', 'connectedAt']) {
+        expect(Object.keys(command)).not.toContain(forbidden);
+      }
     });
 
     it('never lets a mutation touch a column T12 does not own', async () => {
-      const command = await commandFor(
-        (id, token) =>
-          request(app.getHttpServer())
-            .post(`/v1/sessions/${id}/abort`)
-            .set('Authorization', `Bearer ${token}`)
-            .set('Idempotency-Key', idem())
-            .send({ verdict: 'APPROVED', bill_amount_paise: 999, agent_id: 'someone' }),
-        { status: SessionStatus.IN_CALL },
+      // The routes still on the guarded-update path. `set` is a bag there, so
+      // the absence of these keys is a real property rather than a type. (A
+      // client naming them outright does not even reach here: the request
+      // schemas are strict, and a separate case covers that.)
+      const command = await commandFor((id, token) =>
+        request(app.getHttpServer())
+          .post(`/v1/sessions/${id}/consent`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({ accepted: true, consent_version: 'v1' }),
       );
       const written = Object.keys(command.set);
       for (const forbidden of [

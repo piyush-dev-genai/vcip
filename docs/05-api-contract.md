@@ -1211,6 +1211,18 @@ Billing:
 ```
 
 
+Both amounts are derived from the outcome, never read from the request body,
+
+and the `billing\_entries` row is written **in the same transaction as the
+
+transition** -- as it is on the verdict and disconnect paths (section 45). The
+
+response reports what was committed rather than what the outcome is worth in
+
+principle: for a while it reported the second while writing no row at all, so an
+
+aborted verification was announced as costing ₹5 and invoiced as free.
+
 
 \### Response
 

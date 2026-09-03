@@ -199,6 +199,10 @@ class FakeSessionRepository implements SessionRepository {
   update(): Promise<SessionRow | null> {
     throw new Error('presence must not update a session');
   }
+
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('presence must not abort a session');
+  }
   claim(): Promise<SessionClaimOutcome> {
     throw new Error('presence must not claim');
   }

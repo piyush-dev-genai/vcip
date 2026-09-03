@@ -235,6 +235,10 @@ class FakeSessionRepository implements SessionRepository {
     throw new Error('a claim must not use the customer guarded update');
   }
 
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('a claim must not abort a session');
+  }
+
   findQueued(): Promise<readonly QueuedSessionRow[]> {
     throw new Error('a claim must not read the queue projection');
   }

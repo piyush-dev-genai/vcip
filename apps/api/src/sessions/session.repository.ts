@@ -330,6 +330,46 @@ export interface EndedCallRow {
 }
 
 /**
+ * A customer-initiated termination (T12): `QUEUED | OFFERED | IN_CALL -> terminal`.
+ *
+ * Separate from `GuardedUpdate` for the reason `EndCallCommand` is separate:
+ * this one **bills**, and `SessionMutation` deliberately has no billing columns
+ * so that the ordinary customer-lifecycle writes cannot reach them. Consent,
+ * preflight and location keep going through `update`; only the transition that
+ * costs money comes here.
+ *
+ * It kept `expectedVersion`, which `endCall` does not have. The customer read
+ * the row before pressing the button, and the version is what makes their
+ * decision single-winner against a verdict committing at the same moment (D17).
+ * The sweeper has no such read to defend, which is why it guards on status
+ * alone.
+ *
+ * The billing row is written **in the same transaction as the transition**, and
+ * that is the entire point of this command existing. It was added because it
+ * did not: the abort path reported an amount from the shared table and wrote no
+ * ledger row, so an aborted verification told the customer it cost Rs 5 while
+ * `billing_entries` held nothing. Invariant I3 says a session has at most one
+ * billing entry; nothing said it had at least one, and the gap lived there.
+ */
+export interface AbortSessionCommand {
+  readonly sessionId: string;
+  readonly tenantId: string;
+  /** The status the caller read. Half the single-winner guard. */
+  readonly expectedStatus: SessionStatus;
+  /** The version the caller read. The other half. */
+  readonly expectedVersion: number;
+  /** `DROPPED_QUEUED` or `ABORTED`. Derived from the source status, not chosen. */
+  readonly status: SessionStatus;
+  /** Server clock. Becomes `ended_at`, the billing timestamp, and the month. */
+  readonly now: Date;
+  /** From `@vcip/shared`'s billing table. Never computed here. */
+  readonly billCategory: string;
+  readonly billAmountPaise: number;
+  /** `SESSION_ABORTED` and `BILLING_CREATED`, appended in that order. */
+  readonly events: readonly SessionEventInput[];
+}
+
+/**
  * An agent's verdict (T35, schema §45): `IN_CALL -> APPROVED | REJECTED | ABORTED`.
  *
  * Everything the transaction writes, decided before it opens. No policy is
@@ -552,6 +592,16 @@ export interface SessionRepository {
    * session moved, and the caller lost the race.
    */
   update(command: GuardedUpdate): Promise<SessionRow | null>;
+
+  /**
+   * A customer-initiated termination that also charges for it (T12).
+   *
+   * Split out of `update` because it writes a `billing_entries` row in the same
+   * transaction as the transition, and `SessionMutation` has no billing columns
+   * by design. Returns `null` on a lost guard exactly as `update` does, and
+   * writes nothing at all in that case -- no status, no event, no charge.
+   */
+  abortSession(command: AbortSessionCommand): Promise<SessionRow | null>;
 
   /**
    * The subset of `sessionIds` that this tenant currently has `QUEUED`.
@@ -921,6 +971,83 @@ export class DrizzleSessionRepository implements SessionRepository {
         },
         tx,
       );
+
+      return toRow(row);
+    });
+  }
+
+  async abortSession(command: AbortSessionCommand): Promise<SessionRow | null> {
+    const at = command.now.toISOString();
+
+    return this.db.transaction(async (tx) => {
+      // The same guard `update` applies -- id, tenant, observed status,
+      // observed version -- because an abort is still a customer acting on a
+      // row they read. What differs is everything after it.
+      const updated = await tx
+        .update(sessions)
+        .set({
+          status: command.status,
+          endedAt: command.now,
+          // The denormalised mirror of the row inserted below, for the reason
+          // `endCall` and `submitVerdict` write it: listing queries read these
+          // columns, and a listing where a dropped call shows a charge and an
+          // abort shows none would be worse than no column at all.
+          // `billing_entries` stays authoritative.
+          billCategory: command.billCategory,
+          billAmountPaise: command.billAmountPaise,
+          version: sql`${sessions.version} + 1`,
+          updatedAt: command.now,
+        })
+        .where(
+          and(
+            eq(sessions.id, command.sessionId),
+            eq(sessions.tenantId, command.tenantId),
+            eq(sessions.status, command.expectedStatus),
+            eq(sessions.version, command.expectedVersion),
+          ),
+        )
+        .returning(SESSION_COLUMNS);
+
+      const row = updated[0];
+      // Lost the guard: a verdict, a sweeper, or a second abort got there
+      // first. Roll back untouched, so nothing below happens -- and in
+      // particular no charge for a transition that did not commit.
+      if (row === undefined) return null;
+
+      // Same transaction as the transition, which is the whole reason this
+      // method exists rather than a second call after `update`. A charge that
+      // could commit without its transition, or a transition without its
+      // charge, is precisely what section 46 rules out.
+      //
+      // `billing_entries.session_id` is the primary key, so a duplicate raises
+      // rather than double-charging. Reaching here twice is already impossible
+      // -- the UPDATE above matched exactly once -- and the key is the
+      // structural guarantee behind that.
+      await tx.execute(sql`
+        INSERT INTO billing_entries (session_id, tenant_id, category, amount_paise, billed_at, invoice_month)
+        VALUES (
+          ${command.sessionId}::uuid,
+          ${command.tenantId}::uuid,
+          ${command.billCategory}::text,
+          ${command.billAmountPaise}::int,
+          ${at}::timestamptz,
+          date_trunc('month', ${at}::timestamptz)::date
+        )
+      `);
+
+      for (const event of command.events) {
+        await this.events.append(
+          {
+            tenantId: command.tenantId,
+            sessionId: command.sessionId,
+            eventType: event.type,
+            actorType: event.actorType,
+            actorId: event.actorId,
+            payload: event.payload,
+          },
+          tx,
+        );
+      }
 
       return toRow(row);
     });

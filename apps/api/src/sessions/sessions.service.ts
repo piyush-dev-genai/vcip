@@ -16,8 +16,11 @@
  *
  * What this service deliberately does not do:
  *
- *   - No billing rows. T35 owns those. `abort` reports the amount the shared
- *     table derives for the outcome, and writes nothing.
+ *   - No billing *rules*. The amounts come from `@vcip/shared`'s outcome table
+ *     and are never computed here. The one operation that ends a session --
+ *     `abort` -- does write the ledger row, in the same transaction as the
+ *     transition, because a terminal status and its charge cannot be allowed to
+ *     commit separately. Everything else here is in-flight and unbilled.
  *   - No queue *ordering* decisions. T15 added `queue`, but the Redis
  *     projection lives behind `QueueService`: this service commits the
  *     PostgreSQL transition and then asks the queue to reflect it. Redis is
@@ -128,7 +131,15 @@ export interface QueueResult {
 export interface AbortResult {
   readonly session_id: string;
   readonly status: string;
-  /** Derived from `@vcip/shared`, not written. The row is T35's. */
+  /**
+   * The charge that was committed, from `@vcip/shared`'s outcome table.
+   *
+   * Nullable in the type because `BillingDecision` allows a non-billable
+   * outcome, though neither abort target is one: both cost Rs 5. The value is
+   * reported *after* the ledger row is written, so this field and
+   * `billing_entries` cannot disagree -- which they did, for a while, when the
+   * amount was derived for display and no row was ever inserted.
+   */
   readonly bill_category: string | null;
   readonly bill_amount_paise: number;
 }
@@ -569,10 +580,18 @@ export class SessionsService {
    * Everything else is a `409`. `CREATED` in particular: a session that never
    * queued stays `CREATED` and unbilled (D19), so there is nothing to abort.
    *
-   * The transition goes through the same guarded update as every other
-   * mutation, which is what makes D17 hold — if an agent's verdict commits
-   * first, this loses and the customer is told, rather than a terminal status
-   * being overwritten (invariant I11).
+   * The transition carries the same guard as every other mutation here — the
+   * observed status and version — which is what makes D17 hold: if an agent's
+   * verdict commits first, this loses and the customer is told, rather than a
+   * terminal status being overwritten (invariant I11).
+   *
+   * **It bills.** Both targets cost Rs 5 (R4), and the `billing_entries` row is
+   * written inside `abortSession`'s transaction rather than by a later caller.
+   * It was not, for a while: this method derived the amount from the shared
+   * table, put it in the response, and wrote no ledger row — so an aborted
+   * verification told the customer it had cost Rs 5 while the ledger held
+   * nothing, and the two disagreed for as long as anybody cared to look. The
+   * amount was always right; only the row was missing.
    */
   async abort(actor: CustomerActor, sessionId: string): Promise<AbortResult> {
     const session = await this.load(actor, sessionId);
@@ -582,26 +601,64 @@ export class SessionsService {
       throw invalidState('This session cannot be aborted from its current state.');
     }
 
-    const updated = await this.mutate(session, {
-      to: target,
-      set: { endedAt: new Date() },
-      event: {
-        type: SessionEventType.SESSION_ABORTED,
-        actorType: 'CUSTOMER',
-        actorId: null,
-        payload: { from: session.status, to: target, reason: 'CUSTOMER_ABORT' },
-      },
+    // Checked before the write, as `mutate` does it, and not redundant with the
+    // guard: the guard proves nothing else moved the row, `canTransition`
+    // proves the edge exists at all.
+    /* c8 ignore next 3 -- every ABORT_TARGET entry is a legal edge */
+    if (!canTransition(session.status, target)) {
+      throw invalidState('That transition is not legal from the current state.');
+    }
+
+    // Derived from the outcome, never accepted from the caller. Both abort
+    // targets are billable at Rs 5; the guard below is here so that a future
+    // change to the shared table cannot silently produce a zero-amount row that
+    // the CHECK constraint would then reject mid-transaction.
+    const billing = getBillingForOutcome(target);
+    /* c8 ignore next 3 -- unreachable: DROPPED_QUEUED and ABORTED both bill */
+    if (!billing.billable) {
+      throw new DomainError(ErrorCode.INTERNAL_ERROR, 'This outcome has no billing rule.');
+    }
+
+    // One clock reading doing three jobs -- `ended_at`, the billing timestamp,
+    // and the invoice month -- for the reason `SubmitVerdictCommand` gives:
+    // three readings could straddle midnight and bill an abort to a month its
+    // transition does not fall in.
+    const now = new Date();
+
+    const updated = await this.repository.abortSession({
+      sessionId: session.id,
+      tenantId: session.tenantId,
+      expectedStatus: session.status,
+      expectedVersion: session.version,
+      status: target,
+      now,
+      billCategory: billing.category,
+      billAmountPaise: billing.amountPaise,
+      events: [
+        {
+          type: SessionEventType.SESSION_ABORTED,
+          actorType: 'CUSTOMER',
+          actorId: null,
+          payload: { from: session.status, to: target, reason: 'CUSTOMER_ABORT' },
+        },
+        {
+          // The charge, in the one append-only log an auditor reads end to end.
+          // The response tells the customer this abort cost Rs 5; the history
+          // is where that claim is backed.
+          type: SessionEventType.BILLING_CREATED,
+          actorType: 'SYSTEM',
+          actorId: null,
+          payload: { category: billing.category, amount_paise: billing.amountPaise },
+        },
+      ],
     });
 
-    // Derived, never accepted from the caller and never written here. The
-    // ledger row is T35's, inside the billing transaction; this only reports
-    // what the shared table says the outcome is worth.
-    const billing = getBillingForOutcome(target);
+    if (updated === null) throw raceLost();
 
     return {
       session_id: updated.id,
       status: updated.status,
-      bill_category: billing.billable ? billing.category : null,
+      bill_category: billing.category,
       bill_amount_paise: billing.amountPaise,
     };
   }

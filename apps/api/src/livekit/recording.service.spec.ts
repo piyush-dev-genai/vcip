@@ -71,6 +71,10 @@ class FakeSessions implements SessionRepository {
   update(_c: GuardedUpdate): Promise<SessionRow | null> {
     throw new Error('starting a recording must not move a session');
   }
+
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('starting a recording must not abort a session');
+  }
   claim(_c: ClaimCommand): Promise<SessionClaimOutcome> {
     throw new Error('no');
   }

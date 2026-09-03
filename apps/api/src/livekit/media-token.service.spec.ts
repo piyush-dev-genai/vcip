@@ -114,6 +114,10 @@ class FakeSessions implements SessionRepository {
     throw new Error('issuing a media token must not mutate a session');
   }
 
+  abortSession(): Promise<SessionRow | null> {
+    throw new Error('issuing a media token must not abort a session');
+  }
+
   claim(_command: ClaimCommand): Promise<SessionClaimOutcome> {
     this.writes += 1;
     throw new Error('issuing a media token must not claim a session');

@@ -196,20 +196,38 @@ async function main(): Promise<void> {
       },
     });
 
-  /** The customer abort path: T12's guarded update, on version and status. */
+  /**
+   * The customer abort path: guarded on version and status, and it bills.
+   *
+   * Rs 5 in the same transaction as the transition, exactly as the verdict and
+   * the sweeper do. Racing it against a verdict is the sharpest test of that,
+   * because both contenders now want to insert into `billing_entries` and only
+   * one transition can commit.
+   */
   const abortOn = (repo: DrizzleSessionRepository, sessionId: string) =>
-    repo.update({
+    repo.abortSession({
       sessionId,
       tenantId: TENANT,
       expectedStatus: SessionStatus.IN_CALL,
       expectedVersion: 1,
-      set: { status: SessionStatus.ABORTED, endedAt: T0 },
-      event: {
-        type: SessionEventType.SESSION_ABORTED,
-        actorType: 'CUSTOMER',
-        actorId: null,
-        payload: { to: SessionStatus.ABORTED, reason: 'CUSTOMER_ABORT' },
-      },
+      status: SessionStatus.ABORTED,
+      now: T0,
+      billCategory: 'FAILED',
+      billAmountPaise: 500,
+      events: [
+        {
+          type: SessionEventType.SESSION_ABORTED,
+          actorType: 'CUSTOMER',
+          actorId: null,
+          payload: { to: SessionStatus.ABORTED, reason: 'CUSTOMER_ABORT' },
+        },
+        {
+          type: SessionEventType.BILLING_CREATED,
+          actorType: 'SYSTEM',
+          actorId: null,
+          payload: { category: 'FAILED', amount_paise: 500 },
+        },
+      ],
     });
 
   const countRows = async (sessionId: string) => {
@@ -407,9 +425,50 @@ async function main(): Promise<void> {
       ),
       'no session.completed is queued for a call the agent never completed',
     );
+    // Which side wins a genuine race is not ours to choose: both statements
+    // carry the same correlated subquery for `talk_ms`, so the lock goes to
+    // whichever plan reaches the row first, and that varies run to run. The
+    // invariants above hold either way, which is the point. Reported, not
+    // asserted -- an assertion on it would be a flake, and a flaky race test is
+    // worse than none because it teaches people to re-run until it is green.
+    process.stdout.write(
+      `   note  the verdict won ${String(verdictWins)} of ${String(ROUNDS)} rounds,` +
+        ` the disconnect ${String(disconnectWins)}\n`,
+    );
+
+    // Both orders, deterministically. The loser's behaviour is the half of D17
+    // that matters to a caller, so it is proved by sequencing rather than left
+    // to whichever way the race happened to fall.
+    section('[T37] each side losing, deterministically');
+
+    const verdictFirstId = await seedSession();
+    const won = await repoOne.submitVerdict(verdictCommand(verdictFirstId));
+    const lateDisconnect = await endCallOn(repoTwo, verdictFirstId);
+    const afterVerdict = await countRows(verdictFirstId);
+
+    check(won.kind === 'COMMITTED', 'the verdict commits when it arrives first');
+    check(lateDisconnect === null, 'a disconnect arriving after it matches nothing');
+    check(afterVerdict.status === SessionStatus.APPROVED, 'the session keeps the verdict');
+    check(afterVerdict.billing === 1, 'and is charged once, at the verdict rate');
+    check(afterVerdict.endedEvents === 0, 'no CALL_ENDED is written behind a committed verdict');
+
+    const disconnectFirstId = await seedSession();
+    const ended = await endCallOn(repoOne, disconnectFirstId);
+    const lateVerdict = await repoTwo.submitVerdict(verdictCommand(disconnectFirstId));
+    const afterDisconnect = await countRows(disconnectFirstId);
+
+    check(ended !== null, 'the disconnect commits when it arrives first');
+    check(lateVerdict.kind === 'LOST', 'a verdict arriving after it is refused (409 to the agent)');
     check(
-      verdictWins > 0 && disconnectWins > 0,
-      `both orders actually occurred (verdict ${String(verdictWins)}, disconnect ${String(disconnectWins)})`,
+      afterDisconnect.status === SessionStatus.DROPPED_IN_CALL,
+      'the session keeps the dropped outcome',
+    );
+    check(afterDisconnect.billing === 1, 'and is charged once, at the dropped rate');
+    check(
+      afterDisconnect.verdict === null &&
+        afterDisconnect.checklist === 0 &&
+        afterDisconnect.outbox === 0,
+      'the refused verdict wrote no verdict, no checklist and no outbox row',
     );
 
     // ============================================================== D17 abort
@@ -454,14 +513,13 @@ async function main(): Promise<void> {
       'exactly one of VERDICT_SUBMITTED and SESSION_ABORTED is in the history',
     );
     check(
-      all(aborts, (row) =>
-        row.status === SessionStatus.APPROVED ? row.billing === 1 : row.billing === 0,
-      ),
-      // Not a race defect. The customer abort path writes no ledger row at all
-      // (see `SessionsService.abort`), so an abort that wins leaves the session
-      // terminal and uncharged. Recorded here as the current behaviour, and
-      // reported separately: it is T12's gap, not this gate's.
-      'a winning verdict is billed; a winning abort is not (see the note above)',
+      all(aborts, (row) => row.billing === 1),
+      // Whichever side won. This assertion used to say the opposite -- that a
+      // winning abort was charged nothing -- because the abort path reported an
+      // amount and wrote no ledger row. Fixing that is what makes the invariant
+      // uniform: every terminal outcome past the queue carries exactly one
+      // charge, no matter which writer got there first.
+      'exactly one billing row whichever side won',
     );
     process.stdout.write(
       `   note  the abort won ${String(abortWinners)} of ${String(ROUNDS)} rounds\n`,
