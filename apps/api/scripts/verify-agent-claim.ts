@@ -48,6 +48,7 @@ import type { AgentActor } from '../src/common/auth/auth-context.js';
 import { TenantScope } from '../src/common/auth/tenant-scope.js';
 import { DrizzleSessionEventWriter } from '../src/common/events/index.js';
 import { createLogger } from '../src/common/logging/logger.js';
+import { RecordingNotifications } from '../src/realtime/notifications.testing.js';
 import { presenceKey } from '../src/agents/presence.keys.js';
 import { queueKey } from '../src/queue/queue.keys.js';
 import { RedisQueueRepository } from '../src/queue/queue.repository.js';
@@ -133,6 +134,9 @@ async function main(): Promise<void> {
   const presenceRepo = new RedisPresenceRepository(redis);
   const queueRepo = new RedisQueueRepository(redis);
   const logger = createLogger({ level: 'silent' });
+  // These services publish; a double that records is enough, and a null one
+  // would hide a producer that stopped publishing.
+  const notifications = new RecordingNotifications();
   const eventWriter = new DrizzleSessionEventWriter();
 
   const NOW = new Date('2026-08-31T12:00:00.000Z');
@@ -161,6 +165,7 @@ async function main(): Promise<void> {
       new PresenceService(presenceRepo, agentRepo, sessionRepo, logger, () => NOW),
       new TenantsService(new DrizzleTenantConfigStore(executor)),
       new TenantScope(),
+      notifications,
       logger,
       () => NOW,
     );

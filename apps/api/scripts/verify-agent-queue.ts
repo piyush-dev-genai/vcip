@@ -13,11 +13,17 @@
  *     same session-shaped ids at the same language,
  *   - that a real `id IN (...)` with a tenant and status predicate really drops
  *     a stale member rather than returning a row the ORM then has to filter,
- *   - and that reading all of this really writes nothing: no row, no version
- *     bump, no `session_events`, no `billing_entries`.
+ *   - and that reading all of this really writes nothing *to PostgreSQL*: no
+ *     row, no version bump, no `session_events`, no `billing_entries`.
  *
  * The last one is the reason a mocked test could never settle this. "No write
  * happened" is a statement about a database, and only a database can make it.
+ *
+ * Redis is the exception, and deliberately so: a read prunes the members
+ * PostgreSQL declines to confirm, because a projection that only ever grows
+ * eventually starves the bounded read of the customers behind the corpses. So
+ * the assertion here is not that Redis is untouched -- it is that a read adds
+ * nothing, and that every member left is one PostgreSQL still calls `QUEUED`.
  *
  * Like `verify-events.ts`, `verify-queue.ts`, and `verify-presence.ts`, this
  * lives in `scripts/` rather than `db/`, so `git status -- apps/api/db/` stays
@@ -196,6 +202,16 @@ async function main(): Promise<void> {
         const sessionRepo = new DrizzleSessionRepository(tx, refusingEventWriter);
         const service = new AgentQueueService(queueRepo, sessionRepo, agentRepo, logger, () => NOW);
 
+        /**
+         * Every session id this script plants in tenant A's  key.
+         *
+         * The final membership check needs to tell "a read added something"
+         * from "a member this script planted is still there", and a count
+         * cannot: T17 prunes what PostgreSQL will not confirm, so the total
+         * legitimately falls during the run.
+         */
+        const plantedInEn = new Set<string>();
+
         /** Insert a session and place it in its queue at its own queued_at. */
         const seed = async (
           tenantId: string,
@@ -222,6 +238,7 @@ async function main(): Promise<void> {
             sessionId: row.id,
             score: queuedAt.getTime(),
           });
+          if (tenantId === TENANT_A && language === 'en') plantedInEn.add(row.id);
           return row.id;
         };
 
@@ -330,6 +347,7 @@ async function main(): Promise<void> {
           sessionId: bSession,
           score: secondsAgo(500).getTime(),
         });
+        plantedInEn.add(bSession);
         check(
           !(await idsFor(actor(AGENT_EN_HI, TENANT_A))).includes(bSession),
           'a cross-tenant member planted in this tenant key is not returned',
@@ -359,8 +377,8 @@ async function main(): Promise<void> {
 
         const membersNow = await queueRepo.range(TENANT_A, 'en', 100);
         check(
-          staleIds.every((id) => membersNow.some((m) => m.sessionId === id)),
-          'every stale member is still in Redis — T17 removes nothing',
+          staleIds.every((id) => !membersNow.some((m) => m.sessionId === id)),
+          'every stale member has been pruned from Redis by the reads above',
         );
 
         // A member with no row at all.
@@ -371,6 +389,7 @@ async function main(): Promise<void> {
           sessionId: ghost,
           score: secondsAgo(450).getTime(),
         });
+        plantedInEn.add(ghost);
         check(
           !(await idsFor(actor(AGENT_EN_HI, TENANT_A))).includes(ghost),
           'a member with no session row is not returned',
@@ -537,11 +556,25 @@ async function main(): Promise<void> {
            WHERE tenant_id IN (${TENANT_A}, ${TENANT_B}) AND agent_id IS NOT NULL`);
         check(Number(assigned?.n) === 0, 'no session was assigned to an agent');
 
-        // Redis membership is unchanged too: the reads added nothing.
+        // Redis: a read never *adds* a member, and the only ones it removes are
+        // the ones PostgreSQL refused to confirm. It used to add nothing and
+        // remove nothing, which is what the count assertion here checked; T17
+        // now prunes what it cannot confirm, so the property worth stating is
+        // that everything left is something this script put there and that
+        // PostgreSQL still vouches for.
         const enAfter = await queueRepo.range(TENANT_A, 'en', 1000);
         check(
-          enAfter.length === membersNow.length + 3,
-          'the en queue grew only by the members this script added after the snapshot',
+          enAfter.every((member) => plantedInEn.has(member.sessionId)),
+          'the en queue contains only members this script planted -- a read adds nothing',
+        );
+
+        const confirmed = await sessionRepo.findQueued(
+          TENANT_A,
+          enAfter.map((member) => member.sessionId),
+        );
+        check(
+          confirmed.length === enAfter.length,
+          'and every surviving member is a session PostgreSQL still calls QUEUED',
         );
 
         throw new RollbackSignal();

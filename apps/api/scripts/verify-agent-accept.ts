@@ -42,6 +42,7 @@ import type { AgentActor } from '../src/common/auth/auth-context.js';
 import { TenantScope } from '../src/common/auth/tenant-scope.js';
 import { DrizzleSessionEventWriter } from '../src/common/events/index.js';
 import { createLogger } from '../src/common/logging/logger.js';
+import { RecordingNotifications } from '../src/realtime/notifications.testing.js';
 import { queueKey } from '../src/queue/queue.keys.js';
 import { RedisQueueRepository } from '../src/queue/queue.repository.js';
 import { DrizzleSessionRepository } from '../src/sessions/session.repository.js';
@@ -116,6 +117,9 @@ async function main(): Promise<void> {
   const presenceRepo = new RedisPresenceRepository(redis);
   const queueRepo = new RedisQueueRepository(redis);
   const logger = createLogger({ level: 'silent' });
+  // These services publish; a double that records is enough, and a null one
+  // would hide a producer that stopped publishing.
+  const notifications = new RecordingNotifications();
   const eventWriter = new DrizzleSessionEventWriter();
 
   const OFFER_TIMEOUT = 30;
@@ -154,11 +158,12 @@ async function main(): Promise<void> {
         presence,
         new TenantsService(new DrizzleTenantConfigStore(executor)),
         new TenantScope(),
+        notifications,
         logger,
         now,
       ),
-      accept: new AgentAcceptService(repo, presence, new TenantScope(), logger, now),
-      sweeper: new OfferSweeper(repo, presence, logger, false, now),
+      accept: new AgentAcceptService(repo, presence, new TenantScope(), notifications, logger, now),
+      sweeper: new OfferSweeper(repo, presence, notifications, logger, false, now),
     };
   };
 
