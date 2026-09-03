@@ -87,7 +87,34 @@ export class HttpDocumentReader implements DocumentReader {
       throw new Error(`the AI service answered ${String(response.status)}`);
     }
 
-    const body = (await response.json()) as { data?: { accepted?: unknown } };
-    return { accepted: body.data?.accepted === true };
+    return { accepted: acceptedFrom(await response.json()) };
   }
+}
+
+/**
+ * Read `accepted` out of the AI service's answer.
+ *
+ * **The body is bare.** The AI service is FastAPI and returns its dict as-is:
+ *
+ * ```json
+ * { "session_id": "...", "document_type": "PAN", "accepted": true, "status": "UNREADABLE" }
+ * ```
+ *
+ * The `{ "data": ... }` envelope is the Control API's own convention for its
+ * own routes, and this client read for it — so `body.data` was always
+ * `undefined`, every check reported `accepted: false`, and the agent was told
+ * "no AI on this call" while the analyzer was running perfectly and publishing
+ * the result to their HUD a second later. The two panels contradicted each
+ * other because one was reading the answer and the other was reading a field
+ * that never existed.
+ *
+ * Defensive rather than a cast: this is a cross-service boundary that TypeScript
+ * cannot check (`apps/ai` is outside the build graph), so anything that is not
+ * literally `accepted: true` reads as not accepted. Being wrong in that
+ * direction costs a retry; being wrong the other way would claim a check ran
+ * when nothing did.
+ */
+export function acceptedFrom(body: unknown): boolean {
+  if (body === null || typeof body !== 'object') return false;
+  return (body as { accepted?: unknown }).accepted === true;
 }
