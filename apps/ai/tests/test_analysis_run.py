@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from app.analysis import (
@@ -257,13 +259,9 @@ class TestDegradation:
 class TestProgrammingErrors:
     def test_a_provider_bug_is_not_swallowed_as_unavailability(self) -> None:
         """T29 reserves a raise for bugs; this loop must not convert one."""
-        providers = build_providers({})
-        providers = ProviderSet(
-            mode=providers.mode,
+        providers = replace(
+            build_providers({}),
             liveness=MockLivenessProvider(overrides={SESSION: RuntimeError("a bug")}),
-            face_match=providers.face_match,
-            ocr=providers.ocr,
-            references=providers.references,
         )
 
         with pytest.raises(RuntimeError, match="a bug"):

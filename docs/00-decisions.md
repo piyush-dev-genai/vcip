@@ -446,6 +446,76 @@ did not name.
 
 ---
 
+## D27 -- A document check is triggered, and only its verdict is kept
+
+`03-system-design.md` section 19 asked for a triggered OCR read -- *"OCR should
+be triggered only when the agent/customer indicates that a document is being
+shown"* -- and T30 shipped an interval-based one instead. This is the trigger,
+plus the registry lookup that makes it useful.
+
+The agent presses a button, names the document type, and the AI service reads
+the frame burst it is already holding, extracts the fields, asks the registry,
+and reports **a status**.
+
+```text
+agent portal --POST .../document-check--> apps/api --> apps/ai
+                                                         |
+                                            OCR -> fields -> verifier
+                                                         |
+                            apps/api <--POST /internal/ai/document-result--
+                                (status only; the fields never left apps/ai)
+```
+
+**Only the status is persisted.** The number, the name and the date of birth
+exist inside `apps/ai` for the length of one verifier call and are then
+dropped. `session_ai_summaries` gains three nullable columns -- type, status,
+checked-at -- and nothing else. Four existing statements are therefore left
+intact rather than amended: section 8.3 (not stored in normal tables), section
+40 (not logged), the webhook contract (not in payloads), and
+`06-database-schema.md` (not in event payloads).
+
+This is enforced structurally, not by care. `DocumentCheck` and the wire schema
+have no field for document contents, so nothing downstream *can* carry one; the
+strict schema answers 400 to a payload that tries. `DocumentFields` has a
+redacted `__repr__`, so the ordinary ways a value reaches a log -- an f-string,
+a `%s`, an exception rendering its arguments -- all produce a placeholder.
+
+**No image is captured anywhere.** The frames are already in the AI service
+(D23), so the trigger carries a session id and a document type. No document
+image passes through a browser, the Control API, or the evidence package.
+
+**The verifier is a port with a stub behind it**, exactly as T29's three
+providers are. `DocumentVerifier.verify` is the whole surface, so a real vendor
+replaces one class. Deliberately deferred: no vendor is chosen, no credentials
+exist, and Aadhaar in particular needs UIDAI licensing that reading a number off
+a video frame does not satisfy -- offline Aadhaar XML/QR or DigiLocker is the
+path a production deployment would take, and that is a different capture flow
+rather than a different verifier.
+
+**Provider error text is discarded, not forwarded.** A real registry client is
+third-party code whose error messages routinely quote the request that failed --
+which here is a document number. The reason on the wire is one of four fixed
+tokens that cannot echo anything.
+
+**It decides nothing (I7).** No transition, checklist item or verdict is gated
+on the result. An agent may approve a verification whose check came back
+`UNAVAILABLE`, because a registry being down is not the customer's fault.
+
+**Four outcomes, not two.** `VERIFIED`, `NOT_VERIFIED`, `UNREADABLE`,
+`UNAVAILABLE`. Each asks something different of the agent -- question the
+document, reposition the card, or disregard the panel -- and one failure value
+would leave a red mark carrying no instruction.
+
+**Nothing can fail the call (D6).** An AI service that is disabled, unreachable,
+or has no analysis attached all answer `accepted: false` with a 200. The
+verification carries on without AI, as T32 requires.
+
+*Adds to:* `03-system-design.md` section 19 -- the trigger it specified and T30
+did not build. No existing decision is reversed.
+
+---
+
+
 ## Resolved secondary ambiguities
 
 These follow from the decisions above and are recorded so implementation does not

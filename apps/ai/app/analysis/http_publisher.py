@@ -15,6 +15,7 @@ import httpx
 from .publisher import PublishError
 
 RESULT_PATH = "/internal/ai/result"
+DOCUMENT_RESULT_PATH = "/internal/ai/document-result"
 INTERNAL_TOKEN_HEADER = "X-Internal-Token"
 
 
@@ -23,14 +24,27 @@ class HttpResultPublisher:
 
     def __init__(self, base_url: str, internal_token: str, timeout_s: float) -> None:
         self._url = base_url.rstrip("/") + RESULT_PATH
+        self._document_url = base_url.rstrip("/") + DOCUMENT_RESULT_PATH
         self._client = httpx.AsyncClient(
             timeout=timeout_s,
             headers={INTERNAL_TOKEN_HEADER: internal_token},
         )
 
     async def publish(self, payload: dict[str, object]) -> None:
+        await self._post(self._url, payload)
+
+    async def publish_document(self, payload: dict[str, object]) -> None:
+        await self._post(self._document_url, payload)
+
+    async def _post(self, url: str, payload: dict[str, object]) -> None:
+        """One POST, with the two failures that must never quote the request.
+
+        Shared by both routes because the discipline below matters more on the
+        document route than on the sampled one, and a second copy is a second
+        place for it to be forgotten.
+        """
         try:
-            response = await self._client.post(self._url, json=payload)
+            response = await self._client.post(url, json=payload)
         except httpx.HTTPError as exc:
             # The message, not the exception: an httpx error stringifies with
             # the request it failed on, and this request carries the internal

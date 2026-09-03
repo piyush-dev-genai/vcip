@@ -242,6 +242,7 @@ describe('every request goes through the API client', () => {
       "'/availability'",
       "'/checklist'",
       "'/claim'",
+      "'/document-check'",
       "'/heartbeat'",
       "'/login'",
       "'/media-token'",

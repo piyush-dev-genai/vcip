@@ -24,6 +24,9 @@ const hud = (overrides: Partial<AiHudPayload> = {}): AiHudPayload => ({
   ocr_status: OcrStatus.PASS,
   model_versions: { liveness: 'demo-v1' },
   updated_at: new Date(NOW).toISOString(),
+  document_type: null,
+  document_status: null,
+  document_checked_at: null,
   ...overrides,
 });
 

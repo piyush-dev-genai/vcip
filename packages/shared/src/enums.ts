@@ -163,3 +163,69 @@ export function isLivenessStatus(value: unknown): value is LivenessStatus {
 export function isOcrStatus(value: unknown): value is OcrStatus {
   return typeof value === 'string' && (OCR_STATUSES as readonly string[]).includes(value);
 }
+
+/**
+ * Which identity document an agent asked to have read.
+ *
+ * A closed set, because each one has its own reader and its own registry: a PAN
+ * is ten characters checked against one, an Aadhaar twelve digits checked
+ * against another, and "whatever the customer held up" is not something either
+ * can be asked about.
+ *
+ * The agent chooses this before the capture rather than the reader inferring it
+ * afterwards. Inference is a second thing that can be wrong, and a document read
+ * as the wrong type fails verification in a way that looks like a bad customer
+ * rather than a bad guess.
+ */
+export const DocumentType = {
+  AADHAAR: 'AADHAAR',
+  PAN: 'PAN',
+} as const;
+
+export type DocumentType = (typeof DocumentType)[keyof typeof DocumentType];
+
+export const DOCUMENT_TYPES: readonly DocumentType[] = Object.freeze(Object.values(DocumentType));
+
+/**
+ * What came back from checking one document against its registry.
+ *
+ * Four outcomes, and the three that are not `VERIFIED` are deliberately not one
+ * value. The agent needs to know whether to ask the customer to hold the card
+ * still (`UNREADABLE`), to treat the document as suspect (`NOT_VERIFIED`), or to
+ * disregard the panel and decide on what they can see (`UNAVAILABLE`).
+ * Collapsing them leaves a red mark that carries no instruction.
+ *
+ *   - `VERIFIED` — the registry recognised the document.
+ *   - `NOT_VERIFIED` — the registry was asked and did not recognise it.
+ *   - `UNREADABLE` — the frames could not be read, so nothing was ever asked.
+ *   - `UNAVAILABLE` — the check could not run at all: the verifier was
+ *     unreachable, or no analysis was attached to the call.
+ *
+ * The last two draw the same distinction `OcrStatus` draws between
+ * `NO_DOCUMENT` and `UNAVAILABLE`: one says the check ran and found nothing,
+ * the other says it never ran.
+ *
+ * None of these decides anything (I7). The agent decides.
+ */
+export const DocumentCheckStatus = {
+  VERIFIED: 'VERIFIED',
+  NOT_VERIFIED: 'NOT_VERIFIED',
+  UNREADABLE: 'UNREADABLE',
+  UNAVAILABLE: 'UNAVAILABLE',
+} as const;
+
+export type DocumentCheckStatus = (typeof DocumentCheckStatus)[keyof typeof DocumentCheckStatus];
+
+export const DOCUMENT_CHECK_STATUSES: readonly DocumentCheckStatus[] = Object.freeze(
+  Object.values(DocumentCheckStatus),
+);
+
+export function isDocumentType(value: unknown): value is DocumentType {
+  return typeof value === 'string' && (DOCUMENT_TYPES as readonly string[]).includes(value);
+}
+
+export function isDocumentCheckStatus(value: unknown): value is DocumentCheckStatus {
+  return (
+    typeof value === 'string' && (DOCUMENT_CHECK_STATUSES as readonly string[]).includes(value)
+  );
+}

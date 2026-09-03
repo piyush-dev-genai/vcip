@@ -18,9 +18,17 @@ from enum import StrEnum
 from pathlib import Path
 
 from .degraded import (
+    UnavailableDocumentReader,
+    UnavailableDocumentVerifier,
     UnavailableFaceMatchProvider,
     UnavailableLivenessProvider,
     UnavailableOCRProvider,
+)
+from .document import (
+    DocumentReader,
+    DocumentVerifier,
+    MockDocumentReader,
+    MockDocumentVerifier,
 )
 from .face_match import FaceMatchProvider, MockFaceMatchProvider
 from .liveness import LivenessProvider, MockLivenessProvider
@@ -47,13 +55,21 @@ class ProviderMode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ProviderSet:
-    """The three checks and the reference store, chosen together."""
+    """The three continuous checks, the reference store, and the document pair.
+
+    The document reader and verifier sit alongside rather than inside the three
+    because they run on a different trigger: the three are sampled continuously,
+    these run once, when an agent presses a button (§19). Nothing in the
+    sampling loop touches them.
+    """
 
     mode: ProviderMode
     liveness: LivenessProvider
     face_match: FaceMatchProvider
     ocr: OCRProvider
     references: ReferenceStore
+    document_reader: DocumentReader
+    document_verifier: DocumentVerifier
 
     def model_versions(self) -> dict[str, str]:
         """The versions to record on the session's AI summary.
@@ -94,6 +110,8 @@ def build_providers(env: Mapping[str, str] | None = None) -> ProviderSet:
             face_match=UnavailableFaceMatchProvider(),
             ocr=UnavailableOCRProvider(),
             references=EmptyReferenceStore(),
+            document_reader=UnavailableDocumentReader(),
+            document_verifier=UnavailableDocumentVerifier(),
         )
 
     return ProviderSet(
@@ -102,4 +120,6 @@ def build_providers(env: Mapping[str, str] | None = None) -> ProviderSet:
         face_match=MockFaceMatchProvider(),
         ocr=MockOCRProvider(),
         references=LocalReferenceStore(reference_dir),
+        document_reader=MockDocumentReader(),
+        document_verifier=MockDocumentVerifier(),
     )

@@ -24,6 +24,7 @@ import { Global, Module } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { AI_CONFIG } from '../ai/ai.config.js';
 import { API_KEY_STORE } from '../common/auth/api-key.store.js';
 import type { AuthConfig } from '../common/auth/auth.config.js';
 import { AUTH_CONFIG } from '../common/auth/auth.config.js';
@@ -84,6 +85,17 @@ describe('AgentsModule resolves through the container', () => {
       .useValue(TEST_AUTH_CONFIG)
       .overrideProvider(API_KEY_STORE)
       .useValue({ findByPrefix: () => Promise.resolve(null) })
+      // `AiClientModule` builds this from the environment at boot, and this suite
+      // has no environment. Overridden as *disabled*, which also states the
+      // property worth stating: the agent surface constructs with AI switched
+      // off, because a document check being unavailable is not an error (D6).
+      .overrideProvider(AI_CONFIG)
+      .useValue({
+        enabled: false,
+        baseUrl: '',
+        startTimeoutMs: 2_000,
+        documentTimeoutMs: 15_000,
+      })
       .compile();
   });
 

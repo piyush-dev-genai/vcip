@@ -16,7 +16,14 @@
  * this file for what deliberately remains application-level.
  */
 
-import { AGENT_PRESENCES, BILL_CATEGORIES, EXPORT_STATUSES, SESSION_STATUSES } from '@vcip/shared';
+import {
+  AGENT_PRESENCES,
+  BILL_CATEGORIES,
+  DOCUMENT_CHECK_STATUSES,
+  DOCUMENT_TYPES,
+  EXPORT_STATUSES,
+  SESSION_STATUSES,
+} from '@vcip/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigserial,
@@ -459,6 +466,26 @@ export const sessionAiSummaries = pgTable(
     modelVersions: jsonb('model_versions')
       .notNull()
       .default(sql`'{}'::jsonb`),
+
+    /**
+     * The last agent-triggered document check (§19).
+     *
+     * Three nullable columns, and null is the common case: the agent never
+     * pressed the button. All three move together — a status with no type
+     * cannot be labelled, and neither can be dated without the timestamp.
+     *
+     * **A status and nothing more.** There is no column for the document
+     * number, the holder's name, or the date of birth, and that is the design
+     * rather than an omission: §8.3 forbids Aadhaar data in normal tables, §40
+     * forbids it in logs, and the webhook contract forbids it in payloads. The
+     * number is read in the AI service, handed to the registry, and dropped.
+     * Adding a column here would quietly move this database into a much higher
+     * sensitivity class and invalidate all three of those statements.
+     */
+    documentType: text('document_type'),
+    documentStatus: text('document_status'),
+    documentCheckedAt: tstz('document_checked_at'),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -470,6 +497,29 @@ export const sessionAiSummaries = pgTable(
     check(
       'session_ai_summaries_face_match_score_range',
       sql`${t.faceMatchScore} IS NULL OR (${t.faceMatchScore} >= 0 AND ${t.faceMatchScore} <= 100)`,
+    ),
+    // `sql.raw` over the whole expression, matching `sessions_bill_category_check`:
+    // a nullable enum column needs the `IS NULL OR` outside the `IN`, and the
+    // list is still spread from a `@vcip/shared` constant so adding a value
+    // there and forgetting it here changes the generated migration.
+    check(
+      'session_ai_summaries_document_type_check',
+      sql.raw(
+        `document_type IS NULL OR document_type IN (${DOCUMENT_TYPES.map((v) => `'${v}'`).join(', ')})`,
+      ),
+    ),
+    check(
+      'session_ai_summaries_document_status_check',
+      sql.raw(
+        `document_status IS NULL OR document_status IN (${DOCUMENT_CHECK_STATUSES.map((v) => `'${v}'`).join(', ')})`,
+      ),
+    ),
+    // All three or none. A half-written check is not a fact about a session,
+    // and a row carrying a status nobody can date is one an auditor cannot use.
+    check(
+      'session_ai_summaries_document_complete',
+      sql`(${t.documentType} IS NULL AND ${t.documentStatus} IS NULL AND ${t.documentCheckedAt} IS NULL)
+          OR (${t.documentType} IS NOT NULL AND ${t.documentStatus} IS NOT NULL AND ${t.documentCheckedAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -727,4 +777,11 @@ export const schema = {
  * Re-exported so a reader of the schema can see which value sets are owned by
  * the shared domain package rather than by this file.
  */
-export { AGENT_PRESENCES, BILL_CATEGORIES, EXPORT_STATUSES, SESSION_STATUSES };
+export {
+  AGENT_PRESENCES,
+  BILL_CATEGORIES,
+  DOCUMENT_CHECK_STATUSES,
+  DOCUMENT_TYPES,
+  EXPORT_STATUSES,
+  SESSION_STATUSES,
+};

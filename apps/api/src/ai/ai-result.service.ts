@@ -76,9 +76,11 @@ export class AiResultService {
   ) {}
 
   async receive(result: AiResultRequest, now: Date = new Date()): Promise<AiResultReceipt> {
-    const payload = toHudPayload(result, now);
-
-    await this.store(payload);
+    // What gets published is what the store came back with, not what was sent.
+    // The HUD has a second writer — the agent-triggered document check — and
+    // publishing this result's own payload would carry its null document fields
+    // and blank a status the agent asked for, every couple of seconds.
+    const payload = await this.store(toHudPayload(result, now));
 
     const session = await this.sessions.findForCallEvent(result.session_id);
     if (session === null) {
@@ -112,14 +114,18 @@ export class AiResultService {
    * not degrade the call, and it must not stop the agent being told what the
    * AI just said — so the publish below happens either way.
    */
-  private async store(payload: AiHudPayload): Promise<void> {
+  private async store(payload: AiHudPayload): Promise<AiHudPayload> {
     try {
-      await this.hud.save(payload.session_id, payload);
+      return await this.hud.save(payload.session_id, payload);
     } catch (error) {
       this.logger.warn(
         { event: 'ai.hud_write_failed', session_id: payload.session_id, err: error },
         'could not store the AI HUD; the next result will try again',
       );
+      // The agent is still told what the AI just said. Without the merged read
+      // this carries null document fields, which is why the panel treats a null
+      // document status as "no update" rather than as "no document check".
+      return payload;
     }
   }
 }
@@ -140,5 +146,11 @@ export function toHudPayload(result: AiResultRequest, now: Date): AiHudPayload {
     ocr_status: result.ocr_status,
     model_versions: result.model_versions,
     updated_at: now.toISOString(),
+    // Null because a sampled result knows nothing about them, not because there
+    // is no document check. `toHudFields` does not write these, so nulls here
+    // never reach Redis — they exist only until the merged read replaces them.
+    document_type: null,
+    document_status: null,
+    document_checked_at: null,
   };
 }

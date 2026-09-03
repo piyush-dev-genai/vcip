@@ -74,10 +74,15 @@ class FailingFrameSource:
 class RecordingPublisher:
     """Keeps every payload it is handed."""
 
-    def __init__(self, fail_times: int = 0) -> None:
+    def __init__(self, fail_times: int = 0, document_fail_times: int = 0) -> None:
         self.published: list[dict[str, object]] = []
+        # Kept apart from `published` because they go to different routes and
+        # update different parts of the HUD. A test asserting a document result
+        # must not be satisfied by a sampled one that happens to be nearby.
+        self.documents: list[dict[str, object]] = []
         self.closed = 0
         self._fail_times = fail_times
+        self._document_fail_times = document_fail_times
 
     async def publish(self, payload: dict[str, object]) -> None:
         if self._fail_times > 0:
@@ -86,6 +91,14 @@ class RecordingPublisher:
             self._fail_times -= 1
             raise PublishError("synthetic publish failure")
         self.published.append(payload)
+
+    async def publish_document(self, payload: dict[str, object]) -> None:
+        if self._document_fail_times > 0:
+            from app.analysis import PublishError
+
+            self._document_fail_times -= 1
+            raise PublishError("synthetic document publish failure")
+        self.documents.append(payload)
 
     async def aclose(self) -> None:
         self.closed += 1

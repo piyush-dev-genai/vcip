@@ -37,6 +37,8 @@ import type {
   AgentAvailabilityRequest,
   AgentLoginRequest,
   AgentVerdictRequest,
+  DocumentCheckRequest,
+  DocumentCheckResult,
 } from '@vcip/shared';
 import {
   agentAvailabilitySchema,
@@ -45,6 +47,7 @@ import {
   agentHeartbeatSchema,
   agentLoginSchema,
   agentVerdictSchema,
+  documentCheckRequestSchema,
 } from '@vcip/shared';
 import { AgentJwtGuard } from '../common/auth/agent-jwt.guard.js';
 import { Auth } from '../common/auth/auth.decorators.js';
@@ -64,6 +67,8 @@ import { AgentClaimService } from './agent-claim.service.js';
 import type { VerdictResult } from './agent-verdict.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentVerdictService } from './agent-verdict.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AgentDocumentService } from './agent-document.service.js';
 import type { AgentQueueResult } from './agent-queue.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AgentQueueService } from './agent-queue.service.js';
@@ -100,6 +105,7 @@ export class AgentsController {
     private readonly claims: AgentClaimService,
     private readonly accepts: AgentAcceptService,
     private readonly verdicts: AgentVerdictService,
+    private readonly documents: AgentDocumentService,
   ) {}
 
   /**
@@ -255,6 +261,35 @@ export class AgentsController {
    *
    * 200 rather than 201: the session existed and this moved it.
    */
+  /**
+   * Ask for the document on camera to be read and checked (§19).
+   *
+   * The one route in this controller that is deliberately **not** idempotent.
+   * D13's keys protect operations that must happen at most once; this one must
+   * be repeatable — an unreadable frame is answered by asking the customer to
+   * hold the card still and pressing again, and a replayed response would show
+   * the agent the old `UNREADABLE` for as long as the record lived.
+   *
+   * 200 and an acknowledgement, not the result. The check reads a frame burst
+   * and calls an external registry, which is far too long to hold a request
+   * open on a live call; the answer arrives on the agent's existing socket and
+   * lands on the HUD (T31).
+   *
+   * `accepted: false` is a normal answer, not an error. It means there was no
+   * analysis to ask — AI disabled, never started, or already stopped — and the
+   * call is unaffected either way (D6).
+   */
+  @Post('sessions/:id/document-check')
+  @HttpCode(200)
+  @UseGuards(AgentJwtGuard, TenantGuard)
+  async checkDocument(
+    @Auth() actor: Actor,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body(new ZodValidationPipe(documentCheckRequestSchema)) body: DocumentCheckRequest,
+  ): Promise<ApiData<DocumentCheckResult>> {
+    return data(await this.documents.check(asAgent(actor), id, body.document_type));
+  }
+
   @Post('sessions/:id/verdict')
   @HttpCode(200)
   @UseGuards(AgentJwtGuard, TenantGuard)

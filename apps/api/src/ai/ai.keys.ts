@@ -14,8 +14,14 @@
  * and the AI service is the only party that ever knew the answer.
  */
 
-import type { AiHudPayload, LivenessStatus, OcrStatus } from '@vcip/shared';
-import { isLivenessStatus, isOcrStatus } from '@vcip/shared';
+import type {
+  AiHudPayload,
+  DocumentCheckStatus,
+  DocumentType,
+  LivenessStatus,
+  OcrStatus,
+} from '@vcip/shared';
+import { isDocumentCheckStatus, isDocumentType, isLivenessStatus, isOcrStatus } from '@vcip/shared';
 
 /** One session's HUD: `session:hud:{session_id}` (`06-database-schema.md` §36). */
 export function hudKey(sessionId: string): string {
@@ -47,7 +53,32 @@ export const HudField = {
   OCR_STATUS: 'ocr_status',
   MODEL_VERSIONS: 'model_versions',
   UPDATED_AT: 'updated_at',
+
+  /**
+   * The agent-triggered document check.
+   *
+   * Written by their own path and never by `toHudFields`, which is what makes
+   * a hash the right shape here: the continuous result arrives every couple of
+   * seconds, and if it carried these it would blank a document status the
+   * agent asked for once. Two writers, disjoint fields, one key.
+   */
+  DOCUMENT_TYPE: 'document_type',
+  DOCUMENT_STATUS: 'document_status',
+  DOCUMENT_CHECKED_AT: 'document_checked_at',
 } as const;
+
+/** The document fields, as a partial write. Nothing else on the HUD is touched. */
+export function toDocumentFields(
+  documentType: DocumentType,
+  status: DocumentCheckStatus,
+  checkedAt: string,
+): Record<string, string> {
+  return {
+    [HudField.DOCUMENT_TYPE]: documentType,
+    [HudField.DOCUMENT_STATUS]: status,
+    [HudField.DOCUMENT_CHECKED_AT]: checkedAt,
+  };
+}
 
 /** Redis has no null. A score that was not produced is stored as this. */
 const ABSENT = '';
@@ -114,7 +145,39 @@ export function fromHudFields(
     ocr_status: ocr satisfies OcrStatus,
     model_versions: parseModelVersions(fields[HudField.MODEL_VERSIONS]),
     updated_at: updatedAt,
+    ...readDocument(fields),
   };
+}
+
+/**
+ * The document check, or three nulls.
+ *
+ * All three or none: a status with no type could not be labelled on the panel,
+ * and either without a timestamp could not be aged. A hash written by two
+ * independent writers can be observed mid-write, so a partial set is read as no
+ * check at all rather than as a check missing a field.
+ *
+ * Unlike the continuous fields above, a malformed value here does not void the
+ * whole HUD. Liveness and OCR are what the panel is *for*; a document check is
+ * an extra an agent asked for once, and losing it must not take the rest down.
+ */
+function readDocument(fields: Record<string, string>): {
+  document_type: DocumentType | null;
+  document_status: DocumentCheckStatus | null;
+  document_checked_at: string | null;
+} {
+  const type = fields[HudField.DOCUMENT_TYPE];
+  const status = fields[HudField.DOCUMENT_STATUS];
+  const checkedAt = fields[HudField.DOCUMENT_CHECKED_AT];
+
+  if (!isDocumentType(type) || !isDocumentCheckStatus(status)) {
+    return { document_type: null, document_status: null, document_checked_at: null };
+  }
+  if (checkedAt === undefined || checkedAt.length === 0) {
+    return { document_type: null, document_status: null, document_checked_at: null };
+  }
+
+  return { document_type: type, document_status: status, document_checked_at: checkedAt };
 }
 
 /**

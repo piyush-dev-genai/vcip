@@ -2654,6 +2654,246 @@ real database on two connections rather than asserting it once.
 
 \---
 
+\# 18a. Document Check [IMPLEMENTED]
+
+
+
+\### Endpoint
+
+
+
+```http
+
+POST /v1/agent/sessions/{session\_id}/document-check
+
+```
+
+
+
+\### Authentication
+
+
+
+Agent JWT. The session must be `IN\_CALL` and assigned to the calling agent.
+
+
+
+\### Headers
+
+
+
+No `Idempotency-Key`, and that is the contract rather than an omission. D13
+
+protects operations that must happen at most once; this one is deliberately
+
+repeatable -- an unreadable frame is answered by asking the customer to hold the
+
+card still and pressing again, and a replayed response would show the agent a
+
+stale `UNREADABLE` for as long as the record lived.
+
+
+
+\### Request
+
+
+
+```json
+
+{
+
+&#x20; "document\_type": "PAN"
+
+}
+
+```
+
+
+
+Allowed types:
+
+
+
+```text
+
+AADHAAR
+
+PAN
+
+```
+
+
+
+\### What is *not* in the request
+
+
+
+No image. The AI service already holds decoded frames for this call (D23), so no
+
+document picture passes through a browser or through this API. `03-system-design.md`
+
+section 19 asks for a "small frame burst", and the analyzer's existing sampling
+
+window is that burst -- pressing this button costs no extra decoding.
+
+
+
+\### Response
+
+
+
+```json
+
+{
+
+&#x20; "data": {
+
+&#x20;   "session\_id": "session-uuid",
+
+&#x20;   "document\_type": "PAN",
+
+&#x20;   "accepted": true
+
+&#x20; }
+
+}
+
+```
+
+
+
+`accepted`, not a result. The check reads a frame burst and then calls an
+
+external registry, which is too long to hold a request open on a live call. The
+
+answer arrives on the agent's existing WebSocket as `ai.updated` and lands on
+
+the AI HUD (section 19's transport), so the portal has one place to look rather
+
+than two that can disagree.
+
+
+
+`accepted: false` is a normal answer and still a 200. It means there was no
+
+analysis to ask: AI is disabled, was never started for this call, or has already
+
+stopped. The verification is unaffected either way (D6), and the agent decides
+
+on what they can see.
+
+
+
+\### Errors
+
+
+
+```text
+
+409 SESSION\_INVALID\_STATE   session is not IN\_CALL
+
+403 FORBIDDEN               session is not assigned to this agent
+
+404 NOT\_FOUND               session belongs to another tenant
+
+```
+
+
+
+Status is checked before assignment, as on the verdict and media-token routes: an
+
+agent asking about a queued session is told the state is wrong, which reveals
+
+nothing, rather than being told it belongs to somebody else.
+
+
+
+\### The result, on the HUD
+
+
+
+`ai.updated` carries three additional fields once a check has run:
+
+
+
+```text
+
+document\_type         AADHAAR | PAN
+
+document\_status       VERIFIED | NOT\_VERIFIED | UNREADABLE | UNAVAILABLE
+
+document\_checked\_at   ISO 8601, server time
+
+```
+
+
+
+All three or none. `UNREADABLE` means the frames were read and held no usable
+
+document -- no registry was ever asked -- while `UNAVAILABLE` means the check
+
+could not run at all. The agent is told to do different things by each, which is
+
+why they are not one value.
+
+
+
+They carry their own timestamp because they age differently. The three
+
+continuous checks go stale after ten seconds, since a killed analyzer sends
+
+nothing at all; a document check is a one-off answer that stays true for the
+
+rest of the call and is still shown after the analyzer goes quiet.
+
+
+
+\### What is never stored, logged, or sent
+
+
+
+```text
+
+document number
+
+holder name
+
+date of birth
+
+full OCR text
+
+document image
+
+```
+
+
+
+The fields are read inside the AI service, handed to the verifier, and dropped.
+
+`session\_ai\_summaries` holds the three columns above and nothing else, so
+
+section 8.3, section 40 and the webhook contract are satisfied as written rather
+
+than amended. The internal result schema is strict and has no field for document
+
+contents -- a payload carrying one is answered 400. See D27.
+
+
+
+\### It decides nothing
+
+
+
+No transition, checklist item, or verdict is gated on a document check (I7). A
+
+verification may be approved with a check that came back `UNAVAILABLE`, because
+
+a registry being unreachable is not the customer's fault.
+
+
+
+\---
+
 
 
 \# 19. WebSocket API

@@ -25,19 +25,25 @@
  */
 
 import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
-import type { AiResultRequest } from '@vcip/shared';
-import { aiResultSchema } from '@vcip/shared';
+import type { AiResultRequest, DocumentResultRequest } from '@vcip/shared';
+import { aiResultSchema, documentResultSchema } from '@vcip/shared';
 import { InternalTokenGuard } from '../common/auth/internal-token.guard.js';
 import type { ApiData } from '../common/http/envelope.js';
 import { data } from '../common/http/envelope.js';
 import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
+import type { DocumentResultReceipt } from './ai-document.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
+import { AiDocumentService } from './ai-document.service.js';
 import type { AiResultReceipt } from './ai-result.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- DI token
 import { AiResultService } from './ai-result.service.js';
 
 @Controller('internal/ai')
 export class AiResultController {
-  constructor(private readonly results: AiResultService) {}
+  constructor(
+    private readonly results: AiResultService,
+    private readonly documents: AiDocumentService,
+  ) {}
 
   /**
    * Take delivery of one AI result.
@@ -58,5 +64,31 @@ export class AiResultController {
     @Body(new ZodValidationPipe(aiResultSchema)) body: AiResultRequest,
   ): Promise<ApiData<AiResultReceipt>> {
     return data(await this.results.receive(body));
+  }
+
+  /**
+   * Take delivery of one agent-triggered document check (§19).
+   *
+   * A separate route from `result` rather than a variant of it, because the two
+   * write disjoint parts of the HUD and arrive on completely different
+   * schedules: this one happens when an agent presses a button, that one every
+   * couple of seconds. Folding them together would mean every sampled result
+   * carried a document status it knows nothing about.
+   *
+   * The schema is the guarantee that no document contents reach this process.
+   * It is strict and has no field for them, so a future AI service that started
+   * sending a number would be answered 400 rather than quietly storing it.
+   *
+   * No `Idempotency-Key`, for the same reason `result` has none: an agent may
+   * legitimately check the same document twice — an unreadable frame is
+   * answered by trying again — and the last answer winning is the intent.
+   */
+  @Post('document-result')
+  @HttpCode(200)
+  @UseGuards(InternalTokenGuard)
+  async receiveDocument(
+    @Body(new ZodValidationPipe(documentResultSchema)) body: DocumentResultRequest,
+  ): Promise<ApiData<DocumentResultReceipt>> {
+    return data(await this.documents.receive(body));
   }
 }

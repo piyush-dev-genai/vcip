@@ -34,6 +34,7 @@ import {
 } from '../lib/work-state';
 import { AvailabilityPanel } from './AvailabilityPanel';
 import { AiPanel } from './AiPanel';
+import { DocumentPanel } from './DocumentPanel';
 import { ChecklistPanel, clearChecklist } from './ChecklistPanel';
 import { VerdictPanel } from './VerdictPanel';
 import { CallPanel } from './CallPanel';
@@ -726,6 +727,7 @@ export function AgentPortal() {
             <>
               <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
               <AiPanel sessionId={work.sessionId} updates={aiUpdates} />
+              <DocumentPanel sessionId={work.sessionId} api={api} updates={aiUpdates} />
               <ChecklistPanel sessionId={work.sessionId} api={api} onChange={setChecklist} />
               <VerdictPanel
                 sessionId={work.sessionId}

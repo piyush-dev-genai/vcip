@@ -297,6 +297,7 @@ gate and report.
 | T47 | 7 | All 12 scenarios from section 11 | todo |
 | T48 | 7 | Demo seed data + demo script | todo |
 | T49 | 7 | Repeated end-to-end runs | todo |
+| T50 | 5 | Agent-triggered document check: OCR read + registry verify, status only (D27) | done |
 
 Critical path: T06 -> T07 -> T12 -> T18 -> T19 -> T25 -> T35 -> T40 -> T43.
 Everything else can slip a day without stalling the build.

@@ -80,7 +80,13 @@ const build = (config: Partial<AiConfig> = {}): AiAnalysisService => {
     sessions as unknown as SessionRepository,
     minter,
     starter as unknown as AnalysisStarter,
-    { enabled: true, baseUrl: 'http://ai.test', startTimeoutMs: 2_000, ...config },
+    {
+      enabled: true,
+      baseUrl: 'http://ai.test',
+      startTimeoutMs: 2_000,
+      documentTimeoutMs: 15_000,
+      ...config,
+    },
     LIVEKIT,
     createLogger({ level: 'silent', destination: sink }),
   );

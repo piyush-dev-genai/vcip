@@ -16,6 +16,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .determinism import validate_session_id
+from .document import DocumentFields, DocumentType
+from .errors import ProviderUnavailable
 from .frame import Frame, require_frame, require_frames
 from .reference import Reference
 from .results import FaceMatchResult, LivenessResult, OcrResult
@@ -58,3 +60,35 @@ class UnavailableOCRProvider:
         validate_session_id(session_id)
         require_frame(frame)
         return OcrResult.unavailable(self.model_version, _REASON)
+
+
+class UnavailableDocumentReader:
+    """The document reader, switched off.
+
+    Raises rather than returning `None`, because the two mean different things
+    to the agent: `None` is "no document was in the frame, hold it up again",
+    and this is "the reader did not run". The caller turns the exception into
+    `UNAVAILABLE` and the agent is told not to wait for an answer.
+    """
+
+    model_version = UNAVAILABLE_VERSION
+
+    async def read(
+        self,
+        *,
+        session_id: str,
+        document_type: DocumentType,
+        frames: tuple[Frame, ...],
+    ) -> DocumentFields | None:
+        validate_session_id(session_id)
+        raise ProviderUnavailable(_REASON)
+
+
+class UnavailableDocumentVerifier:
+    """The registry lookup, switched off."""
+
+    model_version = UNAVAILABLE_VERSION
+
+    async def verify(self, *, session_id: str, fields: DocumentFields) -> bool:
+        validate_session_id(session_id)
+        raise ProviderUnavailable(_REASON)

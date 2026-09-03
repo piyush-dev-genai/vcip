@@ -67,6 +67,9 @@ const HUD: AiHudPayload = {
   ocr_status: OcrStatus.PASS,
   model_versions: { liveness: 'demo-v1' },
   updated_at: NOW.toISOString(),
+  document_type: null,
+  document_status: null,
+  document_checked_at: null,
 };
 
 // --------------------------------------------------------------------- fakes
@@ -129,8 +132,12 @@ class FakeHud implements AiHudRepository {
   payload: AiHudPayload | null = HUD;
   fails = false;
 
-  save(): Promise<void> {
+  save(): Promise<AiHudPayload> {
     throw new Error('a verdict must never write the HUD');
+  }
+
+  saveDocument(): Promise<AiHudPayload | null> {
+    throw new Error('a verdict must never write a document check');
   }
 
   read(): Promise<AiHudPayload | null> {

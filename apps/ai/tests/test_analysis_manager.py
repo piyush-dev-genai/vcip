@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 from app.analysis import AnalysisManager, AnalysisRequest, Cadence
 from app.providers import MockLivenessProvider, ProviderSet, build_providers
@@ -196,13 +197,12 @@ class TestFailureContainment:
         """It is logged as the bug it is, and the process keeps serving."""
 
         async def scenario() -> None:
-            healthy = build_providers({})
-            providers = ProviderSet(
-                mode=healthy.mode,
+            # `replace` rather than a field-by-field rebuild: the point is "the
+            # healthy set, with a broken liveness provider", and naming the
+            # others means this test breaks whenever a provider is added.
+            providers = replace(
+                build_providers({}),
                 liveness=MockLivenessProvider(overrides={SESSION: RuntimeError("a bug")}),
-                face_match=healthy.face_match,
-                ocr=healthy.ocr,
-                references=healthy.references,
             )
             manager, _, _ = build(providers=providers)
 

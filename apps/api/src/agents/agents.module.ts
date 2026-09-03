@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AiHudModule } from '../ai/ai-hud.module.js';
+import { AiClientModule } from '../ai/ai-client.module.js';
 import { ChecklistModule } from '../checklist/checklist.module.js';
 import { AuthModule } from '../common/auth/auth.module.js';
 import { IdempotencyModule } from '../common/idempotency/idempotency.module.js';
@@ -8,6 +9,7 @@ import { SessionsModule } from '../sessions/sessions.module.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
 import { AGENT_REPOSITORY, DrizzleAgentRepository } from './agent.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
+import { AgentDocumentService } from './agent-document.service.js';
 import { AgentVerdictService } from './agent-verdict.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
@@ -69,6 +71,7 @@ import { PresenceService } from './presence.service.js';
     TenantsModule,
     ChecklistModule,
     AiHudModule,
+    AiClientModule,
   ],
   controllers: [AgentsController, OfferSweeperController],
   providers: [
@@ -81,6 +84,7 @@ import { PresenceService } from './presence.service.js';
     AgentClaimService,
     AgentAcceptService,
     AgentVerdictService,
+    AgentDocumentService,
     // The timer runs in the application; test modules build their own graph
     // and leave it off, so no background pass fires between cases.
     { provide: OFFER_SWEEP_ENABLED, useValue: true },

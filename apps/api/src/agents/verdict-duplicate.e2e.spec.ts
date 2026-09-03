@@ -59,6 +59,7 @@ import type {
 import { SESSION_REPOSITORY } from '../sessions/session.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
+import { AgentDocumentService } from './agent-document.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
 import { AgentVerdictService } from './agent-verdict.service.js';
 import { AgentWorkService } from './agent-work.service.js';
@@ -98,6 +99,9 @@ const HUD: AiHudPayload = {
   ocr_status: OcrStatus.PASS,
   model_versions: { liveness: 'demo-v1' },
   updated_at: '2026-09-03T12:00:00.000Z',
+  document_type: null,
+  document_status: null,
+  document_checked_at: null,
 };
 
 // ------------------------------------------------------------------- fakes
@@ -179,8 +183,12 @@ class FakeChecklistRepository implements ChecklistRepository {
 }
 
 class FakeHud implements AiHudRepository {
-  save(): Promise<void> {
+  save(): Promise<AiHudPayload> {
     throw new Error('a verdict must never write the HUD');
+  }
+
+  saveDocument(): Promise<AiHudPayload | null> {
+    throw new Error('a verdict must never write a document check');
   }
   read(): Promise<AiHudPayload | null> {
     return Promise.resolve(HUD);
@@ -284,6 +292,7 @@ const presence = {
     { provide: AgentWorkService, useValue: unused() },
     { provide: AgentClaimService, useValue: unused() },
     { provide: AgentAcceptService, useValue: unused() },
+    { provide: AgentDocumentService, useValue: unused() },
     {
       provide: AgentVerdictService,
       useFactory: (sessions: SessionRepository, logger) =>

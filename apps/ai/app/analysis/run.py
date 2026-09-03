@@ -30,6 +30,8 @@ from dataclasses import dataclass
 
 from app.providers import (
     MIN_LIVENESS_FRAMES,
+    DocumentCheck,
+    DocumentType,
     FaceMatchResult,
     LivenessResult,
     OcrResult,
@@ -37,6 +39,7 @@ from app.providers import (
     ReferenceUnavailable,
 )
 
+from .document import check_document
 from .frames import FrameDecodeError, FrameSource, FrameSourceError, FrameWindow
 from .publisher import PublishError, ResultPublisher, result_payload
 from .schedule import Cadence, Schedule
@@ -65,6 +68,7 @@ class AnalysisOutcome:
     checks_run: int
     results_published: int
     publish_failures: int
+    document_checks: int = 0
 
 
 class AnalysisRun:
@@ -99,6 +103,10 @@ class AnalysisRun:
         # that appears and disappears every other cycle.
         self._ocr: OcrResult | None = None
 
+        # Document checks are agent-triggered and rare; counted so the outcome
+        # can report whether any happened without recording what they said.
+        self._document_checks = 0
+
     async def run(self) -> AnalysisOutcome:
         """Consume the track, publishing a result every check interval."""
         reason = ENDED_TRACK_CLOSED
@@ -124,6 +132,7 @@ class AnalysisRun:
             checks_run=self._checks_run,
             results_published=self._published,
             publish_failures=self._publish_failures,
+            document_checks=self._document_checks,
         )
 
     async def _consume(self) -> None:
@@ -218,6 +227,36 @@ class AnalysisRun:
         if newest is None:
             return OcrResult.unavailable(self._providers.ocr.model_version, "no frame to read")
         return await self._providers.ocr.extract(session_id=self._session_id, frame=newest)
+
+    async def read_document(self, document_type: DocumentType) -> DocumentCheck:
+        """Read the document currently on camera, and check it (§19).
+
+        The triggered half of OCR, and the only method on this class that
+        something outside the loop calls. An agent has said a document is being
+        held up; this reads the burst that is already in the window, hands the
+        fields to the verifier, and returns a status.
+
+        **The burst is free.** `FrameWindow` is already holding the last check
+        interval's worth of sampled frames for liveness, which is exactly the
+        "small frame burst" §19 asks for. Nothing is captured on demand, so
+        pressing the button costs no extra decoding and cannot slow the loop.
+
+        Runs concurrently with the sampling loop rather than interrupting it:
+        `snapshot()` copies, so the reader works on frames the loop is free to
+        replace underneath it. That matters because a registry lookup is a
+        network round trip, and a call must not stop being analysed while one
+        is in flight (D6).
+        """
+        self._document_checks += 1
+        frames = self._window.snapshot()
+
+        return await check_document(
+            session_id=self._session_id,
+            document_type=document_type,
+            frames=tuple(frames),
+            reader=self._providers.document_reader,
+            verifier=self._providers.document_verifier,
+        )
 
     async def _publish_unavailable(self, reason: EndReason) -> None:
         """Report that this call has no AI, in the vocabulary the HUD reads."""

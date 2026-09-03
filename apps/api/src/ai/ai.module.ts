@@ -3,12 +3,13 @@ import { AuthModule } from '../common/auth/auth.module.js';
 import { LivekitModule } from '../livekit/livekit.module.js';
 import { SessionsModule } from '../sessions/sessions.module.js';
 import { ANALYSIS_STARTER, HttpAnalysisStarter } from './ai-analysis.client.js';
+import { AiDocumentService } from './ai-document.service.js';
+import { AiClientModule } from './ai-client.module.js';
 import { AiHudModule } from './ai-hud.module.js';
 import { AI_HUD_SNAPSHOTS, SessionAiHudSnapshots } from './ai-hud.snapshots.js';
 import { AiAnalysisService } from './ai-analysis.service.js';
 import { AiResultController } from './ai-result.controller.js';
 import { AiResultService } from './ai-result.service.js';
-import { AI_CONFIG, aiConfigFromEnv } from './ai.config.js';
 
 /**
  * The AI boundary, both directions (T30).
@@ -57,18 +58,26 @@ import { AI_CONFIG, aiConfigFromEnv } from './ai.config.js';
  * transport and this module keeps owning what a HUD is.
  */
 @Module({
-  imports: [AuthModule, forwardRef(() => LivekitModule), SessionsModule, AiHudModule],
+  imports: [
+    AuthModule,
+    forwardRef(() => LivekitModule),
+    SessionsModule,
+    AiHudModule,
+    AiClientModule,
+  ],
   controllers: [AiResultController],
   providers: [
-    { provide: AI_CONFIG, useFactory: () => aiConfigFromEnv() },
     { provide: ANALYSIS_STARTER, useClass: HttpAnalysisStarter },
     { provide: AI_HUD_SNAPSHOTS, useClass: SessionAiHudSnapshots },
     AiAnalysisService,
     AiResultService,
+    AiDocumentService,
   ],
-  // Not `AI_HUD_REPOSITORY`: it is `AiHudModule`'s to export now, and a module
-  // may only export what it provides or re-exports. Anything needing the HUD
-  // imports that module directly, which is the dependency it actually has.
+  // Not `AI_HUD_REPOSITORY`, and not `DOCUMENT_READER` or `AI_CONFIG` either:
+  // each belongs to the small module that provides it, and a module may only
+  // export what it provides or re-exports. Anything needing one imports that
+  // module directly, which is the dependency it actually has — and, in the
+  // agent surface's case, spares it the `LivekitModule` this one requires.
   exports: [AiAnalysisService, AI_HUD_SNAPSHOTS],
 })
 export class AiModule {}

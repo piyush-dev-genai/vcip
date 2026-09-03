@@ -8,6 +8,7 @@ Two routes, and both of them are the minimum:
 
     GET  /health
     POST /internal/sessions/{session_id}/analyze
+    POST /internal/sessions/{session_id}/document
 
 The second is how a call reaches this service at all. The Control API calls it
 when both participants are in the room — the `CALL_STARTED` moment that also
@@ -28,11 +29,17 @@ from datetime import UTC, datetime
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
-from .analysis import AnalysisManager, AnalysisRequest, Cadence, HttpResultPublisher
+from .analysis import (
+    AnalysisManager,
+    AnalysisRequest,
+    Cadence,
+    HttpResultPublisher,
+    NoAnalysisRunning,
+)
 from .analysis.livekit_source import LiveKitFrameSource
 from .config import AnalyzerConfig, analyzer_config_from_env
 from .internal_auth import verify_internal_token
-from .providers import ProviderSet, build_providers
+from .providers import DocumentType, ProviderSet, build_providers
 from .providers.determinism import validate_session_id
 
 SERVICE_NAME = "ai"
@@ -174,3 +181,66 @@ async def analyze(session_id: str, body: AnalyzeBody) -> dict[str, object]:
     )
 
     return {"session_id": started.session_id, "started": started.started}
+
+
+class DocumentBody(BaseModel):
+    """`POST /internal/sessions/{session_id}/document`.
+
+    Mirrors `documentReadRequestSchema` in `packages/shared/src/api/document.ts`,
+    and strict for the same reason `AnalyzeBody` is.
+
+    One field, and note which one is absent: there is no image. The frames are
+    already here (D23), so a document never travels from the Control API to this
+    service — nor from a browser to either of them.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    document_type: DocumentType
+
+
+@app.post(
+    "/internal/sessions/{session_id}/document",
+    dependencies=[Depends(verify_internal_token)],
+)
+async def read_document(session_id: str, body: DocumentBody) -> dict[str, object]:
+    """Read the document on camera and check it against its registry (§19).
+
+    The triggered half of OCR. An agent has said a document is being held up;
+    this reads the burst the analysis loop is already holding and asks the
+    verifier about it.
+
+    **200, and the body carries a status, but the status is not how the agent
+    learns the answer.** The result is published to `/internal/ai/document-result`
+    on its way out, so it reaches the HUD by the same route every other AI
+    result takes. What comes back here is for the Control API's own log and for
+    a caller that wants to know the check actually ran.
+
+    `accepted: false` for a session with no live analysis. That is not a 404:
+    the call exists and is perfectly fine, there is simply no analyzer attached
+    to ask, and a call carries on without AI by design (D6, T32).
+
+    Nothing in this response, and nothing in any log line beneath it, carries
+    what the document said.
+    """
+    try:
+        validate_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
+
+    try:
+        check = await manager(app).read_document(session_id, body.document_type)
+    except NoAnalysisRunning:
+        return {
+            "session_id": session_id,
+            "document_type": body.document_type.value,
+            "accepted": False,
+            "status": None,
+        }
+
+    return {
+        "session_id": session_id,
+        "document_type": check.document_type.value,
+        "accepted": True,
+        "status": check.status.value,
+    }

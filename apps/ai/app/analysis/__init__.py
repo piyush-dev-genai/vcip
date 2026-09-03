@@ -7,6 +7,7 @@ provider interfaces, which is what makes a call's worth of analysis testable
 without an SFU, a Control API, or a network.
 """
 
+from .document import check_document
 from .frames import (
     FrameDecodeError,
     FrameHandle,
@@ -15,11 +16,18 @@ from .frames import (
     FrameWindow,
 )
 from .http_publisher import HttpResultPublisher
-from .manager import AnalysisManager, AnalysisRequest, SourceFactory, StartResult
+from .manager import (
+    AnalysisManager,
+    AnalysisRequest,
+    NoAnalysisRunning,
+    SourceFactory,
+    StartResult,
+)
 from .publisher import (
     NullResultPublisher,
     PublishError,
     ResultPublisher,
+    document_payload,
     result_payload,
 )
 from .run import (
@@ -44,11 +52,14 @@ __all__ = [
     "FrameSourceError",
     "FrameWindow",
     "HttpResultPublisher",
+    "NoAnalysisRunning",
     "NullResultPublisher",
     "PublishError",
     "ResultPublisher",
     "Schedule",
     "SourceFactory",
     "StartResult",
+    "check_document",
+    "document_payload",
     "result_payload",
 ]

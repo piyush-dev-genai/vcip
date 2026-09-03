@@ -29,10 +29,13 @@ import {
   agentHeartbeatSchema,
   agentLoginSchema,
   agentVerdictSchema,
+  documentCheckRequestSchema,
   type AgentAvailabilityRequest,
   type AgentLoginRequest,
   type AgentVerdictRequest,
   type ChecklistResult,
+  type DocumentCheckResult,
+  type DocumentType,
 } from '@vcip/shared';
 import { ApiError, NetworkError } from './errors';
 
@@ -199,6 +202,18 @@ export interface AgentApi {
    * reply the first one produced rather than on the single-winner guard, which
    * would tell an agent their verdict failed when it had committed.
    */
+  /**
+   * Ask for the document on camera to be read and checked (contract section 19).
+   *
+   * No idempotency key, and that is the contract rather than an oversight: the
+   * check is meant to be repeatable, because an unreadable frame is answered by
+   * asking the customer to reposition the card and pressing again.
+   *
+   * Resolves as soon as the request is accepted. The answer arrives on the
+   * WebSocket and lands on the AI HUD.
+   */
+  documentCheck(sessionId: string, documentType: DocumentType): Promise<DocumentCheckResult>;
+
   verdict(
     sessionId: string,
     body: AgentVerdictRequest,
@@ -426,6 +441,14 @@ export function createAgentApi(deps: AgentApiDeps): AgentApi {
         authenticated: true,
         idempotencyKey,
       });
+    },
+
+    async documentCheck(sessionId, documentType) {
+      const valid = documentCheckRequestSchema.parse({ document_type: documentType });
+      return request<DocumentCheckResult>(
+        agentSessionUrl(deps.baseUrl, sessionId, '/document-check'),
+        { body: valid, authenticated: true },
+      );
     },
 
     async verdict(sessionId, body, idempotencyKey) {

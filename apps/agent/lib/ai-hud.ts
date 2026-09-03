@@ -24,7 +24,13 @@
  * (D6) and never a verdict (I7); this is a display.
  */
 
-import type { AiHudPayload, LivenessStatus, OcrStatus } from '@vcip/shared';
+import type {
+  AiHudPayload,
+  DocumentCheckStatus,
+  DocumentType,
+  LivenessStatus,
+  OcrStatus,
+} from '@vcip/shared';
 import { AI_HUD_STALE_AFTER_MS } from '@vcip/shared';
 
 /** What the panel is currently able to say. */
@@ -121,6 +127,89 @@ export function ocrText(hud: AiHud): string | null {
   if (hud.latest === null || isUnavailable(hud)) return null;
   return OCR_LABELS[hud.latest.ocr_status] ?? hud.latest.ocr_status;
 }
+
+/**
+ * The last document check, if the agent has run one.
+ *
+ * **Deliberately readable through a stale HUD**, unlike every accessor above.
+ * The three continuous checks are a live signal that goes stale in ten seconds,
+ * because a dead analyzer produces silence and the panel must not keep showing
+ * a confident score. A document check is not like that: it is a one-off answer
+ * about a card the customer held up, and it stays true for the rest of the call
+ * whether or not the analyzer is still sampling.
+ *
+ * Hiding it when the sampling loop went quiet would be actively unhelpful —
+ * that is precisely the moment an agent needs the answer they already got.
+ */
+export interface DocumentSummary {
+  readonly type: DocumentType | null;
+  readonly status: DocumentCheckStatus | null;
+  /** How the status reads, or null when no check has run. */
+  readonly label: string | null;
+  /** What the agent should do about it, or null when there is nothing to do. */
+  readonly advice: string | null;
+  readonly checkedAt: string | null;
+}
+
+export const NO_DOCUMENT_CHECK: DocumentSummary = {
+  type: null,
+  status: null,
+  label: null,
+  advice: null,
+  checkedAt: null,
+};
+
+export function documentSummary(hud: AiHud): DocumentSummary {
+  const latest = hud.latest;
+  if (latest === null) return NO_DOCUMENT_CHECK;
+
+  const { document_type: type, document_status: status } = latest;
+  // All three or none, matching how the server writes and reads them: a status
+  // with no type could not be labelled, and one with no timestamp could not be
+  // shown as "checked at".
+  if (type === null || status === null || latest.document_checked_at === null) {
+    return NO_DOCUMENT_CHECK;
+  }
+
+  return {
+    type,
+    status,
+    label: DOCUMENT_STATUS_LABELS[status] ?? status,
+    advice: DOCUMENT_ADVICE[status] ?? null,
+    checkedAt: latest.document_checked_at,
+  };
+}
+
+/** How each document type reads on the panel. */
+export const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  AADHAAR: 'Aadhaar',
+  PAN: 'PAN',
+};
+
+const DOCUMENT_STATUS_LABELS: Record<string, string> = {
+  VERIFIED: 'Verified',
+  NOT_VERIFIED: 'Not verified',
+  UNREADABLE: 'Could not read',
+  UNAVAILABLE: 'Check unavailable',
+};
+
+/**
+ * What to do next, per outcome.
+ *
+ * The reason the four statuses are four and not two: each one asks something
+ * different of the agent. Without this the panel would show a red mark and no
+ * instruction, and an agent would have to guess whether the problem was the
+ * customer, the camera, or the registry.
+ *
+ * Note that none of these says approve or reject. The AI decides nothing (I7),
+ * and even `VERIFIED` only says the registry recognised the document.
+ */
+const DOCUMENT_ADVICE: Record<string, string> = {
+  VERIFIED: 'The registry recognised this document.',
+  NOT_VERIFIED: 'The registry did not recognise it. Ask the customer about the document.',
+  UNREADABLE: 'Ask the customer to hold the card still, fill the frame, and check again.',
+  UNAVAILABLE: 'The check could not run. Decide on what you can see.',
+};
 
 const LIVENESS_LABELS: Record<string, string> = {
   LIVE: 'Live person',

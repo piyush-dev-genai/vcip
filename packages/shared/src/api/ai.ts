@@ -20,6 +20,7 @@
  */
 
 import { z } from 'zod';
+import type { DocumentCheckStatus, DocumentType } from '../enums.js';
 import { LivenessStatus, OcrStatus } from '../enums.js';
 
 /**
@@ -155,6 +156,26 @@ export interface AiHudPayload {
   readonly model_versions: Readonly<Record<string, string>>;
   /** ISO 8601, server time. When the Control API took delivery of the result. */
   readonly updated_at: string;
+
+  /**
+   * The last document check, or nulls if the agent has not run one.
+   *
+   * Carried on the same HUD but written by a different path, and the three
+   * fields move together: a status without its type could not be labelled, and
+   * either without `document_checked_at` could not be aged.
+   *
+   * They have their own timestamp because they have their own lifetime.
+   * `updated_at` ages the continuous checks, which arrive every couple of
+   * seconds and go stale in ten (`AI_HUD_STALE_AFTER_MS`); a document check
+   * happens once when an agent asks and stays true for the rest of the call.
+   * Ageing it on the continuous clock would blank a perfectly good answer the
+   * moment the analyzer went quiet, which is exactly when the agent most wants
+   * to still see it.
+   */
+  readonly document_type: DocumentType | null;
+  readonly document_status: DocumentCheckStatus | null;
+  /** ISO 8601, server time. When the document result was taken delivery of. */
+  readonly document_checked_at: string | null;
 }
 
 /**

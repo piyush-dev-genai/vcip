@@ -1450,23 +1450,41 @@ export class DrizzleSessionRepository implements SessionRepository {
    * being disputed" is the question this row exists to answer months later.
    */
   private async saveAiSummary(tx: DbExecutor, hud: AiHudPayload): Promise<void> {
+    // The document trio, all three or none, as the CHECK constraint demands.
+    // The HUD reader already enforces that (`fromHudFields` returns three nulls
+    // rather than a partial set), so this is belt and braces against a caller
+    // that built a payload by hand.
+    const checked =
+      hud.document_type !== null &&
+      hud.document_status !== null &&
+      hud.document_checked_at !== null;
+
     await tx.execute(sql`
-      INSERT INTO session_ai_summaries (session_id, liveness_score, liveness_status, face_match_score, ocr_status, model_versions)
+      INSERT INTO session_ai_summaries (
+        session_id, liveness_score, liveness_status, face_match_score, ocr_status, model_versions,
+        document_type, document_status, document_checked_at
+      )
       VALUES (
         ${hud.session_id}::uuid,
         ${hud.liveness_score}::numeric,
         ${hud.liveness_status}::text,
         ${hud.face_match_score}::numeric,
         ${hud.ocr_status}::text,
-        ${JSON.stringify(hud.model_versions)}::jsonb
+        ${JSON.stringify(hud.model_versions)}::jsonb,
+        ${checked ? hud.document_type : null}::text,
+        ${checked ? hud.document_status : null}::text,
+        ${checked ? hud.document_checked_at : null}::timestamptz
       )
       ON CONFLICT (session_id) DO UPDATE
-         SET liveness_score   = EXCLUDED.liveness_score,
-             liveness_status  = EXCLUDED.liveness_status,
-             face_match_score = EXCLUDED.face_match_score,
-             ocr_status       = EXCLUDED.ocr_status,
-             model_versions   = EXCLUDED.model_versions,
-             updated_at       = now()
+         SET liveness_score      = EXCLUDED.liveness_score,
+             liveness_status     = EXCLUDED.liveness_status,
+             face_match_score    = EXCLUDED.face_match_score,
+             ocr_status          = EXCLUDED.ocr_status,
+             model_versions      = EXCLUDED.model_versions,
+             document_type       = EXCLUDED.document_type,
+             document_status     = EXCLUDED.document_status,
+             document_checked_at = EXCLUDED.document_checked_at,
+             updated_at          = now()
     `);
   }
 

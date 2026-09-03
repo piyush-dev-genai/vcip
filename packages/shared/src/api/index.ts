@@ -11,3 +11,4 @@ export * from './session.js';
 export * from './agent.js';
 export * from './ai.js';
 export * from './checklist.js';
+export * from './document.js';

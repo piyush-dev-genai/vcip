@@ -75,6 +75,7 @@ import type { AgentCredentialRow, AgentProfileRow, AgentRepository } from './age
 import { AGENT_REPOSITORY } from './agent.repository.js';
 import { AgentAcceptService } from './agent-accept.service.js';
 import { AgentClaimService } from './agent-claim.service.js';
+import { AgentDocumentService } from './agent-document.service.js';
 import type { ChecklistService } from '../checklist/checklist.service.js';
 import { AgentVerdictService } from './agent-verdict.service.js';
 import { AgentQueueService } from './agent-queue.service.js';
@@ -818,6 +819,9 @@ const tenantStore = new FakeTenantConfigStore();
             save: () => {
               throw new Error('no agent identity route writes the AI HUD');
             },
+            saveDocument: () => {
+              throw new Error('no agent identity route records a document check');
+            },
             read: () => {
               throw new Error('no agent identity route reads the AI HUD');
             },
@@ -830,6 +834,10 @@ const tenantStore = new FakeTenantConfigStore();
         ),
       inject: [SESSION_REPOSITORY, PresenceService, LOGGER],
     },
+    // Present for the same reason  is: the controller's
+    // constructor requires it, and no route in this file triggers a document
+    // check. Empty rather than stubbed, so one that tried would fail loudly.
+    { provide: AgentDocumentService, useValue: {} },
   ],
 })
 class TestAgentsModule {}

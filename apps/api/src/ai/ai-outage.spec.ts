@@ -48,7 +48,8 @@ import { createLogger } from '../common/logging/logger.js';
 import type { CallWebhookEvent } from '../livekit/call-events.rules.js';
 import { CallLifecycleService } from '../livekit/call-lifecycle.service.js';
 import type { CallRepository, DueDeadline } from '../livekit/call.repository.js';
-import { CallDeadline, deadlineMember } from '../livekit/call.keys.js';
+import type { CallDeadline } from '../livekit/call.keys.js';
+import { deadlineMember } from '../livekit/call.keys.js';
 import type { LiveKitConfig } from '../livekit/livekit.config.js';
 import type { MediaTokenGrantRequest, MediaTokenMinter } from '../livekit/media-token.minter.js';
 import type { RecordingService } from '../livekit/recording.service.js';
@@ -233,9 +234,13 @@ class DeadAiService implements AnalysisStarter {
 class FakeHud implements AiHudRepository {
   readonly stored = new Map<string, AiHudPayload>();
 
-  save(sessionId: string, payload: AiHudPayload): Promise<void> {
+  save(sessionId: string, payload: AiHudPayload): Promise<AiHudPayload> {
     this.stored.set(sessionId, payload);
-    return Promise.resolve();
+    return Promise.resolve(payload);
+  }
+
+  saveDocument(): Promise<AiHudPayload | null> {
+    throw new Error('an AI outage means no document check ever runs');
   }
 
   read(sessionId: string): Promise<AiHudPayload | null> {
@@ -265,6 +270,7 @@ const AI_CONFIG: AiConfig = Object.freeze({
   enabled: true,
   baseUrl: 'http://127.0.0.1:8000',
   startTimeoutMs: 2_000,
+  documentTimeoutMs: 15_000,
 });
 
 const LIVEKIT = {

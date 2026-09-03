@@ -29,6 +29,22 @@ export const InjectAiConfig = (): ParameterDecorator => Inject(AI_CONFIG);
  */
 export const AI_START_TIMEOUT_MS = 2_000;
 
+/**
+ * How long the Control API waits for a document check.
+ *
+ * Fifteen seconds, and much longer than `AI_START_TIMEOUT_MS` because it is
+ * bounding something entirely different: that one covers a service accepting a
+ * request, this one covers reading a card off a frame burst *and* a round trip
+ * to an external registry. It is not on the call path — no transition waits for
+ * it — so the cost of the ceiling being generous is an agent watching a spinner,
+ * not a delayed `CALL_STARTED`.
+ *
+ * Bounded all the same. A registry that accepts the connection and then stops
+ * answering is a normal Tuesday for third-party infrastructure, and without a
+ * limit the agent's request would hang for the platform's socket default.
+ */
+export const AI_DOCUMENT_TIMEOUT_MS = 15_000;
+
 export interface AiConfig {
   /** Whether to ask for an analysis at all. */
   readonly enabled: boolean;
@@ -36,6 +52,8 @@ export interface AiConfig {
   readonly baseUrl: string;
   /** Milliseconds to wait for the analysis request to be accepted. */
   readonly startTimeoutMs: number;
+  /** Milliseconds to wait for a document check to come back. */
+  readonly documentTimeoutMs: number;
 }
 
 export function aiConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AiConfig {
@@ -53,5 +71,6 @@ export function aiConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AiConfig 
     enabled,
     baseUrl,
     startTimeoutMs: AI_START_TIMEOUT_MS,
+    documentTimeoutMs: AI_DOCUMENT_TIMEOUT_MS,
   });
 }

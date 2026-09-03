@@ -31,6 +31,20 @@ const PUBLIC_SURFACE: readonly string[] = [
   'isLivenessStatus',
   'isOcrStatus',
 
+  // Document checks: agent-triggered, and the only thing that leaves the AI
+  // service is the status. Never the document's contents.
+  'DocumentType',
+  'DOCUMENT_TYPES',
+  'DocumentCheckStatus',
+  'DOCUMENT_CHECK_STATUSES',
+  'isDocumentType',
+  'isDocumentCheckStatus',
+  'DOCUMENT_TYPE_VALUES',
+  'DOCUMENT_CHECK_STATUS_VALUES',
+  'documentCheckRequestSchema',
+  'documentResultSchema',
+  'documentReadRequestSchema',
+
   // state machine
   'SESSION_TRANSITIONS',
   'TERMINAL_SESSION_STATUSES',

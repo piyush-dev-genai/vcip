@@ -13,6 +13,9 @@ const hud: AiHudPayload = {
   ocr_status: OcrStatus.PASS,
   model_versions: { liveness: 'demo-v1', face_match: 'demo-v1', ocr: 'demo-v1' },
   updated_at: '2026-09-02T12:00:00.000Z',
+  document_type: null,
+  document_status: null,
+  document_checked_at: null,
 };
 
 describe('the HUD key', () => {
