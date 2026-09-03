@@ -2582,6 +2582,64 @@ ABORTED → ₹5
 
 
 
+\### Duplicates and races [T36, T37]
+
+
+
+A retry carrying the **same** `Idempotency-Key` replays the original response,
+
+`200` included, and the handler does not run again (D13). That matters more on
+
+this route than on any other: a retried verdict answered `409` tells an agent
+
+their decision failed at the moment it succeeded, and nothing on their screen
+
+distinguishes that from the truth.
+
+
+
+Everything the key cannot see -- a second tab, a fresh key, a colleague, the
+
+customer's connection dropping -- reaches the guarded UPDATE, which admits one
+
+winner (D17):
+
+
+
+```text
+
+same key, same body        -> 200, the original response, handler not re-run
+
+same key, different body   -> 409 CONFLICT
+
+fresh key, verdict already -> 409 SESSION\_INVALID\_STATE
+
+disconnect committed first -> 409, session stays DROPPED\_IN\_CALL
+
+```
+
+
+
+Both refusals are `409`, and neither names the winner. From the loser's side a
+
+duplicate of their own request, a colleague's verdict and the customer dropping
+
+are one fact: this session already has an outcome and it is not this one. The
+
+`session\_events` history says who reached it, for anyone entitled to ask.
+
+
+
+Exactly one billing row exists in every case, and a refused verdict writes
+
+nothing at all -- no checklist, no AI summary, no outbox row. That is section
+
+46's argument, and `scripts/verify-verdict-race.ts` re-runs each race against a
+
+real database on two connections rather than asserting it once.
+
+
+
 \---
 
 

@@ -283,8 +283,8 @@ gate and report.
 | T33 | 5 | `GET /v1/agent/sessions/:id/checklist` (pinned template) | done |
 | T34 | 5 | Checklist submit + required-item validation | done |
 | T35 | 5 | Verdict transaction: single-winner guard + billing + AI snapshot + outbox | done |
-| T36 | 5 | (!) Duplicate verdict -> one verdict, one billing row | todo |
-| T37 | 5 | (!) Verdict racing disconnect -> one terminal outcome, loser 409 | todo |
+| T36 | 5 | (!) Duplicate verdict -> one verdict, one billing row | done |
+| T37 | 5 | (!) Verdict racing disconnect -> one terminal outcome, loser 409 | done |
 | T38 | 6 | Egress worker: fetch recording, FFmpeg watermark, SHA-256 | todo |
 | T39 | 6 | Canonical JSON (RFC 8785) + SigningKeyProvider + Ed25519 | todo |
 | T40 | 6 | S3 upload + HEAD verify -> `/internal/egress/completed` -> EXPORTED | todo |
