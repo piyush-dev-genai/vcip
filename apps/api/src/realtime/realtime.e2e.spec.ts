@@ -18,6 +18,7 @@
  * actually take the session.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { Writable } from 'node:stream';
 import { Module } from '@nestjs/common';
@@ -64,12 +65,32 @@ import { WsTokenService } from './ws-token.service.js';
 import type { AiHudSnapshots } from '../ai/ai-hud.snapshots.js';
 import { AI_HUD_SNAPSHOTS } from '../ai/ai-hud.snapshots.js';
 
-const TENANT_A = '00000000-0000-4000-8000-00000000000a';
-const TENANT_B = '00000000-0000-4000-8000-00000000000b';
-const AGENT_EN = '00000000-0000-4000-8000-0000000000a1';
-const AGENT_TA = '00000000-0000-4000-8000-0000000000a2';
-const SESSION_ONE = '11111111-1111-4111-8111-111111111111';
-const SESSION_TWO = '22222222-2222-4222-8222-222222222222';
+/**
+ * Fresh identifiers on every run, because the channels are shared state.
+ *
+ * Every channel this suite touches carries either a tenant id or a session id
+ * (`realtime.keys.ts`), so generating those per run is what namespaces the whole
+ * file. It used the same fixed UUIDs the rest of the suite does, and that made it
+ * flaky in a way worth writing down.
+ *
+ * **Redis Pub/Sub is instance-wide.** It ignores the database entirely: there is
+ * no SELECT that scopes a channel, and `db: 15` isolates keys while changing
+ * nothing whatsoever about a PUBLISH. So a second publisher on the same Redis --
+ * another copy of this file, a rerun overlapping the last, two CI jobs, a
+ * colleague on a shared instance -- was delivered straight into these assertions.
+ * The failures are the giveaway: `expected length 1 but got 3`, never a missing
+ * message. Nothing was lost; somebody else’s arrived.
+ *
+ * Fixed constants are right for a suite whose state is a transaction that rolls
+ * back. They are wrong for one whose state is a channel name on a shared bus,
+ * where two runs are isolated by nothing at all.
+ */
+const TENANT_A = randomUUID();
+const TENANT_B = randomUUID();
+const AGENT_EN = randomUUID();
+const AGENT_TA = randomUUID();
+const SESSION_ONE = randomUUID();
+const SESSION_TWO = randomUUID();
 
 const TEST_AUTH_CONFIG: AuthConfig = {
   customerTokenSecret: 'FAKE-customer-secret-for-tests-0123456789',
@@ -968,6 +989,20 @@ describe('realtime over real sockets and real Redis', () => {
 });
 
 describe('the realtime suite', () => {
+  it('addresses channels no other run is using', () => {
+    // The guard on the isolation above. Every channel here is built from one
+    // of these ids, so a literal creeping back in -- copied from a sibling
+    // spec, most likely, where fixed fixtures are exactly right -- would put
+    // this file back on a channel another process can publish to, and the
+    // symptom is an extra message in an unrelated assertion.
+    const ids = [TENANT_A, TENANT_B, AGENT_EN, AGENT_TA, SESSION_ONE, SESSION_TWO];
+
+    expect(new Set(ids)).toHaveProperty('size', ids.length);
+    for (const id of ids) {
+      expect(id).not.toMatch(/^(00000000-0000-4000|11111111-1111|22222222-2222)/);
+    }
+  });
+
   it('reports whether it ran against a real Redis', () => {
     // Visible rather than silent: a skipped isolation suite is worth noticing
     // in the output, and this line is what makes the skip legible.
