@@ -23,7 +23,7 @@
 
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { DocumentCheckResult, DocumentType } from '@vcip/shared';
-import { DomainError, ErrorCode, SessionStatus } from '@vcip/shared';
+import { DocumentCheckRefusal, DomainError, ErrorCode, SessionStatus } from '@vcip/shared';
 import type { Logger } from 'pino';
 import type { DocumentReader } from '../ai/ai-document.client.js';
 import { InjectDocumentReader } from '../ai/ai-document.client.js';
@@ -37,20 +37,6 @@ import { setContextSession } from '../common/logging/request-context.js';
 import type { SessionRepository } from '../sessions/session.repository.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 
-/**
- * How often one agent may ask for the same session, in milliseconds.
- *
- * A document read decodes a frame burst and calls an external registry, and the
- * button is the kind a person presses again when nothing has visibly happened
- * yet. Without a floor, an agent tapping four times sends four registry lookups
- * for one card — which costs money on a metered API and tells them nothing new.
- *
- * Deliberately short. This is a guard against a double-press, not a rate limit:
- * an agent who genuinely wants to retry after asking the customer to reposition
- * the card is several seconds away already.
- */
-export const DOCUMENT_CHECK_COOLDOWN_MS = 3_000;
-
 export type DocumentClock = () => Date;
 
 export const DOCUMENT_CLOCK = Symbol('DOCUMENT_CLOCK');
@@ -60,15 +46,26 @@ export class AgentDocumentService {
   private readonly now: DocumentClock;
 
   /**
-   * When each session was last checked, for the cooldown above.
+   * The sessions with a check in flight.
    *
-   * In memory, and that is the right scope: it guards a double-press from one
-   * agent on one screen, which is a property of the process handling their
-   * requests. Redis would make it exact across instances and would also make a
-   * button press depend on Redis being up, which is a bad trade for a guard
-   * whose failure mode is one extra lookup.
+   * A double-press must not fire two registry lookups for one card — that costs
+   * money on a metered API and tells the agent nothing new. But the guard is
+   * "one at a time", not "one every N seconds": once an answer is on screen, a
+   * retry is a deliberate act, and `UNREADABLE` is answered precisely by asking
+   * the customer to reposition the card and checking again.
+   *
+   * The first version used a three-second window after the last check, and it
+   * refused exactly the retry it should have allowed — the mock answers
+   * instantly, so an agent who read "could not read" and immediately tried
+   * again was turned away.
+   *
+   * In memory, and that is the right scope: it guards one agent's screen
+   * against itself, which is a property of the process handling their requests.
+   * Redis would make it exact across instances and would also make a button
+   * press depend on Redis being up, a bad trade for a guard whose failure mode
+   * is one extra lookup.
    */
-  private readonly lastCheck = new Map<string, number>();
+  private readonly inFlight = new Set<string>();
 
   constructor(
     @InjectSessionRepository() private readonly sessions: SessionRepository,
@@ -96,18 +93,16 @@ export class AgentDocumentService {
     this.requireOwnCall(actor, session.agentId, session.status, sessionId);
 
     if (!this.config.enabled) {
-      // Configured off. Reported the same way an absent analyzer is, because
-      // from the agent's side they are the same fact: no AI on this call.
-      return this.refused(sessionId, documentType, 'ai_disabled');
+      return this.refused(sessionId, documentType, DocumentCheckRefusal.AI_DISABLED);
     }
 
-    if (this.tooSoon(sessionId)) {
-      return this.refused(sessionId, documentType, 'cooldown');
+    if (this.inFlight.has(sessionId)) {
+      return this.refused(sessionId, documentType, DocumentCheckRefusal.IN_PROGRESS);
     }
 
+    this.inFlight.add(sessionId);
     try {
       const outcome = await this.reader.read(sessionId, documentType);
-      this.lastCheck.set(sessionId, this.now().getTime());
 
       this.logger.info(
         {
@@ -121,7 +116,13 @@ export class AgentDocumentService {
         'an agent asked for a document check',
       );
 
-      return { session_id: sessionId, document_type: documentType, accepted: outcome.accepted };
+      return {
+        session_id: sessionId,
+        document_type: documentType,
+        accepted: outcome.accepted,
+        // The AI service answered, and said it had no analysis for this call.
+        reason: outcome.accepted ? null : DocumentCheckRefusal.NO_ANALYSIS,
+      };
     } catch (error) {
       // The AI service is down, slow, or refused. Never the call's problem, and
       // never a 500 at an agent who pressed a button: they are told the check
@@ -130,27 +131,34 @@ export class AgentDocumentService {
         { event: 'agent.document.unreachable', session_id: sessionId, err: error },
         'the AI service could not be asked for a document check',
       );
-      return { session_id: sessionId, document_type: documentType, accepted: false };
+      return this.refused(sessionId, documentType, DocumentCheckRefusal.UNREACHABLE);
+    } finally {
+      // Released on every path, including the throw above. A session left in
+      // this set would be permanently unable to check a document again, which
+      // is a worse failure than the duplicate lookup the set exists to prevent.
+      this.inFlight.delete(sessionId);
     }
   }
 
-  /** Answer "not run" without going anywhere, and say why in the log only. */
+  /**
+   * Answer "not run", and say precisely why.
+   *
+   * The reason travels to the portal rather than only to the log. It used not
+   * to, and the cost was immediate: the panel showed "No AI on this call" for
+   * every refusal, so an agent who pressed the button twice was told the AI was
+   * missing while it was working perfectly — and the previous result was still
+   * on screen beside it, contradicting the message.
+   */
   private refused(
     sessionId: string,
     documentType: DocumentType,
-    reason: string,
+    reason: DocumentCheckRefusal,
   ): DocumentCheckResult {
     this.logger.info(
       { event: 'agent.document.not_requested', session_id: sessionId, reason },
       'a document check was not forwarded',
     );
-    return { session_id: sessionId, document_type: documentType, accepted: false };
-  }
-
-  private tooSoon(sessionId: string): boolean {
-    const last = this.lastCheck.get(sessionId);
-    if (last === undefined) return false;
-    return this.now().getTime() - last < DOCUMENT_CHECK_COOLDOWN_MS;
+    return { session_id: sessionId, document_type: documentType, accepted: false, reason };
   }
 
   /**

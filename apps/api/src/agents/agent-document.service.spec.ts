@@ -14,7 +14,7 @@
  */
 
 import { Writable } from 'node:stream';
-import { DocumentType, ErrorCode, SessionStatus } from '@vcip/shared';
+import { DocumentCheckRefusal, DocumentType, ErrorCode, SessionStatus } from '@vcip/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DocumentReadOutcome } from '../ai/ai-document.client.js';
 import type { AiConfig } from '../ai/ai.config.js';
@@ -22,12 +22,13 @@ import type { AgentActor } from '../common/auth/auth-context.js';
 import { TenantScope } from '../common/auth/tenant-scope.js';
 import { createLogger } from '../common/logging/logger.js';
 import type { MediaTokenSessionRow, SessionRepository } from '../sessions/session.repository.js';
-import { AgentDocumentService, DOCUMENT_CHECK_COOLDOWN_MS } from './agent-document.service.js';
+import { AgentDocumentService } from './agent-document.service.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
 const AGENT = '00000000-0000-4000-8000-0000000000a1';
 const OTHER_AGENT = '00000000-0000-4000-8000-0000000000a2';
 const SESSION = '11111111-1111-4111-8111-111111111111';
+const OTHER_SESSION = '22222222-2222-4222-8222-222222222222';
 
 const actor: AgentActor = {
   kind: 'agent',
@@ -111,6 +112,7 @@ describe('who may ask', () => {
       session_id: SESSION,
       document_type: DocumentType.PAN,
       accepted: true,
+      reason: null,
     });
   });
 
@@ -157,7 +159,6 @@ describe('what crosses the boundary', () => {
 
   it('takes the document type from the caller rather than guessing', async () => {
     await check(build(), DocumentType.PAN);
-    clockMs += DOCUMENT_CHECK_COOLDOWN_MS;
     await check(build(), DocumentType.AADHAAR);
 
     expect(reader.calls.map((call) => call.documentType)).toEqual([
@@ -189,45 +190,87 @@ describe('nothing can fail the call (D6)', () => {
     expect(reader.calls).toHaveLength(0);
   });
 
-  it('reports the same shape whether AI is off or unreachable', async () => {
-    // From the agent's side these are one fact: no AI on this call. Reporting
-    // them differently would invite a portal to branch on infrastructure.
+  it('names which of the two it was, rather than blurring them', async () => {
+    // These used to report identically, and the portal therefore said the same
+    // sentence for both. An agent cannot act on "something went wrong": AI
+    // switched off is permanent, an unreachable service is worth retrying.
     const disabled = await check(build(false));
 
     reader.failWith = new Error('down');
-    clockMs += DOCUMENT_CHECK_COOLDOWN_MS;
     const unreachable = await check();
 
-    expect(disabled).toEqual(unreachable);
+    expect(disabled.reason).toBe(DocumentCheckRefusal.AI_DISABLED);
+    expect(unreachable.reason).toBe(DocumentCheckRefusal.UNREACHABLE);
+  });
+
+  it('reports an absent analyzer as NO_ANALYSIS', async () => {
+    reader.outcome = { accepted: false };
+
+    await expect(check()).resolves.toMatchObject({
+      accepted: false,
+      reason: DocumentCheckRefusal.NO_ANALYSIS,
+    });
   });
 });
 
-describe('a double press is not two registry lookups', () => {
-  it('refuses a second check inside the cooldown', async () => {
-    const service = build();
-    await check(service);
+describe('one check at a time, and no more than that', () => {
+  /**
+   * A reader that stalls one session and answers every other immediately.
+   *
+   * Stalling everything would deadlock the cross-session case below, which is
+   * the one that has to prove the guard is per session rather than global.
+   */
+  class SlowReader extends FakeReader {
+    release: (() => void) | null = null;
+    stalls = SESSION;
 
-    clockMs += DOCUMENT_CHECK_COOLDOWN_MS - 1;
+    override read(sessionId: string, documentType: DocumentType): Promise<DocumentReadOutcome> {
+      this.calls.push({ sessionId, documentType });
+      if (sessionId !== this.stalls) return Promise.resolve(this.outcome);
+      return new Promise((resolve) => {
+        this.release = () => {
+          resolve(this.outcome);
+        };
+      });
+    }
+  }
+
+  it('refuses a second press while the first is still running', async () => {
+    const slow = new SlowReader();
+    reader = slow;
+    const service = build();
+
+    const first = check(service);
+    await until(() => slow.release !== null);
     const second = await check(service);
 
-    expect(second.accepted).toBe(false);
-    expect(reader.calls).toHaveLength(1);
+    // The guard's whole purpose: one card, one registry lookup, however many
+    // times an impatient agent presses the button.
+    expect(second).toMatchObject({
+      accepted: false,
+      reason: DocumentCheckRefusal.IN_PROGRESS,
+    });
+    expect(slow.calls).toHaveLength(1);
+
+    slow.release?.();
+    await first;
   });
 
-  it('allows one once the cooldown has passed', async () => {
+  it('allows a retry as soon as the first has answered', async () => {
     const service = build();
-    await check(service);
 
-    clockMs += DOCUMENT_CHECK_COOLDOWN_MS;
     await check(service);
+    const retried = await check(service);
 
-    // Short by design: an agent who asked the customer to reposition the card
-    // is several seconds away already, so this guards a double-click and
-    // nothing more.
+    // The behaviour the first design got wrong. It refused for three seconds
+    // after a check, which is exactly the window in which an agent reads
+    // "could not read", asks the customer to reposition the card, and presses
+    // again. Nothing is in flight, so nothing is refused.
+    expect(retried.accepted).toBe(true);
     expect(reader.calls).toHaveLength(2);
   });
 
-  it('does not start a cooldown for a check that never ran', async () => {
+  it('releases the session when a check fails', async () => {
     const service = build();
     reader.failWith = new Error('down');
     await check(service);
@@ -235,8 +278,33 @@ describe('a double press is not two registry lookups', () => {
     reader.failWith = null;
     const retried = await check(service);
 
-    // The AI service was unreachable, so nothing was spent and an immediate
-    // retry is exactly what the agent should be able to do.
+    // A session left marked in-flight would be permanently unable to check a
+    // document again -- a worse failure than the duplicate lookup the guard
+    // exists to prevent.
     expect(retried.accepted).toBe(true);
   });
+
+  it('guards each session separately', async () => {
+    const slow = new SlowReader();
+    reader = slow;
+    const service = build();
+
+    const first = check(service);
+    await until(() => slow.release !== null);
+
+    // A different session is a different card and a different agent's screen.
+    sessions.row = { ...sessions.row!, id: OTHER_SESSION };
+    const other = await service.check(actor, OTHER_SESSION, DocumentType.PAN);
+
+    expect(other.accepted).toBe(true);
+    slow.release?.();
+    await first;
+  });
 });
+
+/** Yield until `predicate` holds, or give up rather than hang the suite. */
+const until = async (predicate: () => boolean): Promise<void> => {
+  for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+};

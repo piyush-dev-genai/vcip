@@ -2752,7 +2752,9 @@ window is that burst -- pressing this button costs no extra decoding.
 
 &#x20;   "document\_type": "PAN",
 
-&#x20;   "accepted": true
+&#x20;   "accepted": true,
+
+&#x20;   "reason": null
 
 &#x20; }
 
@@ -2774,13 +2776,45 @@ than two that can disagree.
 
 
 
-`accepted: false` is a normal answer and still a 200. It means there was no
+`accepted: false` is a normal answer and still a 200, and `reason` says which of
 
-analysis to ask: AI is disabled, was never started for this call, or has already
+four situations it was. They shared one message once, and the cost was immediate:
 
-stopped. The verification is unaffected either way (D6), and the agent decides
+an agent who pressed the button twice was told "No AI on this call" while the AI
 
-on what they can see.
+was working perfectly, with the previous answer still on screen contradicting it.
+
+
+
+```text
+
+AI\_DISABLED   this deployment runs without AI
+
+NO\_ANALYSIS   nothing is analysing this call: never started, or stopped
+
+UNREACHABLE   the AI service could not be reached, refused, or timed out
+
+IN\_PROGRESS   a check for this session is already running
+
+```
+
+
+
+`IN\_PROGRESS` is not a failure. One card gets one registry lookup however many
+
+times the button is pressed, but the guard is *one at a time*, not one every N
+
+seconds: a retry after an answer is always allowed, because `UNREADABLE` is
+
+answered precisely by repositioning the card and checking again.
+
+
+
+The verification is unaffected by any of them (D6), and the agent decides on
+
+what they can see.
+
+
 
 
 

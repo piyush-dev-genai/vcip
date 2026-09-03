@@ -151,4 +151,44 @@ export interface DocumentCheckResult {
   readonly session_id: string;
   readonly document_type: DocumentType;
   readonly accepted: boolean;
+  /**
+   * Why it was not run. Null when it was.
+   *
+   * A bare boolean was not enough, and the gap showed up the first time this
+   * was used in anger: five different situations answered `accepted: false`,
+   * the portal had one sentence for all of them, and an agent who double-clicked
+   * was told the AI was missing when it was working perfectly.
+   *
+   * These are facts about our own infrastructure, not about the document or the
+   * customer, so there is nothing sensitive in reporting them precisely.
+   */
+  readonly reason: DocumentCheckRefusal | null;
 }
+
+/**
+ * The complete set of reasons a check was not run.
+ *
+ * Closed, so the portal can render a message per case and a new reason cannot
+ * appear without someone deciding what the agent should be told.
+ *
+ *   - `AI_DISABLED` — this deployment is running without AI.
+ *   - `NO_ANALYSIS` — nothing is analysing this call: never started, or stopped.
+ *   - `UNREACHABLE` — the AI service could not be reached or refused.
+ *   - `IN_PROGRESS` — a check for this session is already running. Not a
+ *     failure at all: it exists so a double-press does not spend two registry
+ *     lookups on one card. A retry *after* an answer is always allowed, which
+ *     is the whole point — `UNREADABLE` is answered by repositioning the card
+ *     and checking again.
+ */
+export const DocumentCheckRefusal = {
+  AI_DISABLED: 'AI_DISABLED',
+  NO_ANALYSIS: 'NO_ANALYSIS',
+  UNREACHABLE: 'UNREACHABLE',
+  IN_PROGRESS: 'IN_PROGRESS',
+} as const;
+
+export type DocumentCheckRefusal = (typeof DocumentCheckRefusal)[keyof typeof DocumentCheckRefusal];
+
+export const DOCUMENT_CHECK_REFUSALS: readonly DocumentCheckRefusal[] = Object.freeze(
+  Object.values(DocumentCheckRefusal),
+);

@@ -1,7 +1,7 @@
 'use client';
 
 import type { AiHudPayload } from '@vcip/shared';
-import { DOCUMENT_TYPES, DocumentType } from '@vcip/shared';
+import { DOCUMENT_TYPES, DocumentCheckRefusal, DocumentType } from '@vcip/shared';
 import { useState } from 'react';
 import { DOCUMENT_TYPE_LABELS, documentSummary, hudFor } from '../lib/ai-hud';
 import type { AgentApi } from '../lib/api';
@@ -51,6 +51,8 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
   const [documentType, setDocumentType] = useState<DocumentType>(DocumentType.PAN);
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<AgentMessage | null>(null);
+  /** Whether `message` describes a fault, or is merely informative. */
+  const [alarming, setAlarming] = useState(true);
   /**
    * Which check we are waiting for, or null.
    *
@@ -73,14 +75,19 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
     try {
       const result = await api.documentCheck(sessionId, documentType);
       if (!result.accepted) {
-        // No analysis attached to this call. An ordinary answer, not an error
-        // (D6): the verification carries on without AI.
+        // Not run. Which of the four reasons it was decides what the agent is
+        // told — they used to share one sentence, and "No AI on this call" for
+        // a double-press was actively misleading: it named the wrong problem
+        // while the previous answer sat on screen contradicting it.
+        const reason = result.reason ?? DocumentCheckRefusal.NO_ANALYSIS;
         setAwaiting(null);
-        setMessage(NO_ANALYSIS);
+        setMessage(REFUSALS[reason]);
+        setAlarming(ALARMING[reason]);
       }
     } catch (error) {
       setAwaiting(null);
       setMessage(toAgentMessage(error));
+      setAlarming(true);
     } finally {
       setChecking(false);
     }
@@ -125,21 +132,33 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
       </div>
 
       {message === null ? null : (
-        <p className="notice warn" aria-live="polite">
+        <p className={alarming ? 'notice warn' : 'muted'} aria-live="polite">
           <strong>{message.title}</strong> {message.detail}
         </p>
       )}
 
-      {summary.status === null ? (
+      {/* Shown whether or not a previous result is on screen. It used to appear
+          only when there was nothing else there, so a retry looked like nothing
+          had happened -- which is what makes an agent press the button again. */}
+      {pending ? (
         <p className="muted" aria-live="polite">
-          {pending ? 'Reading the document…' : 'No document has been checked yet.'}
+          Reading the document…
         </p>
+      ) : null}
+
+      {summary.status === null ? (
+        pending ? null : (
+          <p className="muted">No document has been checked yet.</p>
+        )
       ) : (
         <div className={`notice ${TONES[summary.status] ?? 'warn'}`} aria-live="polite">
           <h3>
             {DOCUMENT_TYPE_LABELS[summary.type ?? ''] ?? summary.type}: {summary.label}
           </h3>
           {summary.advice === null ? null : <p className="muted">{summary.advice}</p>}
+          {/* Labelled as the previous answer while a new check is running, so
+              the two can never be read as one contradictory statement. */}
+          {pending ? <p className="muted">(previous result)</p> : null}
         </div>
       )}
 
@@ -152,19 +171,59 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
 }
 
 /**
- * No analyzer on this call.
+ * What each refusal is called on screen.
  *
- * Shaped as an `AgentMessage` so it renders through the same notice a real
- * failure does, but it is not one: the request succeeded, and the honest answer
- * was that there was nothing to ask. Retryable, because an analyzer may be
- * attached by the time the agent tries again.
+ * Four situations, four sentences. They shared one — "No AI on this call." —
+ * and the first real use showed why that was wrong: an agent pressing the
+ * button twice was told the AI was missing while it was working perfectly, with
+ * the previous result still displayed underneath saying otherwise.
+ *
+ * `IN_PROGRESS` is not a failure and does not read like one. It is the panel
+ * saying "the answer you asked for is on its way".
  */
-const NO_ANALYSIS: AgentMessage = {
-  title: 'No AI on this call.',
-  detail: 'The document check could not run. Decide on what you can see.',
-  retryable: true,
-  reauthenticate: false,
-  requestId: null,
+const REFUSALS: Record<DocumentCheckRefusal, AgentMessage> = {
+  [DocumentCheckRefusal.NO_ANALYSIS]: {
+    title: 'No AI on this call.',
+    detail: 'Nothing is analysing this call, so the document could not be read.',
+    retryable: true,
+    reauthenticate: false,
+    requestId: null,
+  },
+  [DocumentCheckRefusal.AI_DISABLED]: {
+    title: 'AI is switched off.',
+    detail: 'This deployment runs without document checks. Decide on what you can see.',
+    retryable: false,
+    reauthenticate: false,
+    requestId: null,
+  },
+  [DocumentCheckRefusal.UNREACHABLE]: {
+    title: 'The AI service did not answer.',
+    detail: 'The check could not be run just now. You can try again.',
+    retryable: true,
+    reauthenticate: false,
+    requestId: null,
+  },
+  [DocumentCheckRefusal.IN_PROGRESS]: {
+    title: 'Still checking.',
+    detail: 'A check for this call is already running. Wait for it to finish.',
+    retryable: true,
+    reauthenticate: false,
+    requestId: null,
+  },
+};
+
+/**
+ * Which refusals are worth a warning, and which are just information.
+ *
+ * `IN_PROGRESS` is neither a fault nor anything the agent should act on — the
+ * answer is on its way. Rendering it in the same alarming box as an unreachable
+ * AI service is how a working system comes to look broken.
+ */
+const ALARMING: Record<DocumentCheckRefusal, boolean> = {
+  [DocumentCheckRefusal.NO_ANALYSIS]: true,
+  [DocumentCheckRefusal.AI_DISABLED]: true,
+  [DocumentCheckRefusal.UNREACHABLE]: true,
+  [DocumentCheckRefusal.IN_PROGRESS]: false,
 };
 
 /** How each outcome is coloured. `UNAVAILABLE` is not a failure of the customer. */

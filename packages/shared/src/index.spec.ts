@@ -44,6 +44,8 @@ const PUBLIC_SURFACE: readonly string[] = [
   'documentCheckRequestSchema',
   'documentResultSchema',
   'documentReadRequestSchema',
+  'DocumentCheckRefusal',
+  'DOCUMENT_CHECK_REFUSALS',
 
   // state machine
   'SESSION_TRANSITIONS',
