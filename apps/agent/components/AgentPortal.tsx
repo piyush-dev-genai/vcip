@@ -32,12 +32,10 @@ import {
   WorkScreen,
   workScreen,
 } from '../lib/work-state';
+import { AppShell, PageHead } from './AppShell';
 import { AvailabilityPanel } from './AvailabilityPanel';
-import { AiPanel } from './AiPanel';
-import { DocumentPanel } from './DocumentPanel';
-import { ChecklistPanel, clearChecklist } from './ChecklistPanel';
-import { VerdictPanel } from './VerdictPanel';
-import { CallPanel } from './CallPanel';
+import { CallWorkspace } from './CallWorkspace';
+import { clearChecklist } from './ChecklistPanel';
 import { LoginForm } from './LoginForm';
 import { OfferPanel } from './OfferPanel';
 import { QueuePanel } from './QueuePanel';
@@ -82,6 +80,16 @@ import { QueuePanel } from './QueuePanel';
  * rules are in one file. The pieces worth testing on their own — the token
  * store, the API client, the scheduler, the countdown arithmetic, the work
  * memory — are in `lib/` and tested there under plain Node.
+ *
+ * The screens themselves are now three shapes rather than one column. `AppShell`
+ * is the chrome: the presence control and the session-wide alert, on every
+ * signed-in screen and in the same place on each. Sign-in is its own
+ * full-height page, because there is no session to frame yet. And the call is
+ * `CallWorkspace`, which is the layout change worth naming — video on the left,
+ * the three assistive panels taking turns in a rail on the right, and the
+ * verdict pinned beneath them, in place of the five stacked cards an agent used
+ * to scroll mid-call. None of that moved a decision: every rule above is
+ * unchanged, and the panels still own exactly what they owned.
  */
 
 type Screen = 'login' | 'portal';
@@ -686,70 +694,79 @@ export function AgentPortal() {
   // in `lib/` tested under plain Node.
   const screenForWork = workScreen(work);
 
+  // Sign-in is its own full-height screen. There is no chrome to show yet —
+  // no presence to report, no work to hold — and a top bar over an empty page
+  // would only be furniture.
+  if (screen === 'login') {
+    return <LoginForm onSubmit={signIn} busy={busy} error={error} />;
+  }
+
   return (
-    <main className="shell">
-      {screen === 'login' ? (
-        <LoginForm onSubmit={signIn} busy={busy} error={error} />
-      ) : (
+    <AppShell
+      // The call is the one screen that earns the full width. Everything else
+      // is a single decision and reads better in a column.
+      narrow={screenForWork !== WorkScreen.CALL}
+      // Availability and heartbeat failures are session-wide, so they belong
+      // to the chrome rather than to whichever panel happens to be on screen.
+      alert={error}
+      controls={
+        <AvailabilityPanel
+          status={status}
+          lastSeen={lastSeen}
+          busy={busy}
+          onChange={changeAvailability}
+          onSignOut={signOut}
+        />
+      }
+    >
+      {screenForWork === WorkScreen.QUEUE ? (
         <>
-          <AvailabilityPanel
-            status={status}
-            lastSeen={lastSeen}
-            busy={busy}
-            error={error}
-            onChange={changeAvailability}
-            onSignOut={signOut}
+          <PageHead eyebrow="Agent console" title="Your queue" />
+          <QueuePanel
+            sessions={sessions}
+            loadedAt={queueLoadedAt}
+            error={queueError}
+            onRefresh={refresh}
+            refreshing={refreshing}
+            onClaim={(sessionId) => void claimSession(sessionId)}
+            claiming={claiming}
           />
-          {screenForWork === WorkScreen.QUEUE ? (
-            <QueuePanel
-              sessions={sessions}
-              loadedAt={queueLoadedAt}
-              error={queueError}
-              onRefresh={refresh}
-              refreshing={refreshing}
-              onClaim={(sessionId) => void claimSession(sessionId)}
-              claiming={claiming}
-            />
-          ) : null}
-
-          {screenForWork === WorkScreen.OFFER && work !== null ? (
-            <OfferPanel
-              sessionId={work.sessionId}
-              offerExpiresAt={work.offerExpiresAt}
-              nowMs={nowMs}
-              onAccept={() => void acceptSession()}
-              accepting={accepting}
-              error={workError}
-            />
-          ) : null}
-
-          {screenForWork === WorkScreen.CALL && work !== null ? (
-            <>
-              <CallPanel sessionId={work.sessionId} roomName={work.roomName} api={api} />
-              <AiPanel sessionId={work.sessionId} updates={aiUpdates} />
-              <DocumentPanel sessionId={work.sessionId} api={api} updates={aiUpdates} />
-              <ChecklistPanel sessionId={work.sessionId} api={api} onChange={setChecklist} />
-              <VerdictPanel
-                sessionId={work.sessionId}
-                api={api}
-                answers={checklist.answers}
-                approvable={checklist.ready}
-                idempotencyKey={idempotencyKeyFor(workHost, 'verdict', work.sessionId)}
-                onSubmitted={() => {
-                  finishWork(work.sessionId);
-                }}
-              />
-            </>
-          ) : null}
-
-          {screenForWork === WorkScreen.CHECKING ? (
-            <section className="card">
-              <h2>Checking your session</h2>
-              <p className="muted">Asking the server what you are holding...</p>
-            </section>
-          ) : null}
         </>
-      )}
-    </main>
+      ) : null}
+
+      {screenForWork === WorkScreen.OFFER && work !== null ? (
+        <OfferPanel
+          sessionId={work.sessionId}
+          offerExpiresAt={work.offerExpiresAt}
+          nowMs={nowMs}
+          onAccept={() => void acceptSession()}
+          accepting={accepting}
+          error={workError}
+        />
+      ) : null}
+
+      {screenForWork === WorkScreen.CALL && work !== null ? (
+        <CallWorkspace
+          sessionId={work.sessionId}
+          roomName={work.roomName}
+          api={api}
+          updates={aiUpdates}
+          checklist={checklist}
+          onChecklistChange={setChecklist}
+          idempotencyKey={idempotencyKeyFor(workHost, 'verdict', work.sessionId)}
+          onSubmitted={() => {
+            finishWork(work.sessionId);
+          }}
+        />
+      ) : null}
+
+      {screenForWork === WorkScreen.CHECKING ? (
+        <div className="checking">
+          <span className="spinner" aria-hidden="true" />
+          <h2>Checking your session</h2>
+          <p className="muted">Asking the server what you are holding…</p>
+        </div>
+      ) : null}
+    </AppShell>
   );
 }

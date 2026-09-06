@@ -1,10 +1,7 @@
 'use client';
 
-import { AI_HUD_STALE_AFTER_MS } from '@vcip/shared';
-import { useEffect, useState } from 'react';
 import type { AiHud } from '../lib/ai-hud';
-import { faceMatchText, hudFor, isUnavailable, livenessText, ocrText } from '../lib/ai-hud';
-import type { AiHudPayload } from '@vcip/shared';
+import { faceMatchText, isUnavailable, livenessText, ocrText } from '../lib/ai-hud';
 
 /**
  * What the AI has to say about the call in front of the agent (T31).
@@ -13,35 +10,52 @@ import type { AiHudPayload } from '@vcip/shared';
  * "decides". The AI never determines an outcome (I7), the agent's verdict is
  * the only thing that does, and a panel that read like a verdict would invite
  * the one mistake this product cannot afford — an agent approving because the
- * machine said so.
+ * machine said so. That is also why no row here is coloured green: a row that
+ * looked like a pass would be doing exactly what the wording avoids.
  *
  * It is also allowed to say nothing. AI is off the video critical path (D6),
  * so "AI unavailable" is an ordinary state rather than an error screen: the
  * call continues, the checklist continues, and the verdict is still the
  * agent's to submit.
+ *
+ * The HUD arrives as a prop rather than being derived here. The tab that hides
+ * this panel shows a badge summarising the same answer, and two components
+ * ageing the same result against two different clocks would eventually
+ * disagree — see `lib/use-hud.ts`.
  */
 export interface AiPanelProps {
-  readonly sessionId: string;
-  /** Every HUD the portal has received, keyed by session. */
-  readonly updates: Readonly<Record<string, AiHudPayload>>;
+  /** The current result for this session, already aged. */
+  readonly hud: AiHud;
 }
 
-export function AiPanel({ sessionId, updates }: AiPanelProps) {
-  const hud = useFreshHud(updates, sessionId);
+export function AiPanel({ hud }: AiPanelProps) {
+  const quiet = isUnavailable(hud);
 
   return (
     <section className="card ai">
-      <h2>AI checks</h2>
+      <div className="card-head">
+        <h2>AI checks</h2>
+        <span className={quiet ? 'chip' : 'chip accent'}>
+          <span className={quiet ? 'dot' : 'dot live'} aria-hidden="true" />
+          {quiet ? 'No signal' : 'Sampling'}
+        </span>
+      </div>
 
-      {isUnavailable(hud) ? (
-        <p className="notice" aria-live="polite">
-          AI unavailable
-        </p>
+      {quiet ? (
+        <div className="empty" aria-live="polite">
+          <span className="empty-mark" aria-hidden="true">
+            —
+          </span>
+          <p>AI unavailable</p>
+          <p className="muted">
+            Nothing is analysing this call just now. Carry on and decide on what you can see.
+          </p>
+        </div>
       ) : (
-        <dl className="facts">
+        <dl className="checks-grid">
           <Check label="Liveness" value={livenessText(hud)} />
           <Check label="Face match" value={faceMatchText(hud)} />
-          <Check label="Document" value={ocrText(hud)} />
+          <Check label="Document in frame" value={ocrText(hud)} />
         </dl>
       )}
 
@@ -52,37 +66,11 @@ export function AiPanel({ sessionId, updates }: AiPanelProps) {
 
 function Check({ label, value }: { readonly label: string; readonly value: string | null }) {
   return (
-    <div>
+    <div className="check-row">
       <dt>{label}</dt>
       {/* An em dash rather than a zero or a blank: a check with no result must
           not read as a check that failed. */}
       <dd>{value ?? '—'}</dd>
     </div>
   );
-}
-
-/**
- * The HUD, re-evaluated as it ages.
- *
- * A component that rendered only on message would never notice the AI going
- * quiet: the last result would sit there looking current forever, which is
- * exactly the case T32 exists to catch. So a timer re-reads the same pure
- * function on an interval, and staleness arrives on its own.
- *
- * The interval is a fraction of the staleness window, so the panel flips
- * within a second of the deadline rather than up to ten seconds late.
- */
-function useFreshHud(updates: Readonly<Record<string, AiHudPayload>>, sessionId: string): AiHud {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const tick = setInterval(() => {
-      setNow(Date.now());
-    }, AI_HUD_STALE_AFTER_MS / 10);
-    return () => {
-      clearInterval(tick);
-    };
-  }, []);
-
-  return hudFor(updates, sessionId, now);
 }

@@ -10,23 +10,23 @@ import type { AttachedTrack } from '../lib/room';
 import { useCall } from '../lib/use-call';
 
 /**
- * The session this agent has accepted, with the call in it (T25).
- *
- * T21 left this as an honest placeholder: the session was genuinely `IN_CALL`
- * and the room name was genuinely the one the row had carried since creation,
- * but there was no video, because joining a room was a later task. This is that
- * task, and the placeholder's caveat is now only about what remains — the AI
- * panel (T31), the checklist (T33) and the verdict (T35).
+ * The video, and the controls that belong to this participant's own devices.
  *
  * The customer fills the frame; the agent's own camera is the corner preview.
  * That is a layout decision and nothing more. What each side may publish and
  * subscribe to is enforced by the SFU from the grant the Control API signed
  * (T24, design §11.3), and no code in this app could widen it.
  *
+ * It used to carry the session facts, the connection state, and a paragraph
+ * apologising for the panels that had not been built yet. The facts moved to
+ * the bar underneath, the connection state moved onto the picture it describes,
+ * and the apology is obsolete — the AI panel, the document check, the checklist
+ * and the verdict all exist and now sit in the rail beside this.
+ *
  * There is still no control here that ends the session or hands it to someone
- * else. Every one of those is a state transition, and none of them exists yet —
- * the agent's way of ending a verification is the verdict, which is T35. The
- * microphone toggle is not a transition: it is this participant's own device.
+ * else. Every one of those is a state transition, and the agent's way of ending
+ * a verification is the verdict. The microphone toggle is not a transition: it
+ * is this participant's own device.
  */
 export interface CallPanelProps {
   readonly sessionId: string;
@@ -37,63 +37,55 @@ export interface CallPanelProps {
 
 export function CallPanel({ sessionId, roomName, api }: CallPanelProps) {
   const call = useCall({ sessionId, api, livekitUrl: livekitUrl(), enabled: true });
+  const live = isLive(call.state);
 
   return (
-    <section className="card call">
-      <h2>In call</h2>
-
+    <>
       <div className="stage">
-        <RemoteTile track={call.remoteVideo} live={isLive(call.state)} />
+        <RemoteTile track={call.remoteVideo} live={live} />
         <LocalTile track={call.localVideo} />
+
+        <p className={live ? 'stage-status is-live' : 'stage-status'} aria-live="polite">
+          <span className={live ? 'dot live' : 'dot'} aria-hidden="true" />
+          {callStatusText(call.state)}
+        </p>
       </div>
 
       {/* The customer's audio has no tile: attached to a hidden element so the
           agent can hear them without a second video frame. */}
       <RemoteAudio track={call.remoteAudio} />
 
-      <p className={isLive(call.state) ? 'notice ok' : 'notice'} aria-live="polite">
-        {callStatusText(call.state)}
-      </p>
+      <div className="callbar">
+        <dl className="facts">
+          <div>
+            <dt>Session</dt>
+            <dd title={sessionId}>{shortId(sessionId)}</dd>
+          </div>
+          <div>
+            <dt>Room</dt>
+            <dd>{roomName ?? 'none'}</dd>
+          </div>
+        </dl>
 
-      <dl className="facts">
-        <div>
-          <dt>Session</dt>
-          <dd title={sessionId}>{shortId(sessionId)}</dd>
-        </div>
-        <div>
-          <dt>Room</dt>
-          <dd className="room">{roomName ?? 'none'}</dd>
-        </div>
-      </dl>
-
-      <div className="actions">
         <button
           type="button"
           onClick={() => {
             call.toggleMic();
           }}
-          disabled={!isLive(call.state)}
+          disabled={!live}
           aria-pressed={!call.micEnabled}
         >
           {call.micEnabled ? 'Mute microphone' : 'Unmute microphone'}
         </button>
       </div>
 
-      <p className="muted">
-        The AI panel, the checklist and the verdict arrive in later steps. The video above is live.
-      </p>
-
-      <p className="ref">
-        Reloading this page brings you back here and rejoins the room. The session stays yours until
-        it is completed.
-      </p>
-
       {isBusy(call.state) ? (
-        <p className="muted" aria-live="polite">
-          Keep this tab open while the connection is set up.
+        <p className="hint" aria-live="polite">
+          Keep this tab open while the connection is set up. Reloading brings you back here and
+          rejoins the room; the session stays yours until a verdict is in.
         </p>
       ) : null}
-    </section>
+    </>
   );
 }
 

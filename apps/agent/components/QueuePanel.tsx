@@ -22,7 +22,8 @@ import { formatWait, shortId } from '../lib/queue';
  * The list is rendered in the order the API returned it. It is not sorted,
  * filtered, or grouped here — the Control API already merged the agent's
  * language queues into one FIFO list, and re-ordering in the browser would put
- * a second, disagreeing answer on the screen.
+ * a second, disagreeing answer on the screen. The rank badge is a position in
+ * the list as received, not a priority this component worked out.
  *
  * `wait_seconds` comes from the server on every read rather than being ticked
  * up locally between reads. A locally incremented timer would keep counting
@@ -51,55 +52,90 @@ export function QueuePanel({
   onClaim,
   claiming,
 }: QueuePanelProps) {
+  const waiting = sessions.length;
+
   return (
     <section className="card">
-      <div className="queue-head">
-        <h2>Waiting</h2>
-        <button type="button" onClick={onRefresh} disabled={refreshing}>
-          {refreshing ? 'Refreshing...' : 'Refresh'}
+      <div className="card-head">
+        <div className="queue-stats">
+          <h2>Waiting</h2>
+          {loadedAt === null ? null : (
+            <span className={waiting === 0 ? 'chip' : 'chip accent'}>
+              {waiting} {waiting === 1 ? 'customer' : 'customers'}
+            </span>
+          )}
+        </div>
+        <button type="button" className="quiet sm" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              Refreshing
+            </>
+          ) : (
+            'Refresh'
+          )}
         </button>
       </div>
 
-      {loadedAt === null && error === null ? <p className="muted">Loading the queue...</p> : null}
-
-      {loadedAt !== null && sessions.length === 0 ? (
-        <p className="muted">No customers are waiting in your languages.</p>
+      {loadedAt === null && error === null ? (
+        <div className="empty">
+          <span className="spinner" aria-hidden="true" />
+          <p className="muted">Reading the queue…</p>
+        </div>
       ) : null}
 
-      {sessions.length === 0 ? null : (
+      {loadedAt !== null && waiting === 0 ? (
+        <div className="empty">
+          <span className="empty-mark" aria-hidden="true">
+            ✓
+          </span>
+          <p>Nobody is waiting.</p>
+          <p className="muted">
+            The list refreshes on its own. Stay available and the next customer in your languages
+            will appear here.
+          </p>
+        </div>
+      ) : null}
+
+      {waiting === 0 ? null : (
         <ul className="queue">
           {sessions.map((session, index) => (
             <li key={session.session_id} className="queue-row">
-              <span className="queue-rank">{index + 1}</span>
+              <span className="queue-rank" aria-hidden="true">
+                {index + 1}
+              </span>
               <span className="queue-id" title={session.session_id}>
+                <span className="visually-hidden">Position {index + 1}, session </span>
                 {shortId(session.session_id)}
               </span>
               <span className="queue-lang">{session.language}</span>
-              <span className="queue-wait">{formatWait(session.wait_seconds)}</span>
+              <span className="queue-wait" title="Waiting time, from the server">
+                {formatWait(session.wait_seconds)}
+              </span>
               <button
                 type="button"
-                className="claim"
+                className="primary sm"
                 onClick={() => {
                   onClaim(session.session_id);
                 }}
                 disabled={claiming !== null}
               >
-                {claiming === session.session_id ? 'Claiming...' : 'Claim'}
+                {claiming === session.session_id ? 'Claiming…' : 'Claim'}
               </button>
             </li>
           ))}
         </ul>
       )}
 
-      {sessions.length === 0 ? null : (
-        <p className="ref">
-          {sessions.length} waiting, oldest first. Claiming holds one for you briefly; it is yours
-          only once the server says so.
+      {waiting === 0 ? null : (
+        <p className="hint">
+          Oldest first. Claiming holds one for you briefly; it is yours only once the server says
+          so.
         </p>
       )}
 
       {error === null ? null : (
-        <div className="notice bad">
+        <div className="notice bad" role="alert">
           <h3>{error.title}</h3>
           <p>{error.detail}</p>
           {error.requestId === null ? null : <p className="ref">Reference {error.requestId}</p>}

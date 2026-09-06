@@ -206,6 +206,36 @@ describe('token handling has one implementation', () => {
     expect(offenders(/Authorization/)).toEqual(['lib/api.ts']);
   });
 
+  /**
+   * Every form that collects a secret declares POST.
+   *
+   * The rule above proves no *code* builds a credential URL. This proves the
+   * browser cannot build one either, which is a different claim and the one
+   * that was actually broken: a `<form>` with no method defaults to GET, and a
+   * GET submit serialises every named input into the address bar.
+   *
+   * It only ever fires when the handler is missing — a hydration failure, a
+   * stale chunk manifest, JS blocked — which is precisely the moment none of
+   * the app's own discipline is running. It happened: a dev server left
+   * serving a production `.next` returned 404 for `main-app.js`, nothing
+   * hydrated, and a real agent password went into the URL, the history, and
+   * the referrer of the next request.
+   *
+   * So the assertion is on the markup, not on the handler. A native POST
+   * leaves nothing behind; a native GET is a credential leak that no amount of
+   * correct JavaScript can prevent.
+   */
+  it('declares POST on any form that collects a credential', () => {
+    const forms = sources.filter((file) => /<form\b/.test(file.text));
+    expect(forms.map((file) => file.path)).toEqual(['components/LoginForm.tsx']);
+
+    for (const file of forms) {
+      for (const tag of file.text.matchAll(/<form\b[^>]*>/g)) {
+        expect(tag[0]).toMatch(/method="post"/);
+      }
+    }
+  });
+
   it('keeps the password out of storage and out of every module but the form', () => {
     const holders = offenders(/\bpassword\b/);
     // The form collects it, the portal hands it straight to the client, and

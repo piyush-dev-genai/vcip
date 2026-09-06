@@ -1,40 +1,93 @@
 /*
- * One stylesheet for the agent portal, shared with the customer app.
+ * The agent portal's stylesheet.
  *
- * No framework: the repository has none, and four screens do not justify
- * introducing a build-chain dependency. Plain custom properties and a handful
- * of classes are enough, and they keep the markup readable.
+ * The agent console is not the customer flow and no longer pretends to be. A
+ * customer meets this product once, on a phone, for four minutes; an agent
+ * lives in it for a shift, on a desktop, with a call running. So this file
+ * describes an operator console: a fixed chrome bar, a wide workspace, and a
+ * right rail whose panels take turns rather than stacking into a page nobody
+ * can see the bottom of.
  *
- * Sized for a phone first — this is a screen someone opens on the device whose
- * camera they are about to use.
+ * Still no framework. The vocabulary below is small on purpose - tokens, a
+ * dozen primitives, and one layout per screen - because the thing that makes a
+ * console readable at 2am is that every card, button, and status dot is the
+ * same card, button, and status dot.
  */
 
+/* ------------------------------------------------------------- tokens */
+
 :root {
-  --bg: #f5f6f8;
+  color-scheme: light;
+
+  /* Greys, from the page up to the raised surface. Three levels, not two:
+     the rail sits on the page, the panels sit on the rail. */
+  --bg: #eef0f4;
+  --bg-sunken: #e4e7ed;
   --surface: #ffffff;
-  --ink: #16181d;
-  --ink-soft: #5b6070;
-  --line: #dfe2e8;
-  --accent: #1f5fd8;
+  --surface-2: #f6f7f9;
+  --surface-3: #eceef3;
+
+  --ink: #14161c;
+  --ink-soft: #575e6e;
+  --ink-faint: #858c9c;
+
+  --line: #dde0e7;
+  --line-strong: #c6cbd6;
+
+  --accent: #3350d8;
+  --accent-soft: #e7ebfd;
   --accent-ink: #ffffff;
-  --ok: #1a7f4b;
-  --warn: #a35a00;
+
+  --ok: #17794a;
+  --ok-soft: #e2f5ea;
+  --warn: #96590a;
+  --warn-soft: #fdf0dc;
   --bad: #b3261e;
-  --radius: 10px;
+  --bad-soft: #fdeae8;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgb(16 20 30 / 6%);
+  --shadow: 0 1px 2px rgb(16 20 30 / 5%), 0 8px 24px -12px rgb(16 20 30 / 18%);
+  --shadow-lg: 0 2px 4px rgb(16 20 30 / 6%), 0 24px 48px -20px rgb(16 20 30 / 28%);
+
+  --topbar-h: 3.5rem;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14161a;
-    --surface: #1d2027;
-    --ink: #f2f3f5;
-    --ink-soft: #a4a9b6;
-    --line: #2f333d;
-    --accent: #7aa2f7;
-    --accent-ink: #10131a;
-    --ok: #59c68d;
-    --warn: #e0a458;
-    --bad: #f2837a;
+    color-scheme: dark;
+
+    --bg: #0c0e13;
+    --bg-sunken: #08090d;
+    --surface: #161920;
+    --surface-2: #1c202a;
+    --surface-3: #232834;
+
+    --ink: #eef0f5;
+    --ink-soft: #a2aab9;
+    --ink-faint: #767e8e;
+
+    --line: #262b36;
+    --line-strong: #363d4b;
+
+    --accent: #7f96ff;
+    --accent-soft: #1c2340;
+    --accent-ink: #0a0d16;
+
+    --ok: #4ecf90;
+    --ok-soft: #10281d;
+    --warn: #e3a856;
+    --warn-soft: #2a1f10;
+    --bad: #ff8a7e;
+    --bad-soft: #2c1512;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px -12px rgb(0 0 0 / 70%);
+    --shadow-lg: 0 2px 4px rgb(0 0 0 / 45%), 0 24px 48px -20px rgb(0 0 0 / 80%);
   }
 }
 
@@ -42,341 +95,825 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
   font-family:
+    ui-sans-serif,
     system-ui,
     -apple-system,
     'Segoe UI',
     sans-serif;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  letter-spacing: -0.011em;
+  font-weight: 620;
+}
+
+h1 {
+  font-size: 1.4rem;
+}
+
+h2 {
+  font-size: 1rem;
+}
+
+h3 {
+  font-size: 0.9rem;
+}
+
+p {
+  margin: 0.45rem 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------- typography */
+
+.muted {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.hint {
+  margin: 0.55rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.eyebrow,
+.step {
+  margin: 0 0 0.3rem;
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.state {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+}
+
+/* -------------------------------------------------------------- chrome */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: saturate(1.4) blur(12px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: 8px;
+  background: linear-gradient(
+    140deg,
+    var(--accent),
+    color-mix(in srgb, var(--accent) 55%, #b06ef0)
+  );
+  color: var(--accent-ink);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand-name {
+  font-size: 0.9rem;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.brand-name small {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.topbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The chrome's own error line: availability and heartbeat failures belong to
+   the whole session, not to whichever panel happens to be on screen. */
+.topbar-alert {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 19;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 1rem;
+  font-size: 0.82rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--bad) 35%, var(--line));
+  background: var(--bad-soft);
+  color: var(--ink);
+}
+
+.topbar-alert strong {
+  font-weight: 620;
 }
 
 .shell {
-  max-width: 34rem;
+  max-width: 82rem;
   margin: 0 auto;
-  padding: 1.5rem 1rem 4rem;
+  padding: 1.25rem 1rem 3rem;
 }
+
+.shell.narrow {
+  max-width: 40rem;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+/* ---------------------------------------------------------- primitives */
 
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 1.25rem;
+  padding: 1.1rem;
+  box-shadow: var(--shadow-sm);
 }
 
-h1 {
-  font-size: 1.35rem;
-  margin: 0 0 0.25rem;
+.card + .card {
+  margin-top: 0.9rem;
 }
 
-h2 {
-  font-size: 1.1rem;
-  margin: 1.25rem 0 0.4rem;
-}
-
-p {
-  margin: 0.5rem 0;
-}
-
-.muted {
-  color: var(--ink-soft);
-  font-size: 0.9rem;
-}
-
-.step {
-  color: var(--ink-soft);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin: 0 0 0.5rem;
-}
-
-.actions {
+.card-head {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  margin-top: 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
 }
 
 button {
   font: inherit;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
+  font-weight: 520;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.25rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--ink);
-  padding: 0.65rem 1.1rem;
   cursor: pointer;
-  min-height: 2.75rem;
+  white-space: nowrap;
+  transition:
+    background 120ms var(--ease),
+    border-color 120ms var(--ease),
+    transform 120ms var(--ease);
+}
+
+button:not(:disabled):hover {
+  background: var(--surface-2);
+  border-color: var(--ink-faint);
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px);
 }
 
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
+  font-weight: 600;
+}
+
+button.primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 86%, black);
+  border-color: color-mix(in srgb, var(--accent) 86%, black);
+}
+
+button.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+button.quiet:not(:disabled):hover {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+button.sm {
+  min-height: 1.9rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.82rem;
 }
 
 button[disabled] {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-ul.plain {
-  margin: 0.5rem 0;
-  padding-left: 1.1rem;
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+/* A status pill. One shape for every state in the product, so an agent reads
+   colour and text rather than learning a new widget per panel. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem 0.2rem 0.5rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.chip.ok {
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.chip.warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.chip.bad {
+  border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.chip.accent {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* `muted` is a tone the document check can report, and it also happens to be
+   a typography class. This keeps the chip a chip when the two collide. */
+.chip.muted {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Only a live presence pulses. A steady dot is a steady state. */
+.dot.live {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: pulse 2.4s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  70% {
+    box-shadow: 0 0 0 0.35rem transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot.live {
+    animation: none;
+  }
+
+  * {
+    transition-duration: 1ms !important;
+  }
+}
+
+/* A two-state control, rendered from the contract's list of settable
+   presences. It is a pair of buttons, not a checkbox, because the values are
+   named by the server and one of them is not "off". */
+.segmented {
+  display: inline-flex;
+  padding: 0.15rem;
+  gap: 0.15rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.segmented button {
+  min-height: 1.85rem;
+  padding: 0.2rem 0.8rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 560;
+}
+
+.segmented button:not(:disabled):hover {
+  background: var(--surface-3);
+  border: 0;
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+  opacity: 1;
 }
 
 .notice {
+  display: block;
   border: 1px solid var(--line);
-  border-left-width: 4px;
-  border-radius: var(--radius);
-  padding: 0.75rem 0.9rem;
-  margin-top: 1rem;
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 0.6rem 0.8rem;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
 }
 
-.notice.bad {
-  border-left-color: var(--bad);
+.notice h3 {
+  margin: 0 0 0.15rem;
 }
 
-.notice.warn {
-  border-left-color: var(--warn);
+.notice p {
+  margin: 0.15rem 0 0;
+  color: var(--ink-soft);
 }
 
 .notice.ok {
   border-left-color: var(--ok);
+  background: var(--ok-soft);
 }
 
-.notice h3 {
-  margin: 0 0 0.25rem;
-  font-size: 1rem;
+.notice.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
 }
 
-.gates {
-  list-style: none;
-  margin: 1rem 0 0;
-  padding: 0;
+.notice.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-soft);
 }
 
-.gates li {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.35rem 0;
-  border-top: 1px solid var(--line);
+.notice.muted {
+  border-left-color: var(--line-strong);
 }
 
-.gates li:first-child {
-  border-top: 0;
-}
-
-.mark {
-  font-weight: 600;
-  min-width: 1.4rem;
-}
-
-.mark.done {
-  color: var(--ok);
-}
-
-.mark.todo {
-  color: var(--ink-soft);
-}
-
-.state {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.1rem 0.4rem;
-}
-
-.ref {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.75rem;
-  color: var(--ink-soft);
-  word-break: break-all;
-}
-
-/*
- * Agent portal additions.
- *
- * The stylesheet above is shared with the customer app, unchanged, so the two
- * surfaces look like one product. Only the login form needs anything the
- * customer flow never had: labelled text inputs.
- */
-
-.field {
-  display: block;
-  margin-top: 0.9rem;
-}
-
-.field span {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--ink-soft);
-  margin-bottom: 0.25rem;
-}
-
-.field input {
-  font: inherit;
-  width: 100%;
-  min-height: 2.75rem;
-  padding: 0.55rem 0.7rem;
-  color: var(--ink);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.field input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/*
- * The queue list (T17).
- *
- * A table would be the semantic choice for four columns, but the row is a
- * single scannable line rather than a grid an agent compares down — and a list
- * keeps the markup small enough that adding a control to it would be an
- * obvious change rather than a quiet one. There is no cell here for a button.
- */
-
-.queue-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.queue-head h2 {
-  margin: 0;
-}
-
-.queue {
-  list-style: none;
-  margin: 0.75rem 0 0;
-  padding: 0;
-  border-top: 1px solid var(--line);
-}
-
-.queue-row {
-  display: grid;
-  grid-template-columns: 2rem 1fr auto auto auto;
-  gap: 0.75rem;
-  align-items: baseline;
-  padding: 0.6rem 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.queue-rank {
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-soft);
-  font-size: 0.85rem;
-}
-
-.queue-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.9rem;
-  overflow-wrap: anywhere;
-}
-
-.queue-lang {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-soft);
-}
-
-.queue-wait {
-  font-variant-numeric: tabular-nums;
-  font-size: 0.9rem;
-  min-width: 4rem;
-  text-align: right;
-}
-
-/* ------------------------------------------------------------- T21 work */
-
-.claim {
-  font-size: 0.85rem;
-  padding: 0.3rem 0.7rem;
-}
-
-.card.offer,
-.card.call {
-  border-color: var(--accent, var(--line));
-}
-
+/* A labelled fact. Used for session ids, room names, timers - anything the
+   agent may need to read out loud to somebody. */
 .facts {
   display: flex;
   flex-wrap: wrap;
-  gap: 1.5rem;
-  margin: 0.75rem 0 1rem;
+  gap: 0.4rem 1.5rem;
+  margin: 0.75rem 0 0;
 }
 
 .facts div {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.1rem;
+  min-width: 0;
 }
 
 .facts dt {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--ink-soft);
+  color: var(--ink-faint);
 }
 
 .facts dd {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   overflow-wrap: anywhere;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  gap: 0.35rem;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--ink-soft);
+}
+
+.empty-mark {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  border: 1px dashed var(--line-strong);
+  color: var(--ink-faint);
+}
+
+.spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.field {
+  display: block;
+  margin-top: 0.8rem;
+}
+
+.field span {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 540;
+  color: var(--ink-soft);
+  margin-bottom: 0.3rem;
+}
+
+.field input,
+select {
+  font: inherit;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.45rem 0.7rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+select {
+  width: auto;
+  min-height: 2.25rem;
+  cursor: pointer;
+}
+
+.field input::placeholder {
+  color: var(--ink-faint);
+}
+
+.field input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  background: var(--surface);
+}
+
+/* ---------------------------------------------------------- sign in */
+
+.auth {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+  background:
+    radial-gradient(60rem 30rem at 50% -12rem, var(--accent-soft), transparent 70%), var(--bg);
+}
+
+.auth-card {
+  width: min(24rem, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1.6rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.1rem;
+}
+
+.auth-card h1 {
+  font-size: 1.25rem;
+}
+
+.auth-card .actions button {
+  width: 100%;
+}
+
+.auth-foot {
+  margin-top: 1.1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+
+/* ----------------------------------------------------------- the queue */
+
+.queue-stats {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.queue {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+}
+
+.queue-row {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr) auto auto auto;
+  gap: 0.9rem;
+  align-items: center;
+  padding: 0.6rem;
+  margin: 0 -0.6rem;
+  border-radius: var(--radius-sm);
+  border-bottom: 1px solid var(--line);
+  transition: background 120ms var(--ease);
+}
+
+.queue-row:last-child {
+  border-bottom: 0;
+}
+
+.queue-row:hover {
+  background: var(--surface-2);
+}
+
+.queue-rank {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one at the front of the line is the one being worked next. */
+.queue-row:first-child .queue-rank {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.queue-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.queue-lang {
+  font-size: 0.7rem;
+  font-weight: 620;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.queue-wait {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  min-width: 3.5rem;
+  text-align: right;
+}
+
+/* ------------------------------------------------------------ the offer */
+
+.offer-card {
+  max-width: 30rem;
+  margin: 2.5rem auto 0;
+  text-align: center;
+  padding: 1.75rem 1.5rem;
+  box-shadow: var(--shadow-lg);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
+/* The window as the server issued it, drawn as a ring that empties. The
+   number underneath is the honest one; the ring is only how fast it is
+   going. Neither decides anything - the server does. */
+.ring {
+  --pct: 1;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 8.5rem;
+  height: 8.5rem;
+  margin: 1.1rem auto 0.9rem;
+  padding: 7px;
+  border-radius: 50%;
+  /* The track and the elapsed arc in one paint. The hole is punched by the
+     opaque face below rather than by a mask: two lines instead of six, and
+     no vendor-prefixed mask-composite to go wrong in a browser an agent is
+     already mid-call in. */
+  background: conic-gradient(var(--accent) calc(var(--pct) * 360deg), var(--surface-3) 0);
+  transition: background 400ms linear;
+}
+
+.ring-face {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 0.15rem;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--surface);
 }
 
 .countdown {
   font-variant-numeric: tabular-nums;
-  font-size: 1.4rem;
-  font-weight: 600;
+  font-size: 2rem;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.countdown-unit {
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
 }
 
 /* The window shown here has run out. Deliberately not styled as an error:
    the server has not been asked yet, and the offer may well still be live. */
-.countdown.out {
-  color: var(--ink-soft);
+.ring.out {
+  --pct: 0;
 }
 
-.room {
-  font-size: 0.85rem;
+.ring.out .countdown {
+  color: var(--ink-faint);
 }
 
-button.primary {
-  font-weight: 600;
+.offer-card .actions {
+  justify-content: center;
 }
 
-/* ------------------------------------------------------------- call (T25) */
+.offer-card .actions button {
+  min-width: 12rem;
+  min-height: 2.75rem;
+  font-size: 0.95rem;
+}
+
+.offer-card .facts {
+  justify-content: center;
+}
+
+/* --------------------------------------------------------- the workspace */
 
 /*
- * The video stage.
+ * The call screen, which is the reason this file was rewritten.
  *
- * The customer fills the frame — they are the person being verified, and the
- * agent needs to see their face and their document, not themselves. The agent's
- * own camera is the corner preview, kept only so they can confirm they are
- * actually publishing.
- *
- * A layout decision and nothing more. What each side may publish and subscribe
- * to is enforced by the SFU from the grant the Control API signed.
+ * Everything used to be one column: video, then the AI panel, then the
+ * document check, then the checklist, then the verdict - a page an agent had
+ * to scroll while talking to somebody. Now the video holds the left, and the
+ * three assistive panels take turns in a rail on the right with the verdict
+ * pinned under them. Nothing was removed; it stopped being simultaneous.
  */
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(21rem, 0.9fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+@media (max-width: 1060px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.stage-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.rail {
+  position: sticky;
+  top: calc(var(--topbar-h) + 1.25rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+@media (max-width: 1060px) {
+  .rail {
+    position: static;
+  }
+}
+
+/* -------------------------------------------------------------- video */
+
 .stage {
   position: relative;
-  margin: 1rem 0;
   border-radius: var(--radius);
   overflow: hidden;
   background: #000;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 16 / 10;
+  box-shadow: var(--shadow);
 }
 
 .tile {
@@ -400,11 +937,17 @@ button.primary {
   position: absolute;
   left: 0.75rem;
   bottom: 0.75rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-pill);
   background: rgb(0 0 0 / 55%);
+  backdrop-filter: blur(6px);
   color: #fff;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
+  font-weight: 560;
+}
+
+.tile.remote figcaption.muted {
+  color: rgb(255 255 255 / 80%);
 }
 
 /* Mirrored, as a self-preview should be. */
@@ -412,11 +955,12 @@ button.primary {
   position: absolute;
   right: 0.75rem;
   bottom: 0.75rem;
-  width: 26%;
-  max-width: 150px;
-  border: 1px solid rgb(255 255 255 / 35%);
-  border-radius: 8px;
+  width: 22%;
+  max-width: 160px;
+  border: 1px solid rgb(255 255 255 / 25%);
+  border-radius: 10px;
   overflow: hidden;
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 70%);
 }
 
 .tile.local video {
@@ -432,17 +976,175 @@ button.primary {
   padding: 0.15rem 0.4rem;
   background: rgb(0 0 0 / 55%);
   color: #fff;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   text-align: center;
 }
 
-/* --------------------------------------------------- T33/T34 checklist */
+/* The connection state, floated over the video rather than pushed below it:
+   it belongs to the picture, and the rail beside it has no room to spare. */
+.stage-status {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--radius-pill);
+  background: rgb(0 0 0 / 55%);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 560;
+}
 
-.hint {
-  margin: 0.6rem 0 0;
-  font-size: 0.78rem;
+.stage-status.is-live {
+  color: #6ee7a8;
+}
+
+.callbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.callbar .facts {
+  margin: 0;
+  flex: 1;
+}
+
+/* --------------------------------------------------------------- tabs */
+
+.tabs {
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.tab {
+  flex: 1;
+  min-height: 2rem;
+  padding: 0.3rem 0.5rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 560;
+}
+
+.tab:not(:disabled):hover {
+  background: var(--surface-3);
+  border: 0;
+}
+
+.tab[aria-selected='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+/* What a tab is hiding, said on its face. Tabs that concealed a signal an
+   agent needs mid-call would be a worse layout than the scroll they replaced. */
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.1rem;
+  padding: 0 0.3rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-badge.ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.tab-badge.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.tab-badge.bad {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.tab-badge.dot-only {
+  min-width: 0.5rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  padding: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tab-badge.dot-only.ok {
+  color: var(--ok);
+}
+
+.tab-badge.dot-only.warn {
+  color: var(--warn);
+}
+
+.tab-badge.dot-only.bad {
+  color: var(--bad);
+}
+
+.tabpanel {
+  min-height: 14rem;
+}
+
+.tabpanel > .card {
+  margin-top: 0;
+}
+
+/* ------------------------------------------------------- the AI panel */
+
+.checks-grid {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.75rem 0 0;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.check-row dt {
+  font-size: 0.82rem;
   color: var(--ink-soft);
 }
+
+.check-row dd {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------- the checklist */
 
 .checks {
   list-style: none;
@@ -450,60 +1152,105 @@ button.primary {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.2rem;
 }
 
 .checks label {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.45rem 0.5rem;
-  border-radius: 6px;
+  gap: 0.65rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
   cursor: pointer;
+  transition:
+    background 120ms var(--ease),
+    border-color 120ms var(--ease);
 }
 
 .checks label:hover {
-  background: var(--line);
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+.checks label:has(input:checked) {
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 25%, transparent);
 }
 
 .checks input {
   /* Deliberately large. This is ticked during a live call by someone who is
      also talking to a customer and watching video. */
-  width: 1.1rem;
-  height: 1.1rem;
+  width: 1.15rem;
+  height: 1.15rem;
   flex: none;
+  accent-color: var(--ok);
   cursor: pointer;
 }
 
 .checks .required {
-  font-size: 0.75rem;
-  color: var(--ink-soft);
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
 }
 
-/* ------------------------------------------------------- T35 verdict */
+.progress {
+  height: 4px;
+  margin-top: 0.75rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ok);
+  transition: width 200ms var(--ease);
+}
+
+/* --------------------------------------------------------- the verdict */
+
+/*
+ * Pinned under the rail rather than sitting at the end of a scroll. It is the
+ * only control in the portal that ends a verification, and an agent should
+ * never have to go looking for it.
+ */
+.verdict-bar {
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
 
 .verdicts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 .verdict-button {
-  flex: 1 1 12rem;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.25rem;
-  padding: 0.7rem 0.9rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
+  gap: 0.1rem;
+  min-height: 3rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   color: inherit;
   font: inherit;
-  font-weight: 600;
+  font-weight: 620;
   text-align: left;
-  cursor: pointer;
+  white-space: normal;
 }
 
 .verdict-button:disabled {
@@ -513,20 +1260,53 @@ button.primary {
   cursor: not-allowed;
 }
 
-.verdict-button:not(:disabled):hover {
-  border-color: var(--accent, var(--line));
-}
-
 .verdict-hint {
-  font-weight: 400;
-  font-size: 0.78rem;
+  font-weight: 440;
+  font-size: 0.72rem;
+  line-height: 1.35;
   color: var(--ink-soft);
 }
 
+.verdict-button.approve {
+  grid-column: 1 / -1;
+}
+
 .verdict-button.approve:not(:disabled) {
-  border-color: #2f7d4f;
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.verdict-button.approve:not(:disabled) .verdict-hint {
+  color: color-mix(in srgb, var(--ok) 75%, var(--ink-soft));
+}
+
+.verdict-button.approve:not(:disabled):hover {
+  background: color-mix(in srgb, var(--ok) 16%, var(--surface));
+  border-color: var(--ok);
 }
 
 .verdict-button.reject:not(:disabled) {
-  border-color: #a33a3a;
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+  color: var(--bad);
+}
+
+.verdict-button.reject:not(:disabled):hover {
+  background: var(--bad-soft);
+  border-color: var(--bad);
+}
+
+.verdict-button.abort:not(:disabled):hover {
+  background: var(--surface-2);
+}
+
+/* ------------------------------------------------------------ checking */
+
+.checking {
+  display: grid;
+  place-items: center;
+  gap: 0.5rem;
+  min-height: 50dvh;
+  text-align: center;
+  color: var(--ink-soft);
 }

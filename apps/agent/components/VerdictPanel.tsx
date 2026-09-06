@@ -15,6 +15,11 @@ import type { AgentMessage } from '../lib/errors';
  * person may submit — the other terminal statuses are things that *happen* to
  * a session, and no request may name them.
  *
+ * It is pinned under the rail rather than sitting at the end of a scroll.
+ * Approve is the wide one because it is the common outcome; the other two sit
+ * beside each other underneath, close enough to reach and different enough not
+ * to be hit by accident.
+ *
  * **Approve is gated on the checklist; reject and abort are not.** The rule
  * comes from `approvalReady` in `@vcip/shared`, which is the same function the
  * Control API applies on submit — asked rather than reimplemented, so this
@@ -39,7 +44,7 @@ export interface VerdictPanelProps {
   readonly approvable: boolean;
   /** The idempotency key for this session's verdict. Stable across retries. */
   readonly idempotencyKey: string;
-  /** Called once a verdict has committed, so the portal can release the work. */
+  /** Called once a verdict has committed, so the portal can let the work go. */
   readonly onSubmitted: (verdict: string) => void;
 }
 
@@ -54,13 +59,13 @@ const CHOICES = [
   {
     verdict: SessionStatus.REJECTED,
     label: 'Reject',
-    hint: 'A check failed. The checklist is recorded as it stands.',
+    hint: 'A check failed.',
     tone: 'reject',
   },
   {
     verdict: SessionStatus.ABORTED,
     label: 'Abort',
-    hint: 'The verification could not be completed.',
+    hint: 'Could not be completed.',
     tone: 'abort',
   },
 ] as const;
@@ -100,8 +105,15 @@ export function VerdictPanel({
   const busy = pending !== null;
 
   return (
-    <section className="card verdict">
-      <h2>Verdict</h2>
+    <section className="verdict-bar">
+      <div className="card-head">
+        <h2>Verdict</h2>
+        {approvable ? (
+          <span className="chip ok">Ready to approve</span>
+        ) : (
+          <span className="chip">Required items outstanding</span>
+        )}
+      </div>
 
       <div className="verdicts">
         {CHOICES.map((choice) => {
@@ -113,27 +125,23 @@ export function VerdictPanel({
               type="button"
               className={`verdict-button ${choice.tone}`}
               disabled={busy || blocked}
+              title={blocked ? 'Check every required item first.' : choice.hint}
               onClick={() => {
                 submit(choice.verdict);
               }}
             >
-              {pending === choice.verdict ? 'Submitting...' : choice.label}
+              {pending === choice.verdict ? 'Submitting…' : choice.label}
               <span className="verdict-hint">{choice.hint}</span>
             </button>
           );
         })}
       </div>
 
-      {!approvable ? (
-        <p className="hint">
-          Check every required item above to approve. Reject and abort do not require it.
-        </p>
-      ) : null}
-
       {error !== null ? (
-        <p className="notice bad" aria-live="polite">
-          <strong>{error.title}</strong> {error.detail}
-        </p>
+        <div className="notice bad" role="alert">
+          <h3>{error.title}</h3>
+          <p>{error.detail}</p>
+        </div>
       ) : null}
     </section>
   );

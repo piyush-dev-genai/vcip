@@ -1,9 +1,9 @@
 'use client';
 
-import type { AiHudPayload } from '@vcip/shared';
 import { DOCUMENT_TYPES, DocumentCheckRefusal, DocumentType } from '@vcip/shared';
 import { useState } from 'react';
-import { DOCUMENT_TYPE_LABELS, documentSummary, hudFor } from '../lib/ai-hud';
+import type { AiHud } from '../lib/ai-hud';
+import { DOCUMENT_TYPE_LABELS, documentSummary } from '../lib/ai-hud';
 import type { AgentApi } from '../lib/api';
 import { toAgentMessage } from '../lib/errors';
 import type { AgentMessage } from '../lib/errors';
@@ -13,9 +13,9 @@ import type { AgentMessage } from '../lib/errors';
  *
  * `03-system-design.md` §19 asks for exactly this: *"OCR should be triggered
  * only when the agent/customer indicates that a document is being shown. Do not
- * run expensive OCR on every frame."* The continuous `ocr_status` on the AI
- * panel answers a different question — is a document visible at all — and this
- * is the deliberate, expensive read.
+ * run expensive OCR on every frame."* The continuous status on the AI panel
+ * answers a different question — is a document visible at all — and this is the
+ * deliberate, expensive read.
  *
  * **No image is captured here.** The button sends a session id and a document
  * type; the frames are already in the AI service (D23). Nothing in this
@@ -34,20 +34,20 @@ import type { AgentMessage } from '../lib/errors';
  * approve button is not gated on it: an agent may approve a verification whose
  * document check came back `UNAVAILABLE`, because a third-party registry being
  * down is not the customer's fault.
+ *
+ * **It keeps working while its tab is closed.** The rail hides this panel
+ * rather than unmounting it, so a check started before switching to the
+ * checklist is still running, and its answer is waiting on return — with the
+ * tab's own badge saying so in the meantime.
  */
 export interface DocumentPanelProps {
   readonly sessionId: string;
   readonly api: AgentApi;
-  /** Every HUD the portal has received, keyed by session — as `AiPanel` takes. */
-  readonly updates: Readonly<Record<string, AiHudPayload>>;
+  /** The current AI result for this session, already aged. */
+  readonly hud: AiHud;
 }
 
-export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
-  // No staleness timer, unlike `AiPanel`, and the absence is deliberate: a
-  // document check is a one-off answer that stays true for the rest of the call,
-  // so `documentSummary` reads it whether or not the sampling loop is still
-  // running. `Date.now()` here only feeds a freshness rule this panel ignores.
-  const hud = hudFor(updates, sessionId, Date.now());
+export function DocumentPanel({ sessionId, api, hud }: DocumentPanelProps) {
   const [documentType, setDocumentType] = useState<DocumentType>(DocumentType.PAN);
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<AgentMessage | null>(null);
@@ -95,7 +95,12 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
 
   return (
     <section className="card document">
-      <h2>Document check</h2>
+      <div className="card-head">
+        <h2>Document check</h2>
+        {summary.status === null ? null : (
+          <span className={`chip ${TONES[summary.status] ?? 'warn'}`}>{summary.label}</span>
+        )}
+      </div>
 
       <p className="hint">
         Ask the customer to hold the card still and fill the frame, then check it.
@@ -127,14 +132,22 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
             void run();
           }}
         >
-          {pending ? 'Checking…' : 'Check document'}
+          {pending ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              Checking…
+            </>
+          ) : (
+            'Check document'
+          )}
         </button>
       </div>
 
       {message === null ? null : (
-        <p className={alarming ? 'notice warn' : 'muted'} aria-live="polite">
-          <strong>{message.title}</strong> {message.detail}
-        </p>
+        <div className={alarming ? 'notice warn' : 'notice muted'} aria-live="polite">
+          <h3>{message.title}</h3>
+          <p>{message.detail}</p>
+        </div>
       )}
 
       {/* Shown whether or not a previous result is on screen. It used to appear
@@ -148,17 +161,22 @@ export function DocumentPanel({ sessionId, api, updates }: DocumentPanelProps) {
 
       {summary.status === null ? (
         pending ? null : (
-          <p className="muted">No document has been checked yet.</p>
+          <div className="empty">
+            <span className="empty-mark" aria-hidden="true">
+              ?
+            </span>
+            <p className="muted">No document has been checked yet.</p>
+          </div>
         )
       ) : (
         <div className={`notice ${TONES[summary.status] ?? 'warn'}`} aria-live="polite">
           <h3>
             {DOCUMENT_TYPE_LABELS[summary.type ?? ''] ?? summary.type}: {summary.label}
           </h3>
-          {summary.advice === null ? null : <p className="muted">{summary.advice}</p>}
+          {summary.advice === null ? null : <p>{summary.advice}</p>}
           {/* Labelled as the previous answer while a new check is running, so
               the two can never be read as one contradictory statement. */}
-          {pending ? <p className="muted">(previous result)</p> : null}
+          {pending ? <p className="ref">(previous result)</p> : null}
         </div>
       )}
 
@@ -226,8 +244,12 @@ const ALARMING: Record<DocumentCheckRefusal, boolean> = {
   [DocumentCheckRefusal.IN_PROGRESS]: false,
 };
 
-/** How each outcome is coloured. `UNAVAILABLE` is not a failure of the customer. */
-const TONES: Record<string, string> = {
+/**
+ * How each outcome is coloured, and the same table the rail's tab badge reads.
+ *
+ * `UNAVAILABLE` is not a failure of the customer, so it stays neutral.
+ */
+export const TONES: Record<string, string> = {
   VERIFIED: 'ok',
   NOT_VERIFIED: 'warn',
   UNREADABLE: 'warn',

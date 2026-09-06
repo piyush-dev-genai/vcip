@@ -34,7 +34,8 @@ import {
  * **Nothing is submitted from here.** The answers travel with the verdict
  * (contract §18) and are recorded in that transaction (T35). This component
  * reports readiness upward so the verdict control can be enabled, and holds
- * the answers until then.
+ * the answers until then. The same report is what puts a count on the rail's
+ * tab, so an agent looking at the video still knows how much is left.
  */
 export interface ChecklistPanelProps {
   readonly sessionId: string;
@@ -111,20 +112,49 @@ export function ChecklistPanel({ sessionId, api, onChange }: ChecklistPanelProps
     notify.current?.({ answers, ready: approvalReady(items, answers) });
   }, [items, ticks, load.kind]);
 
+  const done = countTicked(items, ticks);
+  const total = items.length;
+
   return (
     <section className="card checklist">
-      <h2>Verification checklist</h2>
+      <div className="card-head">
+        <h2>Checklist</h2>
+        {load.kind === 'READY' && total > 0 ? (
+          <span className={done === total ? 'chip ok' : 'chip'}>
+            {done} of {total}
+          </span>
+        ) : null}
+      </div>
 
-      {load.kind === 'LOADING' ? <p className="muted">Loading the checklist...</p> : null}
+      {load.kind === 'LOADING' ? (
+        <div className="empty">
+          <span className="spinner" aria-hidden="true" />
+          <p className="muted">Loading the checklist…</p>
+        </div>
+      ) : null}
 
       {load.kind === 'FAILED' ? (
-        <p className="notice" aria-live="polite">
-          The checklist could not be loaded. A verdict cannot be submitted without it.
-        </p>
+        <div className="notice bad" role="alert">
+          <h3>The checklist could not be loaded.</h3>
+          <p>A verdict cannot be submitted without it.</p>
+        </div>
       ) : null}
 
       {load.kind === 'READY' ? (
         <>
+          {total === 0 ? null : (
+            <div
+              className="progress"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={total}
+              aria-valuenow={done}
+              aria-label="Checklist progress"
+            >
+              <span style={{ width: `${(done / total) * 100}%` }} />
+            </div>
+          )}
+
           <ul className="checks">
             {items.map((item) => (
               <Check
@@ -137,6 +167,7 @@ export function ChecklistPanel({ sessionId, api, onChange }: ChecklistPanelProps
               />
             ))}
           </ul>
+
           <p className="hint">
             Every required item must be checked to approve. A rejection records the checklist as it
             stands.
@@ -163,10 +194,17 @@ function Check({
         <span>{item.label}</span>
         {/* Marked rather than hidden: an agent deciding what to confirm should
             be able to see which items the tenant made mandatory. */}
-        {item.required ? <span className="required"> (required)</span> : null}
+        {item.required ? <span className="required">required</span> : null}
       </label>
     </li>
   );
+}
+
+/** How many of the template's items are ticked. Display only. */
+function countTicked(items: readonly ChecklistItem[], ticks: Ticks): number {
+  let done = 0;
+  for (const item of items) if (ticks[item.key] === true) done += 1;
+  return done;
 }
 
 /** Forget one session's ticks. Called by the portal once a verdict is in. */
