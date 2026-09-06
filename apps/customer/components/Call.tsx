@@ -45,35 +45,41 @@ export function Call({
     enabled: true,
   });
 
+  const live = isLive(call.state);
+
   return (
     <section className="card call">
       <p className="step">Live verification</p>
       <h1>You are with an agent</h1>
 
       <div className="stage">
-        <RemoteTile track={call.remoteVideo} live={isLive(call.state)} />
+        <RemoteTile track={call.remoteVideo} live={live} />
         <LocalTile track={call.localVideo} />
+
+        {/* On the picture rather than under it. On a phone the stage already
+            fills the screen, and a status line below the fold is a status line
+            nobody reads. */}
+        <p className={live ? 'stage-status is-live' : 'stage-status'} aria-live="polite">
+          <span className={live ? 'dot live' : 'dot'} aria-hidden="true" />
+          {callStatusText(call.state)}
+        </p>
       </div>
 
       {/* The agent's audio has no tile: it is attached to a hidden element so
           the customer can hear them without a second video frame. */}
       <RemoteAudio track={call.remoteAudio} />
 
-      <p className={isLive(call.state) ? 'notice ok' : 'notice'} aria-live="polite">
-        {callStatusText(call.state)}
-      </p>
-
       <p className="muted">
         Please stay on this screen. Show your face and your identity document when the agent asks.
       </p>
 
-      <div className="actions">
+      <div className="actions inline">
         <button
           type="button"
           onClick={() => {
             call.toggleMic();
           }}
-          disabled={!isLive(call.state)}
+          disabled={!live}
           aria-pressed={!call.micEnabled}
         >
           {call.micEnabled ? 'Mute microphone' : 'Unmute microphone'}
@@ -90,7 +96,7 @@ export function Call({
       </div>
 
       {isBusy(call.state) ? (
-        <p className="muted" aria-live="polite">
+        <p className="hint" aria-live="polite">
           Keep this page open while the connection is set up.
         </p>
       ) : null}

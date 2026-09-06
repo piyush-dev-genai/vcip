@@ -13,6 +13,12 @@ export default async function SessionPage({ params }: { params: Promise<{ sessio
 
   return (
     <main className="shell">
+      <div className="brand">
+        <span className="brand-mark" aria-hidden="true">
+          VC
+        </span>
+        <span className="brand-name">Secure verification</span>
+      </div>
       <SessionFlow sessionId={sessionId} />
     </main>
   );

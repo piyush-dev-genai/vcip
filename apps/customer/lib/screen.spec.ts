@@ -9,7 +9,15 @@
 import { describe, expect, it } from 'vitest';
 import { SESSION_STATUSES, SessionStatus } from '@vcip/shared';
 import type { SessionView } from './session';
-import { Screen, canAbort, canJoinQueue, gatesOf, outcomeMessage, screenFor } from './screen';
+import {
+  Screen,
+  canAbort,
+  canJoinQueue,
+  gatesOf,
+  outcomeMessage,
+  outcomeOf,
+  screenFor,
+} from './screen';
 
 const view = (overrides: Partial<SessionView> = {}): SessionView => ({
   session_id: '22222222-2222-4222-8222-222222222222',
@@ -120,7 +128,11 @@ describe('screenFor', () => {
     }
   });
 
-  it('shows the status screen for every other terminal status', () => {
+  it('shows the finished screen for every other terminal status', () => {
+    // Not the status screen. That screen exists to say how far along a
+    // verification is and what the customer may do next, and a finished one
+    // has no next — it offered a live Join Queue button to sessions that were
+    // already approved.
     for (const status of [
       SessionStatus.APPROVED,
       SessionStatus.REJECTED,
@@ -128,7 +140,7 @@ describe('screenFor', () => {
       SessionStatus.DROPPED_QUEUED,
       SessionStatus.DROPPED_IN_CALL,
     ]) {
-      expect(screenFor(view({ status }))).toBe(Screen.SESSION_STATE);
+      expect(screenFor(view({ status }))).toBe(Screen.FINISHED);
     }
   });
 
@@ -287,5 +299,66 @@ describe('outcomeMessage', () => {
 
   it('leaves PREFLIGHT_FAILED to its own screen', () => {
     expect(outcomeMessage(view({ status: SessionStatus.PREFLIGHT_FAILED }))).toBeNull();
+  });
+});
+
+describe('outcomeOf', () => {
+  it('describes every terminal outcome the customer can reach', () => {
+    for (const status of [
+      SessionStatus.APPROVED,
+      SessionStatus.REJECTED,
+      SessionStatus.ABORTED,
+      SessionStatus.DROPPED_QUEUED,
+      SessionStatus.DROPPED_IN_CALL,
+    ]) {
+      const outcome = outcomeOf(view({ status }));
+      expect(outcome).not.toBeNull();
+      // Every field is words, never the server's vocabulary.
+      expect(outcome?.headline).not.toContain(status);
+      expect(outcome?.detail).not.toContain(status);
+      expect(outcome?.next).not.toContain(status);
+    }
+  });
+
+  it('gives approval, rejection, and a stop three different tones', () => {
+    expect(outcomeOf(view({ status: SessionStatus.APPROVED }))?.tone).toBe('approved');
+    expect(outcomeOf(view({ status: SessionStatus.REJECTED }))?.tone).toBe('rejected');
+    expect(outcomeOf(view({ status: SessionStatus.ABORTED }))?.tone).toBe('stopped');
+  });
+
+  it('treats a stop and a dropped connection as the same outcome', () => {
+    // They differ in why, which matters to billing and to support. They do not
+    // differ in what the customer does next, and the screen says what to do.
+    const stopped = [
+      SessionStatus.ABORTED,
+      SessionStatus.DROPPED_QUEUED,
+      SessionStatus.DROPPED_IN_CALL,
+    ].map((status) => outcomeOf(view({ status })));
+
+    for (const outcome of stopped) expect(outcome?.tone).toBe('stopped');
+    // The sentence still distinguishes a deliberate stop from a lost link.
+    expect(stopped[0]?.detail).not.toBe(stopped[1]?.detail);
+  });
+
+  it('reuses outcomeMessage rather than wording the outcome twice', () => {
+    for (const status of [SessionStatus.APPROVED, SessionStatus.REJECTED, SessionStatus.ABORTED]) {
+      const session = view({ status });
+      expect(outcomeOf(session)?.detail).toBe(outcomeMessage(session));
+    }
+  });
+
+  it('says nothing about a verification still running', () => {
+    for (const status of [
+      SessionStatus.CREATED,
+      SessionStatus.QUEUED,
+      SessionStatus.OFFERED,
+      SessionStatus.IN_CALL,
+    ]) {
+      expect(outcomeOf(view({ status }))).toBeNull();
+    }
+  });
+
+  it('leaves PREFLIGHT_FAILED to the screen that names the failed check', () => {
+    expect(outcomeOf(view({ status: SessionStatus.PREFLIGHT_FAILED }))).toBeNull();
   });
 });

@@ -43,7 +43,18 @@ export const Screen = {
   CALL: 'call',
   /** `PREFLIGHT_FAILED` — terminal, unbilled (I5). Preflight or location. */
   CHECKS_FAILED: 'checks_failed',
-  /** Any other terminal status, or a session already past the customer gates. */
+  /**
+   * The verification is over: approved, rejected, stopped, or dropped.
+   *
+   * Its own screen rather than a branch of the status view, for the same
+   * reason `CALL` is: it is not a state the customer is waiting in, it is the
+   * answer they came for. The status screen exists to say "here is how far
+   * along you are and here is what you can do next", and a finished
+   * verification has no next — every control on that screen was either
+   * inapplicable or, in the case of Join Queue, actively wrong.
+   */
+  FINISHED: 'finished',
+  /** A session already past the customer gates and still running: queued or offered. */
   SESSION_STATE: 'session_state',
 } as const;
 
@@ -60,9 +71,9 @@ export type Screen = (typeof Screen)[keyof typeof Screen];
 export function screenFor(session: SessionView): Screen {
   if (session.status === SessionStatus.PREFLIGHT_FAILED) return Screen.CHECKS_FAILED;
 
-  // Terminal for any other reason — aborted, dropped, or decided. Nothing in
-  // the T14 flow reaches these, but a stale tab can observe one.
-  if (isTerminalSessionStatus(session.status)) return Screen.SESSION_STATE;
+  // Terminal for any other reason — aborted, dropped, or decided. This is the
+  // end of the verification and gets the screen that says so.
+  if (isTerminalSessionStatus(session.status)) return Screen.FINISHED;
 
   // An agent has accepted: the customer belongs in the room (T25). Checked
   // before the general "past the gates" case below, which would otherwise
@@ -157,5 +168,71 @@ export function outcomeMessage(session: SessionView): string | null {
       return 'This verification ended because the connection was lost.';
     default:
       return null;
+  }
+}
+
+/**
+ * The three shapes a finished verification can take, for the screen.
+ *
+ * Three and not five: `ABORTED` and both `DROPPED_*` statuses differ in *why*
+ * the verification stopped, which matters to billing and to support, but not
+ * to the customer's next move. All three mean "it did not finish, start again
+ * when you are ready", and giving them three near-identical treatments would
+ * be dressing an implementation detail up as a distinction.
+ *
+ * The tone is what the screen draws and colours by. It is deliberately not a
+ * colour name: `approved` is green today and the meaning is not.
+ */
+export type OutcomeTone = 'approved' | 'rejected' | 'stopped';
+
+export interface Outcome {
+  readonly tone: OutcomeTone;
+  /** The answer, in three or four words. */
+  readonly headline: string;
+  /** The same answer as a sentence — `outcomeMessage`, not a second wording. */
+  readonly detail: string;
+  /** What the customer does now. Never an instruction this app can act on. */
+  readonly next: string;
+}
+
+/**
+ * Describe a finished verification.
+ *
+ * Null for anything still running, and null for `PREFLIGHT_FAILED`, which is
+ * terminal but has its own screen naming the check that failed — a customer
+ * whose camera was too dark needs to be told that, not "stopped".
+ *
+ * Nothing here is a decision. Every branch reads `status`, which the server
+ * set, and turns it into words; the raw status is still shown beside it,
+ * because support asks for that and a customer should be able to read it out.
+ */
+export function outcomeOf(session: SessionView): Outcome | null {
+  const detail = outcomeMessage(session);
+  if (detail === null) return null;
+
+  switch (session.status) {
+    case SessionStatus.APPROVED:
+      return {
+        tone: 'approved',
+        headline: 'You are verified',
+        detail,
+        next: 'Nothing further is needed from you. You can close this page — your bank or provider has already been told.',
+      };
+    case SessionStatus.REJECTED:
+      return {
+        tone: 'rejected',
+        headline: 'Not approved',
+        detail,
+        next: 'Your bank or provider will be in touch about what happens next. They can tell you why and whether you can try again.',
+      };
+    default:
+      // `ABORTED`, `DROPPED_QUEUED`, `DROPPED_IN_CALL`. The sentence above
+      // already distinguishes a deliberate stop from a lost connection.
+      return {
+        tone: 'stopped',
+        headline: 'Verification stopped',
+        detail,
+        next: 'Nothing has been decided about your application. To try again, start a new verification from your bank or provider.',
+      };
   }
 }

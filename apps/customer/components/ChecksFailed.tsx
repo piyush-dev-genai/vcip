@@ -35,7 +35,7 @@ export function ChecksFailed({ failedChecks }: { failedChecks: readonly string[]
     <section className="card">
       <p className="step">Verification stopped</p>
       <h1>Your device or location did not meet the requirements</h1>
-      <p>
+      <p className="muted">
         The checks before the call did not pass, so the verification cannot continue. You have not
         been charged.
       </p>
@@ -43,15 +43,20 @@ export function ChecksFailed({ failedChecks }: { failedChecks: readonly string[]
       {reasons.length > 0 ? (
         <>
           <h2>What did not pass</h2>
-          <ul className="plain">
+          <ul className="gates">
             {reasons.map((reason) => (
-              <li key={reason}>{reason}</li>
+              <li key={reason}>
+                <span className="mark todo" aria-hidden="true">
+                  ✕
+                </span>
+                <span>{reason}</span>
+              </li>
             ))}
           </ul>
         </>
       ) : null}
 
-      <p className="muted">
+      <p className="hint">
         To try again, please start a new verification from your bank or provider.
       </p>
     </section>

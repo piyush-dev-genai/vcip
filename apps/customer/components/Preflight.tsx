@@ -6,6 +6,7 @@ import { PREFLIGHT_MEASUREMENTS } from '@vcip/shared';
 import { apiBaseUrl } from '@/lib/config';
 import type { PreflightMedia } from '@/lib/measure';
 import { measurePreflight, openPreflightMedia, THROUGHPUT_PROBE_BYTES } from '@/lib/measure';
+import { Steps } from './Steps';
 
 /**
  * Screen 2 — device and connection check.
@@ -20,7 +21,10 @@ import { measurePreflight, openPreflightMedia, THROUGHPUT_PROBE_BYTES } from '@/
  * and being shown what was measured is what makes that message actionable.
  *
  * Nothing here decides whether the check passed. There is no threshold in this
- * file; the server compares against the tenant's configuration (D11).
+ * file; the server compares against the tenant's configuration (D11), which is
+ * also why the readouts below are figures and never verdicts. A green tick
+ * beside a number this app is not entitled to judge would be a promise the
+ * server may then break.
  */
 
 const LABELS: Readonly<Record<string, string>> = {
@@ -28,7 +32,7 @@ const LABELS: Readonly<Record<string, string>> = {
   camera_height: 'Camera height',
   microphone_level: 'Microphone level',
   network_rtt_ms: 'Network round trip',
-  downlink_kbps: 'Estimated download speed',
+  downlink_kbps: 'Download speed',
   lighting_score: 'Lighting',
   stability_score: 'Camera steadiness',
 };
@@ -118,61 +122,56 @@ export function Preflight({
     }
   }
 
+  const measuring = phase === 'measuring';
+
   return (
     <section className="card">
-      <p className="step">Step 2 of 3</p>
+      <Steps current={2} />
+
       <h1>Check your camera and connection</h1>
-      <p>
+      <p className="muted">
         Your camera, microphone, and internet connection are checked before the call, so the agent
         can see and hear you clearly.
       </p>
-      <p className="muted">
-        Your camera is used only for this check and is switched off as soon as it finishes. No
-        picture or sound is saved or sent anywhere during this step.
-      </p>
 
-      {phase === 'measuring' ? (
-        <video
-          ref={previewRef}
-          muted
-          playsInline
-          style={{
-            width: '100%',
-            borderRadius: 'var(--radius)',
-            marginTop: '1rem',
-            background: '#000',
-          }}
-        />
+      {measuring ? (
+        <>
+          <video className="preview" ref={previewRef} muted playsInline />
+          <p className="chip accent" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            Measuring — hold still and stay in the light
+          </p>
+        </>
       ) : null}
 
       {phase === 'blocked' && blockedReason !== null ? (
         <div className="notice bad" role="alert">
           <h3>Camera or microphone unavailable</h3>
-          <p className="muted">{blockedReason}</p>
+          <p>{blockedReason}</p>
         </div>
       ) : null}
 
       {values !== null ? (
         <>
           <h2>What we measured</h2>
-          <ul className="gates">
+          <ul className="readouts">
             {PREFLIGHT_MEASUREMENTS.map((name) => (
               <li key={name}>
-                <span className="mark done">•</span>
-                <span>
-                  {LABELS[name] ?? name}: <strong>{values[name]}</strong> {UNITS[name] ?? ''}
+                <span>{LABELS[name] ?? name}</span>
+                <span className="readout-value">
+                  {values[name]} <small>{UNITS[name] ?? ''}</small>
                 </span>
               </li>
             ))}
           </ul>
           {approximate ? (
-            <p className="muted">
+            <p className="hint">
               Your browser does not report its connection speed, so the download figure is a
               conservative estimate from a {Math.round(THROUGHPUT_PROBE_BYTES / 1024)} KB test
               transfer.
             </p>
           ) : null}
-          <p className="muted">
+          <p className="hint">
             These values are sent to be checked. Whether they are good enough is decided by the
             organisation that asked you to verify.
           </p>
@@ -189,18 +188,32 @@ export function Preflight({
               onSubmit(values);
             }}
           >
-            {busy ? 'Submitting…' : 'Submit results'}
+            {busy ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                Submitting…
+              </>
+            ) : (
+              'Submit results'
+            )}
           </button>
         ) : (
           <button
             type="button"
             className="primary"
-            disabled={phase === 'measuring' || busy}
+            disabled={measuring || busy}
             onClick={() => {
               void runCheck();
             }}
           >
-            {phase === 'measuring' ? 'Checking…' : 'Start device check'}
+            {measuring ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                Checking…
+              </>
+            ) : (
+              'Start device check'
+            )}
           </button>
         )}
         {phase === 'measured' || phase === 'blocked' ? (
@@ -215,6 +228,11 @@ export function Preflight({
           </button>
         ) : null}
       </div>
+
+      <p className="hint">
+        Your camera is used only for this check and is switched off as soon as it finishes. No
+        picture or sound is saved or sent anywhere during this step.
+      </p>
     </section>
   );
 }

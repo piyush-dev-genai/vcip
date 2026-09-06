@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { LocationRequest } from '@vcip/shared';
 import type { GeolocationExplanation } from '@/lib/geolocation';
 import { GeolocationError, currentPosition, explainGeolocationFailure } from '@/lib/geolocation';
+import { Steps } from './Steps';
 
 /**
  * Screen 3 — location.
@@ -11,7 +12,8 @@ import { GeolocationError, currentPosition, explainGeolocationFailure } from '@/
  * The fix is taken, handed to the parent, and forgotten. Coordinates are never
  * placed in component state, never rendered, and never written anywhere that
  * outlives the request — the customer is told their location was shared, not
- * shown a readout of it (§39).
+ * shown a readout of it (§39). That is also why this screen has no map: a map
+ * would mean holding the position long enough to draw it.
  *
  * `geo_ok` is not computed here. Accuracy is judged against the tenant's
  * `gps_max_accuracy_m` on the server, alongside an IP-country check the browser
@@ -51,21 +53,18 @@ export function LocationStep({
 
   return (
     <section className="card">
-      <p className="step">Step 3 of 3</p>
+      <Steps current={3} />
+
       <h1>Share your location</h1>
-      <p>
+      <p className="muted">
         Verification must take place in a permitted location, so your device is asked where it is
         before the call begins.
-      </p>
-      <p className="muted">
-        Your browser will ask for permission. Your position is used once, for this check, and is not
-        stored.
       </p>
 
       {problem !== null ? (
         <div className="notice bad" role="alert">
           <h3>{problem.title}</h3>
-          <p className="muted">{problem.detail}</p>
+          <p>{problem.detail}</p>
         </div>
       ) : null}
 
@@ -78,9 +77,21 @@ export function LocationStep({
             void share();
           }}
         >
-          {locating ? 'Getting your location…' : busy ? 'Submitting…' : 'Share my location'}
+          {working ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              {locating ? 'Getting your location…' : 'Submitting…'}
+            </>
+          ) : (
+            'Share my location'
+          )}
         </button>
       </div>
+
+      <p className="hint">
+        Your browser will ask for permission. Your position is used once, for this check, and is not
+        stored or shown.
+      </p>
     </section>
   );
 }

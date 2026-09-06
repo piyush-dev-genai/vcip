@@ -1,40 +1,93 @@
 /*
  * One stylesheet for the customer app.
  *
- * No framework: the repository has none, and four screens do not justify
- * introducing a build-chain dependency. Plain custom properties and a handful
- * of classes are enough, and they keep the markup readable.
+ * Still no framework, and for the same reason as before: a handful of screens
+ * does not justify a build-chain dependency, and plain custom properties keep
+ * the markup readable.
  *
  * Sized for a phone first — this is a screen someone opens on the device whose
- * camera they are about to use.
+ * camera they are about to use, usually one-handed, often outdoors. So the
+ * type is large, the targets are thumb-sized, the whole flow is one column,
+ * and nothing important sits below a fold.
+ *
+ * It shares its vocabulary with the agent console — the same token names, the
+ * same card, chip and notice — so the two surfaces read as one product. The
+ * values differ where the context does: warmer, larger, calmer, and with the
+ * primary action always the last thing on the screen.
  */
 
+/* ------------------------------------------------------------- tokens */
+
 :root {
-  --bg: #f5f6f8;
+  color-scheme: light;
+
+  --bg: #f2f4f7;
   --surface: #ffffff;
-  --ink: #16181d;
-  --ink-soft: #5b6070;
-  --line: #dfe2e8;
-  --accent: #1f5fd8;
+  --surface-2: #f6f7f9;
+  --surface-3: #ebedf2;
+
+  --ink: #14161c;
+  --ink-soft: #545b6b;
+  --ink-faint: #838a99;
+
+  --line: #e0e3ea;
+  --line-strong: #c8cdd8;
+
+  --accent: #2f52d4;
+  --accent-soft: #e8ecfd;
   --accent-ink: #ffffff;
-  --ok: #1a7f4b;
-  --warn: #a35a00;
+
+  --ok: #17794a;
+  --ok-soft: #e1f4e9;
+  --warn: #93570a;
+  --warn-soft: #fcefdb;
   --bad: #b3261e;
-  --radius: 10px;
+  --bad-soft: #fce9e7;
+
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgb(16 20 30 / 6%);
+  --shadow: 0 1px 2px rgb(16 20 30 / 5%), 0 10px 28px -14px rgb(16 20 30 / 20%);
+  --shadow-lg: 0 2px 4px rgb(16 20 30 / 6%), 0 28px 56px -24px rgb(16 20 30 / 30%);
+
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  /* Slight overshoot. Used only where something arrives, never where
+     something moves out of the way. */
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14161a;
-    --surface: #1d2027;
-    --ink: #f2f3f5;
-    --ink-soft: #a4a9b6;
-    --line: #2f333d;
-    --accent: #7aa2f7;
-    --accent-ink: #10131a;
-    --ok: #59c68d;
-    --warn: #e0a458;
-    --bad: #f2837a;
+    color-scheme: dark;
+
+    --bg: #0d0f14;
+    --surface: #171a21;
+    --surface-2: #1d212a;
+    --surface-3: #242934;
+
+    --ink: #eef0f5;
+    --ink-soft: #a4abba;
+    --ink-faint: #78808f;
+
+    --line: #272c37;
+    --line-strong: #38404e;
+
+    --accent: #8098ff;
+    --accent-soft: #1b2240;
+    --accent-ink: #0a0d16;
+
+    --ok: #4ecf90;
+    --ok-soft: #11291e;
+    --warn: #e3a856;
+    --warn-soft: #2b2011;
+    --bad: #ff8a7e;
+    --bad-soft: #2d1613;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 28px -14px rgb(0 0 0 / 70%);
+    --shadow-lg: 0 2px 4px rgb(0 0 0 / 45%), 0 28px 56px -24px rgb(0 0 0 / 80%);
   }
 }
 
@@ -42,182 +95,573 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
   font-family:
+    ui-sans-serif,
     system-ui,
     -apple-system,
     'Segoe UI',
     sans-serif;
+  font-size: 16px;
   line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
-.shell {
-  max-width: 34rem;
-  margin: 0 auto;
-  padding: 1.5rem 1rem 4rem;
-}
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 1.25rem;
+h1,
+h2,
+h3 {
+  margin: 0;
+  letter-spacing: -0.015em;
+  font-weight: 640;
 }
 
 h1 {
-  font-size: 1.35rem;
-  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+  line-height: 1.25;
+  margin-bottom: 0.15rem;
 }
 
 h2 {
-  font-size: 1.1rem;
-  margin: 1.25rem 0 0.4rem;
+  font-size: 1.05rem;
+  margin: 1.35rem 0 0.35rem;
+}
+
+h3 {
+  font-size: 0.95rem;
 }
 
 p {
   margin: 0.5rem 0;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------- layout */
+
+.shell {
+  max-width: 30rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: none;
+  border-radius: 7px;
+  background: linear-gradient(
+    140deg,
+    var(--accent),
+    color-mix(in srgb, var(--accent) 55%, #b06ef0)
+  );
+  color: var(--accent-ink);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.brand-name {
+  font-size: 0.85rem;
+  font-weight: 620;
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------- typography */
+
 .muted {
   color: var(--ink-soft);
   font-size: 0.9rem;
 }
 
-.step {
-  color: var(--ink-soft);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin: 0 0 0.5rem;
+.hint {
+  margin: 0.6rem 0 0;
+  font-size: 0.82rem;
+  color: var(--ink-faint);
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  margin-top: 1.25rem;
+.step {
+  margin: 0 0 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 640;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  word-break: break-all;
+}
+
+.state {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+}
+
+ul.plain {
+  margin: 0.6rem 0;
+  padding-left: 1.15rem;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+ul.plain li {
+  margin: 0.3rem 0;
+}
+
+/* ---------------------------------------------------------- primitives */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.35rem 1.25rem;
+  box-shadow: var(--shadow-sm);
+  /* Each screen is a replacement for the last, so it arrives rather than
+     appears. Short and small — a flow a customer is anxious in is not the
+     place for a long animation. */
+  animation: card-in 300ms var(--ease) both;
+}
+
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.card + .card,
+.card + .notice,
+.notice + .card {
+  margin-top: 0.9rem;
 }
 
 button {
   font: inherit;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 3rem;
+  padding: 0.6rem 1.15rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--ink);
-  padding: 0.65rem 1.1rem;
   cursor: pointer;
-  min-height: 2.75rem;
+  transition:
+    background 140ms var(--ease),
+    border-color 140ms var(--ease),
+    transform 140ms var(--ease);
+}
+
+button:not(:disabled):hover {
+  background: var(--surface-2);
+  border-color: var(--ink-faint);
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px);
 }
 
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
+  font-weight: 620;
+}
+
+button.primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 86%, black);
+  border-color: color-mix(in srgb, var(--accent) 86%, black);
 }
 
 button[disabled] {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-ul.plain {
-  margin: 0.5rem 0;
-  padding-left: 1.1rem;
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/*
+ * The action row.
+ *
+ * On a phone the primary action is full width and sits alone on its line; the
+ * secondary sits under it. Reaching a half-width button with a thumb while
+ * holding a phone up to your face is the kind of detail this flow cannot
+ * afford to get wrong.
+ */
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1.35rem;
+}
+
+.actions button {
+  width: 100%;
+}
+
+/* A secondary row nested under a primary action is part of the same block,
+   not a second one: it keeps the gap, not the whole top margin. */
+.actions .actions {
+  margin-top: 0;
+}
+
+@media (min-width: 26rem) {
+  .actions.inline {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .actions.inline button {
+    width: auto;
+    flex: 1 1 9rem;
+  }
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.65rem 0.2rem 0.55rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 560;
+}
+
+.chip.ok {
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.chip.warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.chip.accent {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dot.live {
+  animation: pulse 2.4s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  70% {
+    box-shadow: 0 0 0 0.35rem transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .notice {
   border: 1px solid var(--line);
-  border-left-width: 4px;
-  border-radius: var(--radius);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   padding: 0.75rem 0.9rem;
   margin-top: 1rem;
+  animation: card-in 260ms var(--ease) both;
+}
+
+.notice h3 {
+  margin: 0 0 0.2rem;
+}
+
+.notice p {
+  margin: 0.2rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
 }
 
 .notice.bad {
   border-left-color: var(--bad);
+  background: var(--bad-soft);
 }
 
 .notice.warn {
   border-left-color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .notice.ok {
   border-left-color: var(--ok);
+  background: var(--ok-soft);
 }
 
-.notice h3 {
-  margin: 0 0 0.25rem;
-  font-size: 1rem;
+/* ------------------------------------------------------- the stepper */
+
+/*
+ * Where the customer is in the three gates.
+ *
+ * It replaces "Step 2 of 3", which stated the same fact without showing the
+ * shape of it. Someone who can see two more dots after the one they are on
+ * knows how much is left, which is most of what makes a short flow feel short.
+ */
+.steps {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0 0 1.1rem;
+  padding: 0;
 }
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+/* Every step but the last carries the rule to the next one, so it is the one
+   that stretches. The last is only as wide as its own label. */
+.step-item:not(:last-child) {
+  flex: 1;
+}
+
+.step-bead {
+  display: grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  font-weight: 660;
+  transition:
+    background 240ms var(--ease),
+    border-color 240ms var(--ease),
+    color 240ms var(--ease);
+}
+
+.step-item.is-done .step-bead {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--surface);
+}
+
+.step-item.is-current .step-bead {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.step-label {
+  font-size: 0.78rem;
+  font-weight: 560;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.step-item.is-current .step-label {
+  color: var(--ink);
+}
+
+.step-item.is-done .step-label {
+  color: var(--ink-soft);
+}
+
+/* The label of a step the customer is not on is hidden on a narrow phone;
+   the bead still shows how far along they are. */
+@media (max-width: 24rem) {
+  .step-item:not(.is-current) .step-label {
+    display: none;
+  }
+}
+
+.step-rule {
+  flex: 1;
+  height: 1.5px;
+  min-width: 0.5rem;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.step-rule.is-done {
+  background: var(--ok);
+}
+
+/* ----------------------------------------------------------- the gates */
 
 .gates {
   list-style: none;
   margin: 1rem 0 0;
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 .gates li {
   display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.35rem 0;
-  border-top: 1px solid var(--line);
-}
-
-.gates li:first-child {
-  border-top: 0;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 0.92rem;
 }
 
 .mark {
-  font-weight: 600;
-  min-width: 1.4rem;
+  display: grid;
+  place-items: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  flex: none;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .mark.done {
+  background: var(--ok-soft);
   color: var(--ok);
 }
 
 .mark.todo {
-  color: var(--ink-soft);
+  background: var(--surface-3);
+  color: var(--ink-faint);
 }
 
-.state {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.1rem 0.4rem;
+/* The measured values on the device check: a label and a figure per row. */
+.readouts {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
 }
 
-.ref {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.75rem;
-  color: var(--ink-soft);
-  word-break: break-all;
+.readouts li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 0.9rem;
 }
 
-/* ------------------------------------------------------------- call (T25) */
+.readout-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 620;
+  white-space: nowrap;
+}
 
-/*
- * The video stage.
- *
- * The agent fills the frame and the customer's own preview sits in the corner,
- * which is the arrangement of every video call a customer has used before. The
- * roles differ only in what is made large — both parties publish camera and
- * microphone, and what each is permitted to do is enforced by the SFU from the
- * grant the Control API signed, never by this stylesheet.
- */
+.readout-value small {
+  font-weight: 440;
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------------- preview */
+
+.preview {
+  display: block;
+  width: 100%;
+  margin-top: 1rem;
+  border-radius: var(--radius);
+  background: #000;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  /* Mirrored: an unmirrored self-view makes people move the wrong way. */
+  transform: scaleX(-1);
+  animation: card-in 300ms var(--ease) both;
+}
+
+/* ------------------------------------------------------------- the call */
+
 .stage {
   position: relative;
   margin: 1rem 0;
   border-radius: var(--radius);
   overflow: hidden;
   background: #000;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 3 / 4;
+  box-shadow: var(--shadow);
+}
+
+@media (min-width: 30rem) {
+  .stage {
+    aspect-ratio: 4 / 3;
+  }
 }
 
 .tile {
@@ -241,11 +685,13 @@ ul.plain {
   position: absolute;
   left: 0.75rem;
   bottom: 0.75rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 6px;
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--radius-pill);
   background: rgb(0 0 0 / 55%);
+  backdrop-filter: blur(6px);
   color: #fff;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 560;
 }
 
 /*
@@ -258,15 +704,16 @@ ul.plain {
   right: 0.75rem;
   bottom: 0.75rem;
   width: 28%;
-  max-width: 160px;
-  border: 1px solid rgb(255 255 255 / 35%);
-  border-radius: 8px;
+  max-width: 150px;
+  border: 1px solid rgb(255 255 255 / 25%);
+  border-radius: 10px;
   overflow: hidden;
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 70%);
 }
 
 .tile.local video {
   transform: scaleX(-1);
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 3 / 4;
 }
 
 .tile.local figcaption {
@@ -277,6 +724,208 @@ ul.plain {
   padding: 0.15rem 0.4rem;
   background: rgb(0 0 0 / 55%);
   color: #fff;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   text-align: center;
+}
+
+/* The connection state belongs to the picture, not to the page under it. */
+.stage-status {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.28rem 0.7rem;
+  border-radius: var(--radius-pill);
+  background: rgb(0 0 0 / 55%);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 560;
+}
+
+.stage-status.is-live {
+  color: #6ee7a8;
+}
+
+/* --------------------------------------------------------- the outcome */
+
+/*
+ * The end of the verification.
+ *
+ * This is the one screen a customer is guaranteed to read, and often the only
+ * one they will remember. It gets the whole viewport, one sentence, and a mark
+ * that draws itself — the animation is not decoration but pacing: it holds the
+ * customer's eye for the half second it takes to understand which of three
+ * quite different things has just happened to them.
+ *
+ * Colour never carries the meaning alone. The mark, the heading, and the
+ * sentence each say the outcome on their own, because a customer who cannot
+ * distinguish green from red is exactly as entitled to know whether they were
+ * approved.
+ */
+.outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  min-height: 78dvh;
+  justify-content: center;
+  padding: 1.5rem 0.25rem;
+}
+
+.outcome-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 7.5rem;
+  height: 7.5rem;
+  margin-bottom: 1.35rem;
+}
+
+/* The wash behind the mark. It blooms once and stays. */
+.outcome-mark::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--tone-soft);
+  transform: scale(0.4);
+  opacity: 0;
+  animation: bloom 620ms var(--ease-spring) 60ms both;
+}
+
+@keyframes bloom {
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.outcome-mark svg {
+  position: relative;
+  width: 4.5rem;
+  height: 4.5rem;
+  overflow: visible;
+}
+
+/*
+ * The ring and the glyph are drawn, not faded in.
+ *
+ * `pathLength="1"` on the elements normalises every path to a length of one,
+ * so a single dash rule animates a circle and a tick identically without any
+ * geometry in the stylesheet.
+ */
+.outcome-ring,
+.outcome-glyph {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 0.055;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.outcome-ring {
+  animation: draw 560ms var(--ease) 140ms both;
+}
+
+.outcome-glyph {
+  stroke-width: 0.07;
+  animation: draw 420ms var(--ease) 520ms both;
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* The text follows the mark rather than arriving with it, so the customer
+   looks at the symbol and then reads the sentence. */
+.outcome h1 {
+  font-size: 1.6rem;
+  animation: rise 460ms var(--ease) 640ms both;
+}
+
+.outcome-detail {
+  max-width: 26rem;
+  margin: 0.5rem 0 0;
+  color: var(--ink-soft);
+  animation: rise 460ms var(--ease) 740ms both;
+}
+
+.outcome-next {
+  max-width: 26rem;
+  margin: 1.35rem 0 0;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  animation: rise 460ms var(--ease) 840ms both;
+}
+
+/* The abort receipt sits directly under the "what happens next" box and wears
+   the same shell, so the two need a gap rather than a second full margin. */
+.outcome-next + .outcome-next {
+  margin-top: 0.6rem;
+}
+
+.outcome-foot {
+  margin-top: 1.5rem;
+  animation: rise 460ms var(--ease) 940ms both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/*
+ * The three outcomes, as two custom properties each.
+ *
+ * Set on the element rather than baked into a dozen rules, so the mark, the
+ * wash and the chip below all follow from one declaration and cannot drift
+ * apart.
+ */
+.outcome[data-tone='approved'] {
+  --tone: var(--ok);
+  --tone-soft: var(--ok-soft);
+}
+
+.outcome[data-tone='rejected'] {
+  --tone: var(--bad);
+  --tone-soft: var(--bad-soft);
+}
+
+.outcome[data-tone='stopped'] {
+  --tone: var(--ink-faint);
+  --tone-soft: var(--surface-3);
+}
+
+/*
+ * Every animation here is pacing, and pacing is exactly what someone who has
+ * asked for reduced motion has asked not to have. The final state is the
+ * important one, so it simply arrives.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
+
+  .outcome-ring,
+  .outcome-glyph {
+    stroke-dashoffset: 0;
+  }
 }

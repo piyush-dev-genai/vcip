@@ -44,23 +44,25 @@ export default function Page() {
 
   return (
     <main className="shell">
+      <div className="brand">
+        <span className="brand-mark" aria-hidden="true">
+          VC
+        </span>
+        <span className="brand-name">Secure verification</span>
+      </div>
+
       <section className="card">
         <p className="step">Development</p>
         <h1>V-CIP Verification</h1>
-        <p>
+        <p className="muted">
           A customer normally arrives here from a link sent by their bank or provider. This page
           stands in for that step during development.
-        </p>
-        <p className="muted">
-          Starting a session calls the Control API with the enterprise API key from the server
-          environment. The key stays on the server; only a short-lived, session-scoped customer
-          token reaches this browser (D14).
         </p>
 
         {problem === null ? null : (
           <div className="notice bad" role="alert">
             <h3>Could not start a session</h3>
-            <p className="muted">{problem}</p>
+            <p>{problem}</p>
           </div>
         )}
 
@@ -73,9 +75,22 @@ export default function Page() {
               void start();
             }}
           >
-            {starting ? 'Starting…' : 'Start a demo verification'}
+            {starting ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                Starting…
+              </>
+            ) : (
+              'Start a demo verification'
+            )}
           </button>
         </div>
+
+        <p className="hint">
+          Starting a session calls the Control API with the enterprise API key from the server
+          environment. The key stays on the server; only a short-lived, session-scoped customer
+          token reaches this browser (D14).
+        </p>
       </section>
     </main>
   );

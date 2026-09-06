@@ -15,6 +15,7 @@ import { ChecksFailed } from './ChecksFailed';
 import { Consent } from './Consent';
 import { ErrorNotice } from './ErrorNotice';
 import { LocationStep } from './LocationStep';
+import { Outcome } from './Outcome';
 import { Preflight } from './Preflight';
 import { Status } from './Status';
 
@@ -43,6 +44,12 @@ import { Status } from './Status';
  * flow already names (§5.6), it goes through the same `refresh` every other
  * path uses, and it holds no state of its own: the answer replaces what the
  * screen believed rather than being merged into it.
+ *
+ * That loop is also what delivers the ending. A verdict is submitted from the
+ * agent's side and the customer is told by the next poll landing on a terminal
+ * status — which routes to `Screen.FINISHED` and the `Outcome` screen. Nothing
+ * here waits for, announces, or predicts an outcome: the screen changes because
+ * the session did.
  */
 export function SessionFlow({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionView | null>(null);
@@ -211,12 +218,13 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
   if (tokenMissing) {
     return (
       <section className="card">
+        <p className="step">Verification link</p>
         <h1>This link is incomplete</h1>
-        <p>
+        <p className="muted">
           The verification link is missing the part that identifies you, or it has already been used
           in another tab.
         </p>
-        <p className="muted">Please start again from your bank or provider.</p>
+        <p className="hint">Please start again from your bank or provider.</p>
       </section>
     );
   }
@@ -224,7 +232,11 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
   if (loading) {
     return (
       <section className="card" aria-busy="true">
-        <h1>Loading your verification…</h1>
+        <p className="chip accent">
+          <span className="spinner" aria-hidden="true" />
+          Loading
+        </p>
+        <h1>Opening your verification</h1>
         <p className="muted">Checking where you left off.</p>
       </section>
     );
@@ -233,11 +245,13 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
   if (session === null) {
     return (
       <section className="card">
+        <p className="step">Verification</p>
         <h1>We could not load your verification</h1>
         {error === null ? null : <ErrorNotice message={error} />}
         <div className="actions">
           <button
             type="button"
+            className="primary"
             onClick={() => {
               void refresh();
             }}
@@ -267,13 +281,14 @@ export function SessionFlow({ sessionId }: { sessionId: string }) {
         <Call session={session} api={api} busy={busy} onAbort={onAbort} />
       ) : null}
 
+      {screen === Screen.FINISHED ? <Outcome session={session} aborted={aborted} /> : null}
+
       {screen === Screen.READY_FOR_QUEUE || screen === Screen.SESSION_STATE ? (
         <Status
           session={session}
           busy={busy}
           refreshing={refreshing}
           lastCheckedAt={lastCheckedAt}
-          aborted={aborted}
           onJoinQueue={onJoinQueue}
           onAbort={onAbort}
           onRefresh={() => {
