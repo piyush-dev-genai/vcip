@@ -18,6 +18,11 @@ Four things the spike established, all of them enforced below:
   4. A frame arriving is not a frame containing a picture, so the RGB24 buffer
      is length-checked against the frame's own geometry — which `Frame` does.
 
+A fifth constraint is the host's, not the spike's: which simulcast layer to
+ask for. Left alone, LiveKit sends the highest, and finding 3 above is what
+that costs. `video_quality` asks for a lower one where the machine cannot
+afford it — see `config.VIDEO_QUALITIES` for why this changes no answer.
+
 The analyzer publishes nothing and holds no signing key. Its token is minted by
 the Control API, scoped to one room, subscribe-only.
 """
@@ -43,6 +48,18 @@ logger = logging.getLogger(__name__)
 #: analyzer subscribes to the customer because the Control API said which
 #: participant is the customer, at mint time, from a verified credential.
 CUSTOMER_IDENTITY = "customer"
+
+#: `config.VIDEO_QUALITIES` translated into the SDK's enum.
+#:
+#: A dictionary rather than a chain of comparisons, so an unrecognised value
+#: raises here instead of silently picking a layer. `AnalyzerConfig` has
+#: already rejected one at boot; this is the second line of the same defence,
+#: because a wrong layer is invisible in a running service.
+_VIDEO_QUALITIES = {
+    "low": rtc.VideoQuality.VIDEO_QUALITY_LOW,
+    "medium": rtc.VideoQuality.VIDEO_QUALITY_MEDIUM,
+    "high": rtc.VideoQuality.VIDEO_QUALITY_HIGH,
+}
 
 
 class LiveKitFrameHandle:
@@ -104,12 +121,14 @@ class LiveKitFrameSource:
         token: str,
         room_name: str,
         track_timeout_s: float,
+        video_quality: str | None = None,
         customer_identity: str = CUSTOMER_IDENTITY,
     ) -> None:
         self._url = url
         self._token = token
         self._room_name = room_name
         self._track_timeout_s = track_timeout_s
+        self._video_quality = video_quality
         self._customer_identity = customer_identity
         self._room: rtc.Room | None = None
         self._stream: rtc.VideoStream | None = None
@@ -168,6 +187,29 @@ class LiveKitFrameSource:
         def consider(publication: rtc.RemoteTrackPublication, identity: str) -> None:
             if wanted(publication, identity):
                 publication.set_subscribed(True)
+                prefer_quality(publication)
+
+        def prefer_quality(publication: rtc.RemoteTrackPublication) -> None:
+            """Ask for a specific simulcast layer, if one was configured.
+
+            Best effort, and deliberately so. `set_video_quality` raises when
+            the publication is not simulcasted — a publisher that sent one
+            layer, or a track whose layers the server has not reported yet —
+            and that is not a reason to abandon the analysis. Getting the
+            default layer is slower than asking for a small one; getting no
+            frames at all is the outcome this must not cause.
+            """
+            if self._video_quality is None:
+                return
+            try:
+                publication.set_video_quality(_VIDEO_QUALITIES[self._video_quality])
+            except Exception as exc:  # noqa: BLE001 - the SDK raises ValueError, but never fatally here
+                logger.warning(
+                    "could not request the %s layer in room %s (%s); taking the default",
+                    self._video_quality,
+                    self._room_name,
+                    type(exc).__name__,
+                )
 
         @room.on("track_published")
         def _on_published(publication: rtc.RemoteTrackPublication, participant: object) -> None:

@@ -60,6 +60,24 @@ DEFAULT_MAX_ANALYSIS_S = 7_200.0
 #: stale by the time it arrived.
 DEFAULT_PUBLISH_TIMEOUT_S = 5.0
 
+#: Which simulcast layer to ask the server for, or nothing at all.
+#:
+#: A browser publishes one video track as several layers and LiveKit sends the
+#: highest by default, so an unset value is the behaviour this service has
+#: always had and stays the local default.
+#:
+#: It is worth naming because the layer decides what this service costs. The
+#: T05 spike measured full-frame I420 -> RGB24 at 720p at ~23 ms; the same
+#: conversion at 320x180 is under 2 ms, and the decode behind it falls by
+#: roughly the same factor. On a host with a fraction of a core that difference
+#: is between keeping up and falling behind.
+#:
+#: What it does *not* affect is any answer. The providers are seeded from the
+#: session id (`providers/determinism.py`), so in `mock` mode a frame's pixels
+#: reach no decision at all — and a real provider would be given its own
+#: resolution requirement rather than inheriting this one.
+VIDEO_QUALITIES = ("low", "medium", "high")
+
 
 @dataclass(frozen=True, slots=True)
 class AnalyzerConfig:
@@ -73,6 +91,8 @@ class AnalyzerConfig:
     track_timeout_s: float
     max_analysis_s: float
     publish_timeout_s: float
+    #: One of `VIDEO_QUALITIES`, or None to express no preference.
+    video_quality: str | None
 
     def __post_init__(self) -> None:
         if not self.control_api_url.strip():
@@ -82,6 +102,11 @@ class AnalyzerConfig:
         for name in ("sample_interval_us", "check_interval_us", "ocr_interval_us"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
+        if self.video_quality is not None and self.video_quality not in VIDEO_QUALITIES:
+            raise ValueError(
+                f"AI_VIDEO_QUALITY must be one of {', '.join(VIDEO_QUALITIES)} "
+                f"or unset, got {self.video_quality!r}"
+            )
         if self.sample_interval_us > self.check_interval_us:
             # Liveness reads a window of sampled frames. Sampling more slowly
             # than the check runs would hand it one frame, and one frame is a
@@ -148,4 +173,8 @@ def analyzer_config_from_env(env: Mapping[str, str] | None = None) -> AnalyzerCo
         publish_timeout_s=_positive_float(
             environment, "AI_PUBLISH_TIMEOUT_S", DEFAULT_PUBLISH_TIMEOUT_S
         ),
+        # Unset means unset, not a default layer: expressing no preference and
+        # asking for the highest one are different requests, and only the first
+        # is what this service did before the variable existed.
+        video_quality=(environment.get("AI_VIDEO_QUALITY") or "").strip().lower() or None,
     )

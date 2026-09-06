@@ -97,6 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             token=request.token,
             room_name=request.room_name,
             track_timeout_s=config.track_timeout_s,
+            video_quality=config.video_quality,
         ),
         cadence=Cadence(
             sample_interval_us=config.sample_interval_us,

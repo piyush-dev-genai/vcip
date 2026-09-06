@@ -9,6 +9,7 @@ from app.config import (
     DEFAULT_CONTROL_API_URL,
     DEFAULT_OCR_INTERVAL_MS,
     DEFAULT_SAMPLE_INTERVAL_MS,
+    VIDEO_QUALITIES,
     AnalyzerConfig,
     analyzer_config_from_env,
 )
@@ -63,6 +64,29 @@ class TestOverrides:
     def test_rejects_an_unusable_interval(self, value: str) -> None:
         with pytest.raises(ValueError, match="AI_SAMPLE_INTERVAL_MS"):
             analyzer_config_from_env(env(AI_SAMPLE_INTERVAL_MS=value))
+
+
+class TestVideoQuality:
+    """Which simulcast layer the analyzer asks the server for."""
+
+    def test_expresses_no_preference_by_default(self) -> None:
+        """Unset is the behaviour this service had before the variable existed."""
+        assert analyzer_config_from_env(env()).video_quality is None
+
+    @pytest.mark.parametrize("value", VIDEO_QUALITIES)
+    def test_accepts_each_layer(self, value: str) -> None:
+        assert analyzer_config_from_env(env(AI_VIDEO_QUALITY=value)).video_quality == value
+
+    def test_is_case_insensitive(self) -> None:
+        assert analyzer_config_from_env(env(AI_VIDEO_QUALITY=" LOW ")).video_quality == "low"
+
+    def test_blank_means_unset_rather_than_invalid(self) -> None:
+        assert analyzer_config_from_env(env(AI_VIDEO_QUALITY="   ")).video_quality is None
+
+    def test_an_unrecognised_layer_stops_the_process(self) -> None:
+        """A wrong layer is invisible in a running service, so it fails at boot."""
+        with pytest.raises(ValueError, match="AI_VIDEO_QUALITY"):
+            analyzer_config_from_env(env(AI_VIDEO_QUALITY="tiny"))
 
 
 class TestFailFast:
