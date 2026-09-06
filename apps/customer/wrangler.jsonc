@@ -29,9 +29,28 @@
     "enabled": true,
   },
 
-  // No `vars` block. VCIP_DEMO_API_KEY is an enterprise credential and is set
-  // with `wrangler secret put`, never committed; VCIP_API_BASE_URL and
-  // VCIP_DEMO_BOOTSTRAP are set in the dashboard alongside it. The two
-  // NEXT_PUBLIC_ values are inlined into the bundle at build time and so are
-  // supplied to the build, not to the runtime.
+  // Configuration, not credentials, and committed rather than left in the
+  // dashboard on purpose. `wrangler deploy` treats this file as the source of
+  // truth for plain-text variables: deploying with no `vars` block *removes*
+  // whatever the dashboard holds, and Workers Builds runs a deploy on every
+  // push. A dashboard value therefore survives until the next commit and then
+  // silently disappears — which presents as the demo bootstrap being off, with
+  // nothing to say why.
+  //
+  // Neither value is a secret. One is a public hostname; the other is the
+  // string "yes". Committing them costs nothing and makes a deployment
+  // reproducible from the repository alone.
+  "vars": {
+    "VCIP_API_BASE_URL": "https://vcip-api.onrender.com",
+    "VCIP_DEMO_BOOTSTRAP": "yes",
+  },
+
+  // VCIP_DEMO_API_KEY is deliberately absent. It is the D14 enterprise
+  // credential, set with `wrangler secret put` and never committed. Secrets are
+  // preserved across deploys, so it does not have the problem described above.
+  //
+  // The two NEXT_PUBLIC_ values are absent for a different reason: Next inlines
+  // them into the bundle during `next build`, so they belong to the build
+  // (Workers Builds -> Settings -> Build -> Build variables) and not to the
+  // runtime. Setting them here would have no effect whatsoever.
 }
