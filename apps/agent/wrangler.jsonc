@@ -1,0 +1,25 @@
+{
+  // V-CIP agent portal on Cloudflare Workers (docs/07-deployment.md).
+  //
+  // The same shape as the customer app's, with less behind it: the portal has
+  // one server route (`/api/health`) and holds no credential of any kind. An
+  // agent's JWT is minted by the Control API and lives in the browser.
+  //
+  // No custom domain. The deployment answers on
+  // `vcip-agent.<subdomain>.workers.dev`, which is the HTTPS origin to give the
+  // Control API as AGENT_ORIGIN.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vcip-agent",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+
+  "observability": {
+    "enabled": true,
+  },
+}

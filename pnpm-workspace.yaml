@@ -6,3 +6,6 @@ allowBuilds:
   # NestJS requires. Both need their native postinstall step.
   '@swc/core': true
   esbuild: true
+  # wrangler's local runtime. Its postinstall fetches the platform binary, and
+  # without it the Cloudflare build cannot run — see docs/07-deployment.md.
+  workerd: true

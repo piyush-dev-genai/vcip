@@ -9,6 +9,9 @@ build/
 next-env.d.ts
 out/
 *.tsbuildinfo
+# Cloudflare: the OpenNext build output and wrangler's local state.
+.open-next/
+.wrangler/
 
 # tests
 coverage/

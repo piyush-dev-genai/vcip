@@ -3,6 +3,8 @@ dist
 build
 .next
 next-env.d.ts
+.open-next
+.wrangler
 coverage
 .venv
 __pycache__

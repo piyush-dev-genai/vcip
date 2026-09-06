@@ -42,8 +42,18 @@ async function bootstrap(): Promise<void> {
   // the documented envelope with a request id.
   app.useGlobalFilters(new ApiErrorFilter(logger));
 
-  const port = Number(process.env.API_PORT ?? 3001);
-  await app.listen(port);
+  // `PORT` first, `API_PORT` second. A managed host assigns the port it will
+  // route to and passes it as `PORT` — the name is the platform's convention,
+  // not ours — and a process that ignores it binds where nothing is listening.
+  // `API_PORT` stays for local development, where the three ports are chosen by
+  // hand so the apps can run side by side. D24: the difference is environment,
+  // not code.
+  //
+  // Bound to 0.0.0.0 explicitly, because a container's router and its health
+  // check both arrive over the bridge, and a server on loopback alone is
+  // reachable from nothing but itself.
+  const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3001);
+  await app.listen(port, '0.0.0.0');
   // The allow-list is logged; it is configuration, not a credential, and a
   // browser failing silently on a missing origin is otherwise hard to diagnose.
   logger.info(

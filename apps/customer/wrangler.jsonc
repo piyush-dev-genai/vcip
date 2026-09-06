@@ -1,0 +1,37 @@
+{
+  // V-CIP customer application on Cloudflare Workers (docs/07-deployment.md).
+  //
+  // Deployed as static assets plus one Worker. Every prerendered page is served
+  // from the assets binding and never invokes the Worker at all; the Worker
+  // runs only for `/api/demo/session`, which holds the D14 enterprise key and
+  // must stay on the server.
+  //
+  // No custom domain. The deployment answers on
+  // `vcip-customer.<subdomain>.workers.dev`, which is the HTTPS origin to give
+  // the Control API as CUSTOMER_ORIGIN.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vcip-customer",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-01",
+
+  // `nodejs_compat` is what lets the route handler run on the `nodejs` runtime
+  // it declares. `global_fetch_strictly_public` makes `fetch` reach the public
+  // internet rather than looping back into this Worker, which is how the
+  // bootstrap route reaches the Control API on Render.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+
+  "observability": {
+    "enabled": true,
+  },
+
+  // No `vars` block. VCIP_DEMO_API_KEY is an enterprise credential and is set
+  // with `wrangler secret put`, never committed; VCIP_API_BASE_URL and
+  // VCIP_DEMO_BOOTSTRAP are set in the dashboard alongside it. The two
+  // NEXT_PUBLIC_ values are inlined into the bundle at build time and so are
+  // supplied to the build, not to the runtime.
+}
