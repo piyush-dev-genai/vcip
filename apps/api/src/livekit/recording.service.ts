@@ -36,6 +36,8 @@ import type { SessionRepository } from '../sessions/session.repository.js';
 import { InjectSessionRepository } from '../sessions/session.repository.js';
 import type { RecordingStarter } from './recording.client.js';
 import { InjectRecordingStarter } from './recording.client.js';
+import type { RecordingConfig } from './recording.config.js';
+import { InjectRecordingConfig } from './recording.config.js';
 
 /** What one attempt did, for the retry pass and for tests. */
 export const RecordingOutcome = {
@@ -45,6 +47,15 @@ export const RecordingOutcome = {
   ALREADY_RUNNING: 'ALREADY_RUNNING',
   /** No room name on the row, so there is nothing to address. */
   NO_ROOM: 'NO_ROOM',
+  /**
+   * `RECORDING_ENABLED=false`. Not a failure and not recorded as one.
+   *
+   * Distinct from `FAILED` on purpose: nothing went wrong, so no
+   * `EGRESS_FAILED` is appended. An auditor reading the log of a Core-MVP
+   * deployment should find no evidence events at all, rather than a failure
+   * for every call that says the recording broke when it was never asked for.
+   */
+  DISABLED: 'DISABLED',
 } as const;
 
 export type RecordingOutcome = (typeof RecordingOutcome)[keyof typeof RecordingOutcome];
@@ -54,6 +65,7 @@ export class RecordingService {
   constructor(
     @InjectSessionRepository() private readonly sessions: SessionRepository,
     @InjectRecordingStarter() private readonly starter: RecordingStarter,
+    @InjectRecordingConfig() private readonly config: RecordingConfig,
     @InjectLogger() private readonly logger: Logger,
   ) {}
 
@@ -70,6 +82,12 @@ export class RecordingService {
     tenantId: string,
     roomName: string | null,
   ): Promise<RecordingOutcome> {
+    // First, and before the room-name check: a deployment that is not
+    // recording should not log an error about a session it was never going to
+    // record. The retry sweeper is off for the same reason (`livekit.module`),
+    // so this is the guard for the one call the webhook makes directly.
+    if (!this.config.enabled) return RecordingOutcome.DISABLED;
+
     if (roomName === null) {
       this.logger.error(
         { event: 'recording.no_room', session_id: sessionId, tenant_id: tenantId },

@@ -68,6 +68,7 @@ import { ANALYSIS_STARTER } from '../ai/ai-analysis.client.js';
 import { AI_CONFIG } from '../ai/ai.config.js';
 import { MEDIA_TOKEN_MINTER } from './media-token.minter.js';
 import { RECORDING_STARTER } from './recording.client.js';
+import { RECORDING_CONFIG } from './recording.config.js';
 import type { RecordingStarter } from './recording.client.js';
 import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
 import { NOTIFICATIONS } from '../realtime/notifications.js';
@@ -293,6 +294,16 @@ const analyzerMinter = {
 
 const AI = { enabled: true, baseUrl: 'http://ai.test', startTimeoutMs: 2_000 };
 
+const RECORDING = {
+  enabled: true,
+  bucket: 'vcip-temp',
+  region: 'ap-south-1',
+  egressEndpoint: 'http://minio:9000',
+  accessKeyId: 'k',
+  secretAccessKey: 's',
+  forcePathStyle: true,
+};
+
 @Module({
   imports: [LoggingModule],
   controllers: [LiveKitWebhookController],
@@ -310,6 +321,10 @@ const AI = { enabled: true, baseUrl: 'http://ai.test', startTimeoutMs: 2_000 };
     // room. The starter is a double — this suite is about the webhook, and an
     // egress container is not part of it.
     { provide: RECORDING_STARTER, useValue: recordingStarter },
+    // Enabled, because these cases assert that a delivery starts a recording.
+    // Only `enabled` is read here: the storage settings are the starter's, and
+    // the starter is a double.
+    { provide: RECORDING_CONFIG, useValue: RECORDING },
     RecordingService,
     // T30: the same instant also starts the AI analysis. Both collaborators
     // are doubles for the same reason — this suite is about what a webhook

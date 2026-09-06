@@ -30,6 +30,7 @@ import type {
   UnrecordedCallRow,
 } from '../sessions/session.repository.js';
 import type { RecordingStarter, StartedRecording } from './recording.client.js';
+import type { RecordingConfig } from './recording.config.js';
 import { RecordingOutcome, RecordingService } from './recording.service.js';
 
 const TENANT = '00000000-0000-4000-8000-00000000000a';
@@ -115,14 +116,64 @@ class FakeStarter implements RecordingStarter {
   }
 }
 
+/**
+ * A recording configuration carrying no credentials.
+ *
+ * The service reads one field of it — `enabled` — because the credentials are
+ * handed to LiveKit by the starter, which is faked here. Filling the rest with
+ * real-looking values would suggest this suite exercises them.
+ */
+const config = (enabled: boolean): RecordingConfig => ({
+  enabled,
+  bucket: '',
+  region: '',
+  egressEndpoint: '',
+  accessKeyId: '',
+  secretAccessKey: '',
+  forcePathStyle: false,
+});
+
 let sessions: FakeSessions;
 let starter: FakeStarter;
 let service: RecordingService;
 
+const build = (enabled = true): RecordingService =>
+  new RecordingService(sessions, starter, config(enabled), createLogger({ level: 'silent' }));
+
 beforeEach(() => {
   sessions = new FakeSessions();
   starter = new FakeStarter();
-  service = new RecordingService(sessions, starter, createLogger({ level: 'silent' }));
+  service = build();
+});
+
+describe('RECORDING_ENABLED=false', () => {
+  /**
+   * A Core-MVP deployment stops before the evidence pipeline (T38+), so there
+   * is nothing downstream to read a recording. Asking for one anyway spends a
+   * transcode per call on a file nobody processes.
+   */
+  it('does not ask LiveKit to record', async () => {
+    const outcome = await build(false).start(SESSION, TENANT, ROOM);
+
+    expect(outcome).toBe(RecordingOutcome.DISABLED);
+    expect(starter.calls).toEqual([]);
+  });
+
+  /**
+   * DISABLED is not FAILED. An auditor reading a Core-MVP session's history
+   * should find no evidence events at all, rather than a failure claiming the
+   * recording broke when it was never requested.
+   */
+  it('appends no event, successful or otherwise', async () => {
+    await build(false).start(SESSION, TENANT, ROOM);
+
+    expect(sessions.appended).toEqual([]);
+  });
+
+  /** Checked before the room-name branch, so a null room logs nothing either. */
+  it('says DISABLED rather than NO_ROOM for a session with no room', async () => {
+    expect(await build(false).start(SESSION, TENANT, null)).toBe(RecordingOutcome.DISABLED);
+  });
 });
 
 describe('starting a recording', () => {

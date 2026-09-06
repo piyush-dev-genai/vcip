@@ -23,6 +23,20 @@ export const RECORDING_CONFIG = Symbol('RECORDING_CONFIG');
 export const InjectRecordingConfig = (): ParameterDecorator => Inject(RECORDING_CONFIG);
 
 export interface RecordingConfig {
+  /**
+   * Whether to record at all.
+   *
+   * `AI_ENABLED`'s counterpart, and the same argument. Recording exists to feed
+   * the evidence pipeline — T38 onwards — and a deployment that stops at the
+   * Core MVP has nothing downstream to read the file. Starting one anyway costs
+   * a paid transcode on every call and writes an `EGRESS_STARTED` event
+   * claiming evidence exists for a session whose evidence nobody will process.
+   *
+   * Off is not a degraded mode. Nothing in the call path depends on a recording
+   * (`recording.service.ts` never fails a call), so this changes what happens
+   * after `CALL_STARTED` and nothing else.
+   */
+  readonly enabled: boolean;
   /** The temporary bucket recordings land in before T38 processes them. */
   readonly bucket: string;
   readonly region: string;
@@ -48,9 +62,26 @@ const required = (name: string, value: string | undefined): string => {
  * credentials, and a config error is one of the easiest places to spill one.
  */
 export function recordingConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RecordingConfig {
+  // Checked before anything is required. A deployment that is not recording
+  // has no object store, and demanding credentials for a bucket it will never
+  // write to would make the flag unusable — which is the failure `AI_ENABLED`
+  // avoids by asking the same question in the same order.
+  if ((env['RECORDING_ENABLED'] ?? 'true').toLowerCase() === 'false') {
+    return redactableRecordingConfig({
+      enabled: false,
+      bucket: '',
+      region: '',
+      egressEndpoint: '',
+      accessKeyId: '',
+      secretAccessKey: '',
+      forcePathStyle: false,
+    });
+  }
+
   const endpoint = required('S3_ENDPOINT', env['S3_ENDPOINT']);
 
   return redactableRecordingConfig({
+    enabled: true,
     bucket: required('S3_BUCKET_TEMP', env['S3_BUCKET_TEMP']),
     region: required('S3_REGION', env['S3_REGION']),
     // Falls back to the API's own endpoint, which is correct wherever the two

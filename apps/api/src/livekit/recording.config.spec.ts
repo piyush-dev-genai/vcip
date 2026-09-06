@@ -46,6 +46,35 @@ describe('recordingConfigFromEnv', () => {
   });
 });
 
+describe('RECORDING_ENABLED', () => {
+  it('is on unless turned off, so the local stack is unchanged', () => {
+    expect(recordingConfigFromEnv(env()).enabled).toBe(true);
+  });
+
+  it('accepts any casing of false', () => {
+    expect(recordingConfigFromEnv(env({ RECORDING_ENABLED: 'FALSE' })).enabled).toBe(false);
+  });
+
+  /**
+   * The point of the flag. A Core-MVP deployment has no object store, so
+   * demanding storage credentials for a bucket it will never write to would
+   * make the flag impossible to use.
+   */
+  it('needs no storage credentials when off', () => {
+    const bare: NodeJS.ProcessEnv = { RECORDING_ENABLED: 'false' };
+    expect(() => recordingConfigFromEnv(bare)).not.toThrow();
+    expect(recordingConfigFromEnv(bare).bucket).toBe('');
+  });
+
+  /**
+   * Only `false` turns it off. A typo must not silently stop the evidence
+   * pipeline of a deployment that wants one.
+   */
+  it('treats an unrecognised value as on', () => {
+    expect(recordingConfigFromEnv(env({ RECORDING_ENABLED: 'no' })).enabled).toBe(true);
+  });
+});
+
 describe('the endpoint the egress container uploads through', () => {
   /**
    * The API reaches MinIO on the host and the egress container reaches it on
@@ -111,6 +140,7 @@ describe('redaction', () => {
 
   it('redacts a config built by hand too', () => {
     const wrapped = redactableRecordingConfig({
+      enabled: true,
       bucket: 'b',
       region: 'r',
       egressEndpoint: 'http://minio:9000',

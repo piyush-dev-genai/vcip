@@ -16,6 +16,7 @@ import { MediaTokenService } from './media-token.service.js';
 import { RecordingRetryController } from './recording-retry.controller.js';
 import { RECORDING_RETRY_ENABLED, RecordingRetrySweeper } from './recording-retry.service.js';
 import { LiveKitRecordingStarter, RECORDING_STARTER } from './recording.client.js';
+import type { RecordingConfig } from './recording.config.js';
 import { RECORDING_CONFIG, recordingConfigFromEnv } from './recording.config.js';
 import { RecordingService } from './recording.service.js';
 import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js';
@@ -84,6 +85,13 @@ import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js'
  *
  * Nothing here stops a recording. Room-composite egress ends when the room
  * does, and `infra/livekit.yaml` closes an empty room after `empty_timeout`.
+ *
+ * `RECORDING_ENABLED=false` stops one being *started*, which is a different
+ * thing and is what a deployment that ends at the Core MVP wants: T38 onwards
+ * do not exist yet, so there is nothing to read the file. The flag is read once
+ * by `recordingConfigFromEnv`, and both the webhook path and the retry sweeper
+ * derive from that single answer rather than asking the environment twice. See
+ * `docs/07-deployment.md`.
  */
 @Module({
   imports: [AuthModule, SessionsModule, TenantsModule, AgentsModule, forwardRef(() => AiModule)],
@@ -107,7 +115,15 @@ import { LiveKitWebhookVerifier, WEBHOOK_VERIFIER } from './webhook.verifier.js'
     { provide: RECORDING_CONFIG, useFactory: () => recordingConfigFromEnv() },
     { provide: RECORDING_STARTER, useClass: LiveKitRecordingStarter },
     RecordingService,
-    { provide: RECORDING_RETRY_ENABLED, useValue: true },
+    // Derived rather than fixed, because a sweeper looking for calls with
+    // nothing recording them finds every call when recording is off. Left on,
+    // it would run a database query every ten seconds to discover the same
+    // thing it discovered last time and do nothing about it.
+    {
+      provide: RECORDING_RETRY_ENABLED,
+      useFactory: (config: RecordingConfig) => config.enabled,
+      inject: [RECORDING_CONFIG],
+    },
     RecordingRetrySweeper,
   ],
   exports: [MEDIA_TOKEN_MINTER, LIVEKIT_CONFIG],
